@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import type { ContactStatus } from "@prisma/client";
+type ContactStatus = string;
 
 export interface ContactFilter {
   status?: ContactStatus;
@@ -40,16 +40,22 @@ export async function listContacts(orgId: string, f: ContactFilter = {}) {
 }
 
 export async function getContact(orgId: string, id: string) {
-  return prisma.contact.findFirst({
+  const contact = await prisma.contact.findFirst({
     where: { organizationId: orgId, id },
     include: {
       contactTags: { include: { tag: true } },
       contactSegments: { include: { segment: true } },
       channels: true,
-      customValues: { include: { field: true } },
       events: { orderBy: { occurredAt: "desc" }, take: 50 },
     },
   });
+  if (!contact) return null;
+  // customValues 为多态关联，无法用 Prisma 直接关系表达，单独查询后挂回
+  const customValues = await prisma.customFieldValue.findMany({
+    where: { entityType: "contact", entityId: id },
+    include: { field: true },
+  });
+  return { ...contact, customValues };
 }
 
 export async function createContact(

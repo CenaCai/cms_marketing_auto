@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
-import type { CampaignStatus, Channel } from "@prisma/client";
+type CampaignStatus = string;
+type Channel = string;
 
 export async function listCampaigns(orgId: string) {
   return prisma.campaign.findMany({

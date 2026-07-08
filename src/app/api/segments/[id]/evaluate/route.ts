@@ -13,8 +13,8 @@ export async function POST(
     const seg = await (await import("@/lib/db")).prisma.segment.findFirst({
       where: { organizationId: session.organizationId, id: params.id },
     });
-    if (!seg || seg.type !== "dynamic") return ok({ ids: [], count: 0 });
-    const ids = await evaluateSegment(session.organizationId, seg.rules as any);
+    if (!seg || seg.type !== "dynamic" || !seg.rules) return ok({ ids: [], count: 0 });
+    const ids = await evaluateSegment(session.organizationId, JSON.parse(seg.rules));
     return ok({ ids, count: ids.length });
   });
 }

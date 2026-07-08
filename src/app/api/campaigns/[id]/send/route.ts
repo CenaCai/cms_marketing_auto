@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { getSession, requireRole } from "@/lib/auth";
 import { handle, ok } from "@/lib/response";
 import { createBatchSend } from "@/services/send.service";
-import type { Channel } from "@prisma/client";
+type Channel = string;
 
 // 对 campaign 触发批量发送（EDM / SMS）
 export async function POST(

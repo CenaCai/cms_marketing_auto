@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { getSession } from "@/lib/auth";
 import { handle, ok } from "@/lib/response";
 import { ingestEvent, listEvents } from "@/services/event.service";
-import type { EventType } from "@prisma/client";
+type EventType = string;
 
 // 事件写入（API / SDK 共用），写入后自动触发 Workflow
 export async function POST(req: NextRequest) {

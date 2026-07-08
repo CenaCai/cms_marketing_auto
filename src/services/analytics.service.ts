@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import type { Channel } from "@prisma/client";
+type Channel = string;
 
 // 基于 send_logs 聚合 EDM / SMS 指标。
 // 打开/点击来自追踪事件（track/open, track/click），这里统计已落库的回执。

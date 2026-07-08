@@ -1,4 +1,16 @@
-import type { AiProvider } from "./types";
+import type {
+  AiProvider,
+  CopyRequest,
+  CopyResult,
+  SendTimeRequest,
+  SendTimeResult,
+  SegmentRequest,
+  SegmentResult,
+  WorkflowDraftRequest,
+  WorkflowDraftResult,
+  CampaignAnalysisRequest,
+  CampaignAnalysisResult,
+} from "./types";
 
 // ---------------------------------------------------------------------
 // OpenAI / 兼容协议接口（占位 / 留接口）
@@ -9,19 +21,19 @@ import type { AiProvider } from "./types";
 // ---------------------------------------------------------------------
 export class OpenAiProvider implements AiProvider {
   readonly name = "openai";
-  async generateCopy() {
+  async generateCopy(_req: CopyRequest): Promise<CopyResult> {
     throw new Error("OpenAiProvider.generateCopy 尚未实现：请安装 openai 并补全调用。");
   }
-  async recommendSendTime() {
+  async recommendSendTime(_req: SendTimeRequest): Promise<SendTimeResult> {
     throw new Error("OpenAiProvider.recommendSendTime 尚未实现。");
   }
-  async recommendSegment() {
+  async recommendSegment(_req: SegmentRequest): Promise<SegmentResult> {
     throw new Error("OpenAiProvider.recommendSegment 尚未实现。");
   }
-  async generateWorkflowDraft() {
+  async generateWorkflowDraft(_req: WorkflowDraftRequest): Promise<WorkflowDraftResult> {
     throw new Error("OpenAiProvider.generateWorkflowDraft 尚未实现。");
   }
-  async analyzeCampaign() {
+  async analyzeCampaign(_req: CampaignAnalysisRequest): Promise<CampaignAnalysisResult> {
     throw new Error("OpenAiProvider.analyzeCampaign 尚未实现。");
   }
 }

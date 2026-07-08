@@ -5,7 +5,7 @@ import { addContactsToSegment, removeContactsFromSegment } from "./segment.servi
 import { getEmailProvider } from "@/integrations/email";
 import { getSmsProvider } from "@/integrations/sms";
 import { renderTemplate } from "./template.service";
-import type { Channel } from "@prisma/client";
+type Channel = string;
 
 // ----------------------- 工作流定义（JSON） -----------------------
 // 与 PRD 6.1 对齐：Trigger / Condition / Action / Delay / Branch
@@ -70,7 +70,7 @@ export async function processWorkflowTriggers(orgId: string, ctx: TriggerContext
     where: { organizationId: orgId, enabled: true },
   });
   for (const wf of workflows) {
-    const def = wf.definition as unknown as WorkflowDefinition;
+    const def = JSON.parse(wf.definition) as WorkflowDefinition;
     if (!def?.trigger || !triggerMatches(def, ctx)) continue;
     await runActions(orgId, ctx.contactId, def.actions ?? []);
   }
@@ -157,12 +157,12 @@ async function sendAdHoc(
   body = renderTemplate(body, vars);
   subject = renderTemplate(subject, vars);
 
-  const provider = channel === "EMAIL" ? getEmailProvider() : getSmsProvider();
+  const providerName = channel === "EMAIL" ? getEmailProvider().name : getSmsProvider().name;
   try {
     const result =
       channel === "EMAIL"
-        ? await provider.send({ to, subject, html: body })
-        : await provider.send({ to, body });
+        ? await getEmailProvider().send({ to, subject, html: body })
+        : await getSmsProvider().send({ to, body });
     await prisma.sendLog.create({
       data: {
         organizationId: orgId,
@@ -182,7 +182,7 @@ async function sendAdHoc(
         taskId: "__workflow__",
         contactId,
         channel,
-        provider: provider.name,
+        provider: providerName,
         status: "failed",
         errorMessage: e?.message ?? String(e),
       },
@@ -196,12 +196,15 @@ export const workflowRepo = {
     prisma.workflow.findMany({ where: { organizationId: orgId }, orderBy: { createdAt: "desc" } }),
   create: (orgId: string, data: { name: string; description?: string; definition: WorkflowDefinition; enabled?: boolean }) =>
     prisma.workflow.create({
-      data: { organizationId: orgId, name: data.name, description: data.description, definition: data.definition as any, enabled: data.enabled ?? false },
+      data: { organizationId: orgId, name: data.name, description: data.description, definition: JSON.stringify(data.definition), enabled: data.enabled ?? false },
     }),
   update: (orgId: string, id: string, data: Partial<{ name: string; description: string; definition: WorkflowDefinition; enabled: boolean }>) =>
     prisma.workflow.update({
       where: { id },
-      data: { ...data, definition: data.definition as any },
+      data: (() => {
+        const { definition, ...rest } = data;
+        return { ...rest, ...(definition !== undefined ? { definition: JSON.stringify(definition) } : {}) };
+      })(),
     }),
   remove: (orgId: string, id: string) =>
     prisma.workflow.deleteMany({ where: { organizationId: orgId, id } }),

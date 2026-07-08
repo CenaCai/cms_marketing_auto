@@ -1,10 +1,11 @@
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import jwt, { type SignOptions } from "jsonwebtoken";
 import { NextRequest } from "next/server";
 import { env } from "./env";
 import { prisma } from "./db";
 import { unauthorized, forbidden } from "./errors";
-import type { MemberRole } from "@prisma/client";
+// SQLite 模式下枚举用普通字符串表示；保留类型别名以保持业务代码不变。
+type MemberRole = string;
 
 // --------------------------- Passwords -------------------------------
 
@@ -29,7 +30,7 @@ export interface TokenPayload {
 
 export function signToken(payload: TokenPayload): string {
   return jwt.sign(payload, env.jwtSecret, {
-    expiresIn: env.jwtExpiresIn,
+    expiresIn: env.jwtExpiresIn as SignOptions["expiresIn"],
   });
 }
 

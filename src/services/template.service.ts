@@ -1,6 +1,6 @@
 import Handlebars from "handlebars";
 import { prisma } from "@/lib/db";
-import type { TemplateType } from "@prisma/client";
+type TemplateType = string;
 
 export async function listTemplates(orgId: string, type?: TemplateType) {
   return prisma.template.findMany({
@@ -19,7 +19,14 @@ export async function createTemplate(
     variables?: string[];
   },
 ) {
-  return prisma.template.create({ data: { organizationId: orgId, ...data } });
+  return prisma.template.create({
+    data: {
+      organizationId: orgId,
+      ...data,
+      // SQLite 不支持数组列：variables 以 JSON 字符串存储
+      variables: data.variables ? JSON.stringify(data.variables) : undefined,
+    },
+  });
 }
 
 export async function updateTemplate(
@@ -27,7 +34,11 @@ export async function updateTemplate(
   id: string,
   data: { name?: string; subject?: string; body?: string; variables?: string[] },
 ) {
-  return prisma.template.update({ where: { id }, data });
+  const { variables, ...rest } = data;
+  return prisma.template.update({
+    where: { id },
+    data: { ...rest, ...(variables ? { variables: JSON.stringify(variables) } : {}) },
+  });
 }
 
 export async function getTemplate(orgId: string, id: string) {

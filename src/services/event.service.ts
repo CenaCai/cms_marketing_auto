@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import type { EventType } from "@prisma/client";
+type EventType = string;
 import { processWorkflowTriggers } from "./workflow.engine";
 
 export interface IngestEventInput {
@@ -26,7 +26,7 @@ export async function ingestEvent(orgId: string, input: IngestEventInput) {
       eventName: input.eventName,
       eventType: input.eventType ?? "CUSTOM",
       source: input.source ?? "api",
-      properties: (input.properties ?? null) as any,
+      properties: input.properties ? JSON.stringify(input.properties) : null, // SQLite 不支持 Json，存 JSON 字符串
       occurredAt: occurred,
       dedupKey,
     },

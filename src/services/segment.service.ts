@@ -35,7 +35,7 @@ export async function createSegment(
       organizationId: orgId,
       name: data.name,
       type: data.type ?? "dynamic",
-      rules: (data.rules ?? null) as any,
+      rules: data.rules ? JSON.stringify(data.rules) : null, // SQLite: 存 JSON 字符串
       description: data.description,
     },
   });
@@ -51,7 +51,7 @@ export async function updateSegment(
     data: {
       name: data.name,
       type: data.type,
-      rules: data.rules as any,
+      ...(data.rules !== undefined ? { rules: JSON.stringify(data.rules) } : {}),
       description: data.description,
     },
   });
@@ -164,7 +164,7 @@ export async function getSegmentMembers(orgId: string, segmentId: string) {
   });
   if (!seg) return [];
   if (seg.type === "dynamic" && seg.rules) {
-    const ids = await evaluateSegment(orgId, seg.rules as SegmentRule);
+    const ids = await evaluateSegment(orgId, JSON.parse(seg.rules) as SegmentRule);
     return prisma.contact.findMany({
       where: { organizationId: orgId, id: { in: ids } },
     });

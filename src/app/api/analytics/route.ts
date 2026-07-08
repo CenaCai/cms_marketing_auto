@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { getSession } from "@/lib/auth";
 import { handle, ok } from "@/lib/response";
 import { getChannelStats } from "@/services/analytics.service";
-import type { Channel } from "@prisma/client";
+type Channel = string;
 
 // 渠道统计：?channel=EMAIL | SMS
 export async function GET(req: NextRequest) {

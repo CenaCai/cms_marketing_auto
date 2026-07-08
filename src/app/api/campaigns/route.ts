@@ -5,7 +5,7 @@ import {
   listCampaigns,
   createCampaign,
 } from "@/services/campaign.service";
-import type { Channel } from "@prisma/client";
+type Channel = string;
 
 export async function GET(req: NextRequest) {
   return handle(async () => {

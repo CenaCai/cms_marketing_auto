@@ -2,7 +2,8 @@ import { NextRequest } from "next/server";
 import { getSession } from "@/lib/auth";
 import { handle, ok } from "@/lib/response";
 import { prisma } from "@/lib/db";
-import type { Channel, ConsentStatus } from "@prisma/client";
+type Channel = string;
+type ConsentStatus = string;
 
 // V4 多渠道：联系人的额外触达渠道（WhatsApp / Telegram / App User ID ...）
 export async function GET(

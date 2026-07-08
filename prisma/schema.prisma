@@ -1,7 +1,15 @@
 // =====================================================================
-// cms_marketing_auto — Prisma schema (PostgreSQL)
+// cms_marketing_auto — Prisma schema (SQLite for local/demo, Postgres in prod)
 // Single source of truth for the data model described in the MVP PRD.
-// Run:  npm run prisma:generate && npm run prisma:migrate
+//
+// NOTE: This project runs on SQLite so it is fully self-contained (no external
+// DB server needed) for local dev and demos. Enums in the original Postgres
+// design are modelled as plain `String` columns with documented default values;
+// array columns are stored as JSON strings. To deploy against PostgreSQL,
+// switch `provider` back to "postgresql" and restore the enum/array types
+// (see README → Deployment).
+//
+// Run:  npm run prisma:generate && npm run prisma:dbpush
 // =====================================================================
 
 generator client {
@@ -9,138 +17,38 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
-}
-
-// ----------------------------- Enums ---------------------------------
-
-enum UserStatus {
-  active
-  disabled
-}
-
-enum MemberRole {
-  SUPER_ADMIN
-  ORG_ADMIN
-  MARKETING_OPERATOR
-  VIEWER
-}
-
-enum ContactStatus {
-  active
-  unsubscribed
-  bounced
-  blacklisted
-}
-
-enum Channel {
-  EMAIL
-  SMS
-  WHATSAPP
-  FACEBOOK
-  TELEGRAM
-  X
-  APP_PUSH
-  INSTAGRAM_DM
-  LINE
-  WECHAT
-  PHONE
-}
-
-enum FieldType {
-  text
-  number
-  date
-  boolean
-  select
-  multi_select
-}
-
-enum EntityType {
-  contact
-  campaign
-  event
-}
-
-enum EventType {
-  REGISTER
-  LOGIN
-  BROWSE
-  PURCHASE
-  REFUND
-  CUSTOM
-}
-
-enum TemplateType {
-  EDM
-  SMS
-}
-
-enum CampaignStatus {
-  draft
-  scheduled
-  sending
-  sent
-  paused
-  failed
-  completed
-}
-
-enum SegmentType {
-  static
-  dynamic
-}
-
-enum SendStatus {
-  queued
-  sending
-  success
-  failed
-  skipped
-}
-
-enum ConsentStatus {
-  unknown
-  granted
-  revoked
-}
-
-enum LogType {
-  OPERATION
-  API
-  WEBHOOK
-  SEND
-  ERROR
 }
 
 // ----------------------------- Users / Orgs --------------------------
 
 model User {
-  id           String     @id @default(cuid())
+  id           String   @id @default(cuid())
   name         String
-  email        String     @unique
+  username     String?  @unique // 登录账号名（与 email 二选一）
+  email        String   @unique
   phone        String?
   passwordHash String
-  status       UserStatus @default(active)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  status       String   @default("active") // active | disabled
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   memberships  OrganizationMember[]
   apiKeys      ApiKey[]
-  sentLogs     SendLog[]              @relation("SendLogOperator")
 }
 
 model Organization {
   id        String   @id @default(cuid())
   name      String
-  status    UserStatus @default(active)
+  status    String   @default("active") // active | disabled
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   members          OrganizationMember[]
   contacts         Contact[]
   customFields     CustomField[]
+  customFieldValues CustomFieldValue[]
   events           Event[]
   tags             Tag[]
   segments         Segment[]
@@ -149,7 +57,6 @@ model Organization {
   sendTasks        SendTask[]
   sendLogs         SendLog[]
   workflows        Workflow[]
-  contactChannels  ContactChannel[]
   apiKeys          ApiKey[]
   webhooks         Webhook[]
   importJobs       ImportJob[]
@@ -157,12 +64,12 @@ model Organization {
 }
 
 model OrganizationMember {
-  id             String     @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
   userId         String
-  role           MemberRole @default(MARKETING_OPERATOR)
-  status         UserStatus @default(active)
-  createdAt      DateTime   @default(now())
+  role           String   @default("MARKETING_OPERATOR") // SUPER_ADMIN | ORG_ADMIN | MARKETING_OPERATOR | VIEWER
+  status         String   @default("active")             // active | disabled
+  createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -174,7 +81,7 @@ model OrganizationMember {
 // ----------------------------- Contacts ------------------------------
 
 model Contact {
-  id             String        @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
   name           String?
   email          String?
@@ -183,13 +90,12 @@ model Contact {
   city           String?
   language       String?
   source         String?
-  status         ContactStatus @default(active)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  status         String   @default("active") // active | unsubscribed | bounced | blacklisted
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
   lastActiveAt   DateTime?
 
   organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customValues   CustomFieldValue[]
   events         Event[]
   contactTags    ContactTag[]
   contactSegments ContactSegment[]
@@ -204,16 +110,16 @@ model Contact {
 }
 
 model CustomField {
-  id            String     @id @default(cuid())
+  id            String   @id @default(cuid())
   organizationId String
-  entityType    EntityType @default(contact)
+  entityType    String   @default("contact") // contact | campaign | event
   fieldKey      String
   fieldLabel    String
-  fieldType     FieldType  @default(text)
-  options       Json?
-  required      Boolean    @default(false)
-  enabled       Boolean    @default(true)
-  sortOrder     Int        @default(0)
+  fieldType     String   @default("text") // text | number | date | boolean | select | multi_select
+  options       String?   // JSON 字符串：自定义字段选项
+  required      Boolean  @default(false)
+  enabled       Boolean  @default(true)
+  sortOrder     Int      @default(0)
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   values       CustomFieldValue[]
@@ -223,9 +129,9 @@ model CustomField {
 }
 
 model CustomFieldValue {
-  id            String     @id @default(cuid())
+  id            String   @id @default(cuid())
   organizationId String
-  entityType    EntityType
+  entityType    String
   entityId      String
   fieldId       String
   value         String?
@@ -244,9 +150,9 @@ model Event {
   organizationId String
   contactId      String?
   eventName      String
-  eventType      EventType @default(CUSTOM)
+  eventType      String    @default("CUSTOM") // REGISTER | LOGIN | BROWSE | PURCHASE | REFUND | CUSTOM
   source         String?
-  properties     Json?
+  properties     String?   // JSON 字符串
   occurredAt     DateTime
   receivedAt     DateTime  @default(now())
   dedupKey       String?
@@ -288,15 +194,16 @@ model ContactTag {
 }
 
 model Segment {
-  id             String       @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
   name           String
-  type           SegmentType  @default(dynamic)
-  rules          Json?        // 动态分群规则 (见 docs)
+  type           String   @default("dynamic") // static | dynamic
+  rules          String?    // 动态分群规则 JSON 字符串 (见 docs)
   description    String?
 
   organization  Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   contactSegments ContactSegment[]
+  campaigns    Campaign[]
 
   @@index([organizationId])
 }
@@ -316,16 +223,16 @@ model ContactSegment {
 // ----------------------------- Templates / Campaigns -----------------
 
 model Template {
-  id             String        @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
-  type           TemplateType
+  type           String   // EDM | SMS
   name           String
-  subject        String?       // EDM
-  body           String        // html (EDM) 或纯文本 (SMS)
-  variables      String[]      // 可用变量列表，如 ["first_name","city"]
-  version        Int           @default(1)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  subject        String?  // EDM
+  body           String   // html (EDM) 或纯文本 (SMS)
+  variables      String   @default("[]") // JSON 数组，如 ["first_name","city"]
+  version        Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   campaigns    Campaign[]
@@ -334,18 +241,18 @@ model Template {
 }
 
 model Campaign {
-  id             String         @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
   name           String
   objective      String?
   segmentId      String?
-  channel        Channel
+  channel        String   // EMAIL | SMS | WHATSAPP | ...
   templateId     String?
-  status         CampaignStatus @default(draft)
+  status         String   @default("draft") // draft | scheduled | sending | sent | paused | failed | completed
   scheduledAt    DateTime?
   sentAt         DateTime?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   template     Template?    @relation(fields: [templateId], references: [id], onDelete: SetNull)
@@ -359,8 +266,8 @@ model SendTask {
   id             String   @id @default(cuid())
   organizationId String
   campaignId     String?
-  channel        Channel
-  status         SendStatus @default(queued)
+  channel        String
+  status         String   @default("queued") // queued | sending | success | failed | skipped
   totalCount     Int      @default(0)
   successCount   Int      @default(0)
   failedCount    Int      @default(0)
@@ -375,21 +282,20 @@ model SendTask {
 }
 
 model SendLog {
-  id             String     @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
   taskId         String
   contactId      String?
-  channel        Channel
-  provider       String?    // 实际使用的 provider，如 smtp / twilio / mock
-  status         SendStatus
+  channel        String
+  provider       String?  // 实际使用的 provider，如 smtp / twilio / mock
+  status         String   // queued | sending | success | failed | skipped
   errorMessage   String?
-  messageId      String?    // provider 返回的消息ID，用于打开/点击回执
+  messageId      String?  // provider 返回的消息ID，用于打开/点击回执
   sentAt         DateTime?
 
   task         SendTask   @relation(fields: [taskId], references: [id], onDelete: Cascade)
   contact      Contact?   @relation(fields: [contactId], references: [id], onDelete: SetNull)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  events       Event[]    @relation("SendLogEvent")
 
   @@index([taskId])
   @@index([contactId, channel])
@@ -398,13 +304,13 @@ model SendLog {
 // ----------------------------- Multi-channel -------------------------
 
 model ContactChannel {
-  id             String        @id @default(cuid())
+  id             String   @id @default(cuid())
   contactId      String
-  channel        Channel
-  identifier     String        // 该渠道的标识，如 whatsapp 号码 / app user id
-  verified       Boolean       @default(false)
-  consentStatus  ConsentStatus @default(unknown)
-  createdAt      DateTime      @default(now())
+  channel        String
+  identifier     String   // 该渠道的标识，如 whatsapp 号码 / app user id
+  verified       Boolean  @default(false)
+  consentStatus  String   @default("unknown") // unknown | granted | revoked
+  createdAt      DateTime @default(now())
 
   contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
@@ -419,7 +325,7 @@ model Workflow {
   organizationId String
   name           String
   description    String?
-  definition     Json     // 触发器/条件/动作/延迟/分支的 DAG (见 docs + THIRD_PARTY_INTEGRATIONS.md)
+  definition     String   // JSON 字符串：触发器/条件/动作/延迟/分支 DAG
   enabled        Boolean  @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -435,13 +341,13 @@ model ImportJob {
   id             String   @id @default(cuid())
   organizationId String
   fileName       String
-  entityType     EntityType @default(contact)
-  status         SendStatus @default(queued)
+  entityType     String   @default("contact") // contact | campaign | event
+  status         String   @default("queued")  // queued | sending | success | failed | skipped
   totalCount     Int      @default(0)
   successCount   Int      @default(0)
   failedCount    Int      @default(0)
   duplicateCount Int      @default(0)
-  report         Json?    // 错误明细
+  report         String?   // JSON 字符串：错误明细
   createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -458,7 +364,7 @@ model ApiKey {
   name           String
   keyHash        String   @unique
   prefix         String   // 展示用前缀，如 cms_live_
-  scopes         String[] @default(["read"])
+  scopes         String   @default("[\"read\"]") // JSON 数组，如 ["read","write"]
   lastUsedAt     DateTime?
   createdAt      DateTime @default(now())
 
@@ -472,7 +378,7 @@ model Webhook {
   id             String   @id @default(cuid())
   organizationId String
   url            String
-  events         String[] // 订阅的事件类型
+  events         String   @default("[]") // JSON 数组，订阅的事件类型
   secret         String   // 签名密钥
   active         Boolean  @default(true)
   createdAt      DateTime @default(now())
@@ -485,12 +391,12 @@ model Webhook {
 model SystemLog {
   id             String   @id @default(cuid())
   organizationId String?
-  type           LogType
+  type           String   // OPERATION | API | WEBHOOK | SEND | ERROR
   actorId        String?
   action         String
   target         String?
-  request        Json?
-  response       Json?
+  request        String?
+  response       String?
   errorStack     String?  // 仅管理员可见
   createdAt      DateTime @default(now())
 

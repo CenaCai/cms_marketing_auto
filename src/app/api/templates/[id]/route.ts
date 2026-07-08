@@ -8,8 +8,8 @@ export async function PATCH(
   { params }: { params: { id: string } },
 ) {
   return handle(async () => {
-    await getSession(req);
+    const session = await getSession(req);
     const body = await req.json();
-    return ok(await updateTemplate(params.id, body));
+    return ok(await updateTemplate(session.organizationId, params.id, body));
   });
 }

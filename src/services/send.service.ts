@@ -3,7 +3,7 @@ import { getQueue } from "@/integrations/queue";
 import { getEmailProvider } from "@/integrations/email";
 import { getSmsProvider } from "@/integrations/sms";
 import { renderTemplate } from "./template.service";
-import type { Channel } from "@prisma/client";
+type Channel = string;
 
 // 频控：同一联系人同一渠道 24h 内最多发送次数
 const FREQ_LIMIT_PER_DAY = 5;
@@ -91,12 +91,12 @@ async function processSingleSend(job: SingleSendJob) {
   }
 
   // 占位 LOG_ID 在拿到 messageId 前无法预知，改为发送后回写（简化：先用临时标记，追踪接口按 contact+task 匹配）
-  const provider = channel === "EMAIL" ? getEmailProvider() : getSmsProvider();
+  const providerName = channel === "EMAIL" ? getEmailProvider().name : getSmsProvider().name;
   try {
     const result =
       channel === "EMAIL"
-        ? await provider.send({ to: to!, subject, html: body })
-        : await provider.send({ to: to!, body });
+        ? await getEmailProvider().send({ to: to!, subject, html: body })
+        : await getSmsProvider().send({ to: to!, body });
 
     await prisma.sendLog.create({
       data: {
@@ -123,7 +123,7 @@ async function processSingleSend(job: SingleSendJob) {
         taskId,
         contactId,
         channel,
-        provider: provider.name,
+        provider: providerName,
         status: "failed",
         errorMessage: e?.message ?? String(e),
       },
@@ -159,7 +159,7 @@ export async function createBatchSend(orgId: string, input: BatchSendInput) {
     if (seg.type === "dynamic" && seg.rules) {
       // 复用 segment 求值
       const { evaluateSegment } = await import("./segment.service");
-      targetIds = await evaluateSegment(orgId, seg.rules as any);
+      targetIds = await evaluateSegment(orgId, JSON.parse(seg.rules));
     } else {
       const members = await prisma.contactSegment.findMany({
         where: { segmentId: input.segmentId },

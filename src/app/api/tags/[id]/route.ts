@@ -8,9 +8,9 @@ export async function PATCH(
   { params }: { params: { id: string } },
 ) {
   return handle(async () => {
-    await getSession(req);
+    const session = await getSession(req);
     const body = await req.json();
-    return ok(await updateTag(params.id, body));
+    return ok(await updateTag(session.organizationId, params.id, body));
   });
 }
 
@@ -19,8 +19,8 @@ export async function DELETE(
   { params }: { params: { id: string } },
 ) {
   return handle(async () => {
-    await getSession(req);
-    await deleteTag(params.id);
+    const session = await getSession(req);
+    await deleteTag(session.organizationId, params.id);
     return ok({ deleted: true });
   });
 }

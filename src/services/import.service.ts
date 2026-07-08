@@ -24,7 +24,7 @@ export function parseCsv(text: string, map: ContactFieldMap) {
 // 解析 Excel buffer 为联系人行（依赖 exceljs）
 export async function parseExcel(buffer: Buffer, map: ContactFieldMap) {
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(buffer);
+  await wb.xlsx.load(buffer as any);
   const ws = wb.worksheets[0];
   if (!ws) return [];
   const header: string[] = [];

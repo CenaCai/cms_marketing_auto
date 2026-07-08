@@ -5,7 +5,7 @@ import {
   listContacts,
   createContact,
 } from "@/services/contact.service";
-import type { ContactStatus } from "@prisma/client";
+type ContactStatus = string;
 
 export async function GET(req: NextRequest) {
   return handle(async () => {

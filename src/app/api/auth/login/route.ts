@@ -7,12 +7,16 @@ import { unauthorized, badRequest } from "@/lib/errors";
 export async function POST(req: NextRequest) {
   return handle(async () => {
     const body = await req.json().catch(() => ({}));
-    const { email, password } = body ?? {};
-    if (!email || !password) throw badRequest("email / password 必填");
+    const { email, username, password } = body ?? {};
+    if ((!email && !username) || !password) {
+      throw badRequest("email / username / password 必填");
+    }
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = email
+      ? await prisma.user.findUnique({ where: { email } })
+      : await prisma.user.findUnique({ where: { username: username as string } });
     if (!user || !(await verifyPassword(password, user.passwordHash))) {
-      throw unauthorized("邮箱或密码错误");
+      throw unauthorized("账号或密码错误");
     }
     const member = await prisma.organizationMember.findFirst({
       where: { userId: user.id, status: "active" },

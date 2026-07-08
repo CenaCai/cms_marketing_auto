@@ -9,10 +9,10 @@ export async function PATCH(
   { params }: { params: { id: string } },
 ) {
   return handle(async () => {
-    await getSession(req);
+    const session = await getSession(req);
     const body = await req.json();
     return ok(
-      await workflowRepo.update(params.id, {
+      await workflowRepo.update(session.organizationId, params.id, {
         name: body.name,
         description: body.description,
         definition: body.definition as WorkflowDefinition,
@@ -27,8 +27,8 @@ export async function DELETE(
   { params }: { params: { id: string } },
 ) {
   return handle(async () => {
-    await getSession(req);
-    await workflowRepo.remove(params.id);
+    const session = await getSession(req);
+    await workflowRepo.remove(session.organizationId, params.id);
     return ok({ deleted: true });
   });
 }

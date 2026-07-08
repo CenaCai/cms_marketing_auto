@@ -5,7 +5,7 @@ import {
   listTemplates,
   createTemplate,
 } from "@/services/template.service";
-import type { TemplateType } from "@prisma/client";
+type TemplateType = string;
 
 export async function GET(req: NextRequest) {
   return handle(async () => {
