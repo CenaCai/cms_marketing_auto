@@ -1,10 +1,215 @@
-import Placeholder from "@/components/Placeholder";
+"use client";
+
+import { useEffect, useState } from "react";
+import { api } from "@/lib/api-client";
+
+type Tpl = {
+  id: string;
+  name: string;
+  type: string;
+  subject?: string;
+  body: string;
+  variables: string; // JSON 字符串
+  updatedAt: string;
+};
 
 export default function TemplatesPage() {
+  const [list, setList] = useState<Tpl[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<Tpl | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+
+  const [name, setName] = useState("");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
+  const [variables, setVariables] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const data = await api<any[]>("/api/templates?type=EDM");
+      setList(data ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  function openNew() {
+    setEditing(null);
+    setName("");
+    setSubject("");
+    setBody("");
+    setImageUrl("");
+    setVariables("");
+    setErr("");
+    setFormOpen(true);
+  }
+
+  function openEdit(t: Tpl) {
+    setEditing(t);
+    setName(t.name);
+    setSubject(t.subject ?? "");
+    setBody(t.body);
+    try {
+      const v = JSON.parse(t.variables || "[]");
+      setVariables(Array.isArray(v) ? v.join(", ") : "");
+    } catch {
+      setVariables("");
+    }
+    setImageUrl("");
+    setErr("");
+    setFormOpen(true);
+  }
+
+  function insertImage() {
+    const url = imageUrl.trim();
+    if (!url) return;
+    const tag = `\n<img src="${url}" alt="" style="max-width:100%;border-radius:8px;margin:12px 0" />\n`;
+    setBody((b) => b + tag);
+    setImageUrl("");
+  }
+
+  async function save() {
+    setErr("");
+    if (!name.trim() || !body.trim()) {
+      setErr("请填写模板名称与正文");
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        type: "EDM",
+        name: name.trim(),
+        subject: subject.trim(),
+        body,
+        variables: variables
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      };
+      if (editing) {
+        await api(`/api/templates/${editing.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await api("/api/templates", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+      setFormOpen(false);
+      await load();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <Placeholder
-      title="Templates"
-      desc="EDM（HTML + 变量 {{first_name}} 等）/ SMS（纯文本）模板，支持预览与测试发送。变量渲染使用 Handlebars。后端 API：GET/POST /api/templates、PATCH /api/templates/[id]。"
-    />
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <h1 style={{ fontSize: 22 }}>邮件模板（生产文案）</h1>
+        <button className="btn btn-primary" onClick={openNew}>＋ 新建模板</button>
+      </div>
+
+      {!formOpen && (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          {loading ? (
+            <div style={{ padding: 24 }} className="muted">加载中…</div>
+          ) : list.length === 0 ? (
+            <div style={{ padding: 24 }} className="muted">还没有模板，点击右上角“新建模板”。</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <thead>
+                <tr style={{ background: "#f8fafc", textAlign: "left" }}>
+                  <th style={{ padding: "10px 14px" }}>名称</th>
+                  <th style={{ padding: "10px 14px" }}>主题</th>
+                  <th style={{ padding: "10px 14px" }}>更新时间</th>
+                  <th style={{ padding: "10px 14px" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((t) => (
+                  <tr key={t.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "10px 14px" }}>{t.name}</td>
+                    <td style={{ padding: "10px 14px" }} className="muted">{t.subject || "—"}</td>
+                    <td style={{ padding: "10px 14px" }} className="muted">
+                      {new Date(t.updatedAt).toLocaleString()}
+                    </td>
+                    <td style={{ padding: "10px 14px", textAlign: "right" }}>
+                      <button className="btn" onClick={() => openEdit(t)}>编辑</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {formOpen && (
+        <div className="card">
+          <h2 style={{ fontSize: 16, marginBottom: 12 }}>{editing ? "编辑模板" : "新建模板"}</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label className="muted" style={{ fontSize: 13 }}>模板名称</label>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="如：618 大促通知" />
+            </div>
+            <div>
+              <label className="muted" style={{ fontSize: 13 }}>邮件主题</label>
+              <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="如：{{first_name}}，专属优惠来了" />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <label className="muted" style={{ fontSize: 13 }}>正文（支持 HTML，可用 {`{{first_name}}`} 等变量）</label>
+            <textarea
+              className="input"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={10}
+              style={{ fontFamily: "ui-monospace, monospace", fontSize: 13 }}
+              placeholder="<h1>你好 {{first_name}}</h1><p>这是我们的新品…</p>"
+            />
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+            <input className="input" style={{ maxWidth: 380 }} value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="图片 URL，如 https://…/banner.jpg" />
+            <button className="btn" onClick={insertImage} type="button">＋ 插入图片</button>
+            <span className="muted" style={{ fontSize: 12 }}>把图片加到正文末尾</span>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <label className="muted" style={{ fontSize: 13 }}>变量（逗号分隔，可选）</label>
+            <input className="input" value={variables} onChange={(e) => setVariables(e.target.value)} placeholder="first_name, city" />
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <label className="muted" style={{ fontSize: 13 }}>实时预览</label>
+            <iframe
+              title="preview"
+              srcDoc={body}
+              style={{ width: "100%", height: 220, border: "1px solid var(--border)", borderRadius: 8, background: "#fff" }}
+            />
+          </div>
+
+          {err && <div style={{ color: "red", fontSize: 13, marginTop: 8 }}>{err}</div>}
+
+          <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "保存中…" : "保存模板"}</button>
+            <button className="btn" onClick={() => setFormOpen(false)}>取消</button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

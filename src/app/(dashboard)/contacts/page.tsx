@@ -3,71 +3,156 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
 
-export default function ContactsPage() {
-  const [items, setItems] = useState<any[]>([]);
-  const [total, setTotal] = useState(0);
-  const [form, setForm] = useState({ name: "", email: "", phone: "", country: "", city: "" });
+type Contact = {
+  id: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  country?: string;
+  city?: string;
+  status: string;
+  createdAt: string;
+};
 
-  async function load() {
-    const res = await api("/api/contacts?limit=100");
-    setItems(res.items);
-    setTotal(res.total);
+export default function ContactsPage() {
+  const [list, setList] = useState<Contact[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
+
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [country, setCountry] = useState("");
+  const [city, setCity] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function load(q = "") {
+    setLoading(true);
+    try {
+      const data = await api<{ items: Contact[]; total: number }>(
+        `/api/contacts?limit=200${q ? `&search=${encodeURIComponent(q)}` : ""}`,
+      );
+      setList(data?.items ?? []);
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
-    load().catch(() => {});
+    load();
   }, []);
 
-  async function add() {
-    if (!form.email && !form.phone) return alert("邮箱或手机号至少填一个");
-    await api("/api/contacts", { method: "POST", body: JSON.stringify(form) });
-    setForm({ name: "", email: "", phone: "", country: "", city: "" });
-    load();
+  function openNew() {
+    setName("");
+    setEmail("");
+    setPhone("");
+    setCountry("");
+    setCity("");
+    setErr("");
+    setFormOpen(true);
+  }
+
+  async function save() {
+    setErr("");
+    if (!email.trim() && !phone.trim()) {
+      setErr("至少填写邮箱或电话");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api("/api/contacts", {
+        method: "POST",
+        body: JSON.stringify({
+          name: name.trim() || undefined,
+          email: email.trim() || undefined,
+          phone: phone.trim() || undefined,
+          country: country.trim() || undefined,
+          city: city.trim() || undefined,
+        }),
+      });
+      setFormOpen(false);
+      await load(search);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <div>
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>Contacts</h1>
-      <div className="muted" style={{ fontSize: 13, marginBottom: 16 }}>共 {total} 条</div>
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <input className="input" style={{ flex: 1, minWidth: 120 }} placeholder="姓名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <input className="input" style={{ flex: 1, minWidth: 120 }} placeholder="邮箱" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <input className="input" style={{ flex: 1, minWidth: 120 }} placeholder="手机" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          <input className="input" style={{ width: 100 }} placeholder="国家" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} />
-          <input className="input" style={{ width: 100 }} placeholder="城市" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-          <button className="btn btn-primary" onClick={add}>新增</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <h1 style={{ fontSize: 22 }}>客户名单（邮箱地址）</h1>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input className="input" style={{ maxWidth: 240 }} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索姓名/邮箱/电话" onKeyDown={(e) => e.key === "Enter" && load(search)} />
+          <button className="btn" onClick={() => load(search)}>搜索</button>
+          <button className="btn btn-primary" onClick={openNew}>＋ 新增客户</button>
         </div>
       </div>
 
-      <div className="card">
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border)" }}>
-              <th style={{ padding: 8 }}>姓名</th>
-              <th style={{ padding: 8 }}>邮箱</th>
-              <th style={{ padding: 8 }}>手机</th>
-              <th style={{ padding: 8 }}>国家/城市</th>
-              <th style={{ padding: 8 }}>状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((c) => (
-              <tr key={c.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                <td style={{ padding: 8 }}>{c.name ?? "—"}</td>
-                <td style={{ padding: 8 }}>{c.email ?? "—"}</td>
-                <td style={{ padding: 8 }}>{c.phone ?? "—"}</td>
-                <td style={{ padding: 8 }}>{c.country ?? "—"} / {c.city ?? "—"}</td>
-                <td style={{ padding: 8 }}>{c.status}</td>
+      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        {loading ? (
+          <div style={{ padding: 24 }} className="muted">加载中…</div>
+        ) : list.length === 0 ? (
+          <div style={{ padding: 24 }} className="muted">还没有客户，点击“新增客户”录入邮箱。</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+            <thead>
+              <tr style={{ background: "#f8fafc", textAlign: "left" }}>
+                <th style={{ padding: "10px 14px" }}>姓名</th>
+                <th style={{ padding: "10px 14px" }}>邮箱</th>
+                <th style={{ padding: "10px 14px" }}>电话</th>
+                <th style={{ padding: "10px 14px" }}>地区</th>
+                <th style={{ padding: "10px 14px" }}>状态</th>
               </tr>
-            ))}
-            {items.length === 0 && (
-              <tr><td colSpan={5} style={{ padding: 16 }} className="muted">暂无联系人</td></tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {list.map((c) => (
+                <tr key={c.id} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "10px 14px" }}>{c.name || "—"}</td>
+                  <td style={{ padding: "10px 14px" }}>{c.email || "—"}</td>
+                  <td style={{ padding: "10px 14px" }}>{c.phone || "—"}</td>
+                  <td style={{ padding: "10px 14px" }} className="muted">{[c.city, c.country].filter(Boolean).join(" / ") || "—"}</td>
+                  <td style={{ padding: "10px 14px" }}>
+                    <span style={{ fontSize: 12, color: c.status === "active" ? "#16a34a" : "#dc2626" }}>{c.status}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
+
+      {formOpen && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h2 style={{ fontSize: 16, marginBottom: 12 }}>新增客户</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label className="muted" style={{ fontSize: 13 }}>姓名</label>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div>
+              <label className="muted" style={{ fontSize: 13 }}>邮箱 *</label>
+              <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="customer@example.com" />
+            </div>
+            <div>
+              <label className="muted" style={{ fontSize: 13 }}>电话</label>
+              <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </div>
+            <div>
+              <label className="muted" style={{ fontSize: 13 }}>城市</label>
+              <input className="input" value={city} onChange={(e) => setCity(e.target.value)} />
+            </div>
+          </div>
+          {err && <div style={{ color: "red", fontSize: 13, marginTop: 8 }}>{err}</div>}
+          <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "保存中…" : "保存客户"}</button>
+            <button className="btn" onClick={() => setFormOpen(false)}>取消</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

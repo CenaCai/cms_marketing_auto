@@ -405,3 +405,11 @@ model SystemLog {
   @@index([organizationId, type])
   @@index([createdAt])
 }
+
+// ----------------------------- Settings (KV) -------------------------
+// 后台可读写的系统设置（如邮件通道配置），避免修改 .env 后重启。
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
