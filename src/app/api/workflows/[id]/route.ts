@@ -1,0 +1,34 @@
+import { NextRequest } from "next/server";
+import { getSession } from "@/lib/auth";
+import { handle, ok } from "@/lib/response";
+import { workflowRepo } from "@/services/workflow.engine";
+import type { WorkflowDefinition } from "@/services/workflow.engine";
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  return handle(async () => {
+    await getSession(req);
+    const body = await req.json();
+    return ok(
+      await workflowRepo.update(params.id, {
+        name: body.name,
+        description: body.description,
+        definition: body.definition as WorkflowDefinition,
+        enabled: body.enabled,
+      }),
+    );
+  });
+}
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  return handle(async () => {
+    await getSession(req);
+    await workflowRepo.remove(params.id);
+    return ok({ deleted: true });
+  });
+}
