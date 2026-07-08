@@ -8,13 +8,15 @@ export async function POST(req: NextRequest) {
   return handle(async () => {
     const body = await req.json().catch(() => ({}));
     const { email, username, password } = body ?? {};
-    if ((!email && !username) || !password) {
-      throw badRequest("email / username / password 必填");
+    const identifier = (email || username || "").trim();
+    if (!identifier || !password) {
+      throw badRequest("账号 / 密码 必填");
     }
 
-    const user = email
-      ? await prisma.user.findUnique({ where: { email } })
-      : await prisma.user.findUnique({ where: { username: username as string } });
+    // 同时按 email 或 username 匹配，兼容前端把用户名填进“邮箱”框的情况
+    const user = await prisma.user.findFirst({
+      where: { OR: [{ email: identifier }, { username: identifier }] },
+    });
     if (!user || !(await verifyPassword(password, user.passwordHash))) {
       throw unauthorized("账号或密码错误");
     }
@@ -27,6 +29,6 @@ export async function POST(req: NextRequest) {
       organizationId: member.organizationId,
       role: member.role,
     });
-    return ok({ token, user: { id: user.id, name: user.name, email } });
+    return ok({ token, user: { id: user.id, name: user.name, email: user.email } });
   });
 }
