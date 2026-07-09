@@ -28,11 +28,28 @@ export async function deleteTag(orgId: string, id: string) {
 }
 
 export async function addTagToContact(contactId: string, tagId: string) {
-  return prisma.contactTag.upsert({
+  // 已存在则不再触发「标签被添加」工作流，避免自循环
+  const existing = await prisma.contactTag.findFirst({ where: { contactId, tagId } });
+  const res = await prisma.contactTag.upsert({
     where: { contactId_tagId: { contactId, tagId } },
     create: { contactId, tagId },
     update: {},
   });
+  if (!existing) {
+    try {
+      const contact = await prisma.contact.findUnique({
+        where: { id: contactId },
+        select: { organizationId: true },
+      });
+      if (contact?.organizationId) {
+        const { processTagAddedTrigger } = await import("./workflow.engine");
+        await processTagAddedTrigger(contact.organizationId, contactId, tagId);
+      }
+    } catch (e) {
+      console.error("[workflow:tag_added] trigger failed", e);
+    }
+  }
+  return res;
 }
 
 export async function removeTagFromContact(contactId: string, tagId: string) {

@@ -10,17 +10,30 @@ type Channel = string;
 // ----------------------- 工作流定义（JSON） -----------------------
 // 与 PRD 6.1 对齐：Trigger / Condition / Action / Delay / Branch
 // 本 MVP 引擎实现线性动作序列（含 wait 延迟），分支以条件动作占位。
+export type WorkflowActionType =
+  | "send_email"
+  | "send_sms"
+  | "add_tag"
+  | "remove_tag"
+  | "join_segment"
+  | "leave_segment"
+  | "call_webhook"
+  | "wait";
+
+// 动作级条件：执行该动作前先求值，不满足则跳过此动作
+export interface WorkflowCondition {
+  type: "has_tag" | "in_segment" | "event_count" | "purchased";
+  tagId?: string; // has_tag：需拥有该标签
+  segmentId?: string; // in_segment：需在分群内
+  eventType?: string; // event_count：统计的事件类型
+  count?: number; // event_count：次数 >= count
+  windowDays?: number; // event_count：统计窗口（天），不填则不限时间
+}
+
 export interface WorkflowAction {
-  type:
-    | "send_email"
-    | "send_sms"
-    | "add_tag"
-    | "remove_tag"
-    | "join_segment"
-    | "leave_segment"
-    | "call_webhook"
-    | "wait";
+  type: WorkflowActionType;
   config: Record<string, any>;
+  condition?: WorkflowCondition | null;
 }
 
 export interface WorkflowDefinition {
@@ -51,28 +64,88 @@ function ensureRegistered() {
   });
 }
 
-function triggerMatches(def: WorkflowDefinition, ctx: TriggerContext): boolean {
-  const t = def.trigger;
+function eventTriggerMatches(t: WorkflowDefinition["trigger"], ctx: TriggerContext): boolean {
   if (t.type === "event") {
     if (t.eventType && t.eventType !== ctx.eventType) return false;
     if (t.eventName && t.eventName !== ctx.eventName) return false;
     return true;
   }
   if (t.type === "custom_event") return t.eventName === ctx.eventName;
-  // tag_added / segment_joined / webhook 由对应写入口单独触发，这里不处理
   return false;
+}
+
+// 遍历已启用工作流，对匹配谓词的工作流执行动作序列（fire-and-forget 由调用方保证）
+async function runEnabledWorkflows(
+  orgId: string,
+  contactId: string,
+  match: (def: WorkflowDefinition) => boolean,
+) {
+  const workflows = await prisma.workflow.findMany({
+    where: { organizationId: orgId, enabled: true },
+  });
+  for (const wf of workflows) {
+    try {
+      const def = JSON.parse(wf.definition) as WorkflowDefinition;
+      if (!def?.trigger || !match(def)) continue;
+      await runActions(orgId, contactId, def.actions ?? []);
+    } catch (e) {
+      console.error(`[workflow] run failed`, e);
+    }
+  }
 }
 
 // 事件写入后调用：匹配并触发已启用的工作流
 export async function processWorkflowTriggers(orgId: string, ctx: TriggerContext) {
   if (!ctx.contactId) return;
-  const workflows = await prisma.workflow.findMany({
-    where: { organizationId: orgId, enabled: true },
-  });
-  for (const wf of workflows) {
-    const def = JSON.parse(wf.definition) as WorkflowDefinition;
-    if (!def?.trigger || !triggerMatches(def, ctx)) continue;
-    await runActions(orgId, ctx.contactId, def.actions ?? []);
+  await runEnabledWorkflows(orgId, ctx.contactId, (def) =>
+    def.trigger.type === "event" || def.trigger.type === "custom_event"
+      ? eventTriggerMatches(def.trigger, ctx)
+      : false,
+  );
+}
+
+// 标签被添加时触发（由 tag.service 调用，仅真正新加的标签）
+export async function processTagAddedTrigger(orgId: string, contactId: string, tagId: string) {
+  await runEnabledWorkflows(orgId, contactId, (def) =>
+    def.trigger.type === "tag_added" && def.trigger.tagId === tagId,
+  );
+}
+
+// 进入分群时触发（由 segment.service 调用，仅真正新加入的成员）
+export async function processSegmentJoinedTrigger(orgId: string, contactId: string, segmentId: string) {
+  await runEnabledWorkflows(orgId, contactId, (def) =>
+    def.trigger.type === "segment_joined" && def.trigger.segmentId === segmentId,
+  );
+}
+
+// 求值动作级条件；返回 true 表示应执行该动作
+async function evaluateCondition(orgId: string, contactId: string, cond: WorkflowCondition): Promise<boolean> {
+  switch (cond.type) {
+    case "has_tag":
+      if (!cond.tagId) return false;
+      return !!(await prisma.contactTag.findFirst({ where: { contactId, tagId: cond.tagId } }));
+    case "in_segment":
+      if (!cond.segmentId) return false;
+      return !!(await prisma.contactSegment.findFirst({ where: { contactId, segmentId: cond.segmentId } }));
+    case "event_count": {
+      if (!cond.eventType || !cond.count) return false;
+      const since = cond.windowDays ? new Date(Date.now() - cond.windowDays * 86400000) : undefined;
+      const c = await prisma.event.count({
+        where: {
+          organizationId: orgId,
+          contactId,
+          eventType: cond.eventType,
+          ...(since ? { occurredAt: { gte: since } } : {}),
+        },
+      });
+      return c >= cond.count;
+    }
+    case "purchased":
+      return !!(await prisma.event.findFirst({
+        where: { organizationId: orgId, contactId, eventType: "PURCHASE" },
+      }));
+    default:
+      return true;
   }
 }
 
@@ -84,6 +157,10 @@ async function runActions(
   ensureRegistered();
   for (const action of actions) {
     try {
+      // 动作级条件：不满足则跳过该动作
+      if (action.condition && !(await evaluateCondition(orgId, contactId, action.condition))) {
+        continue;
+      }
       switch (action.type) {
         case "add_tag":
           if (action.config.tagId)

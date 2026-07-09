@@ -87,7 +87,7 @@ export default function WorkflowsPage() {
       </div>
 
       <p className="muted" style={{ fontSize: 13, marginTop: -8, marginBottom: 12 }}>
-        触发器（事件/标签/分群/Webhook）→ 动作序列（发送邮件/短信、加标签、进分群、等待、调用 Webhook）。点击「编辑」进入可视化构造器。
+        触发器（事件 / 标签被添加 / 进入分群 / Webhook）→ 动作序列（发送邮件·短信、加/移除标签、进/出分群、等待、调用 Webhook）。每个动作可附加条件（有标签 / 在分群内 / 事件次数≥ / 已购买），不满足则跳过。点击「编辑」进入可视化构造器。
       </p>
 
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>

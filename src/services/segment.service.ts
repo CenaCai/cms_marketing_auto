@@ -63,7 +63,19 @@ export async function deleteSegment(orgId: string, id: string) {
 
 // 静态分群：直接增删成员
 export async function addContactsToSegment(segmentId: string, contactIds: string[]) {
-  return Promise.all(
+  const seg = await prisma.segment.findUnique({
+    where: { id: segmentId },
+    select: { organizationId: true },
+  });
+  // 找出真正新加入的联系人，仅对他们触发「进入分群」工作流（防自循环）
+  const existingMembers = await prisma.contactSegment.findMany({
+    where: { segmentId, contactId: { in: contactIds } },
+    select: { contactId: true },
+  });
+  const existingSet = new Set(existingMembers.map((m) => m.contactId));
+  const newContacts = contactIds.filter((cid) => !existingSet.has(cid));
+
+  const result = await Promise.all(
     contactIds.map((cid) =>
       prisma.contactSegment.upsert({
         where: { contactId_segmentId: { contactId: cid, segmentId } },
@@ -72,6 +84,18 @@ export async function addContactsToSegment(segmentId: string, contactIds: string
       }),
     ),
   );
+
+  if (seg?.organizationId && newContacts.length) {
+    try {
+      const { processSegmentJoinedTrigger } = await import("./workflow.engine");
+      for (const cid of newContacts) {
+        await processSegmentJoinedTrigger(seg.organizationId, cid, segmentId);
+      }
+    } catch (e) {
+      console.error("[workflow:segment_joined] trigger failed", e);
+    }
+  }
+  return result;
 }
 
 export async function removeContactsFromSegment(segmentId: string, contactIds: string[]) {

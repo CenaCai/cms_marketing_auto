@@ -80,6 +80,17 @@ export default function WorkflowBuilderPage() {
   function setActionConfig(i: number, config: any) {
     setDef((d) => ({ ...d, actions: d.actions.map((a, idx) => (idx === i ? { ...a, config } : a)) }));
   }
+  function setActionCondition(i: number, patch: any) {
+    setDef((d) => ({
+      ...d,
+      actions: d.actions.map((a, idx) =>
+        idx === i ? { ...a, condition: { ...(a.condition || {}), ...patch } } : a,
+      ),
+    }));
+  }
+  function clearActionCondition(i: number) {
+    setDef((d) => ({ ...d, actions: d.actions.map((a, idx) => (idx === i ? { ...a, condition: null } : a)) }));
+  }
   function addAction() {
     setDef((d) => ({ ...d, actions: [...d.actions, { type: "add_tag", config: {} }] }));
   }
@@ -207,6 +218,40 @@ export default function WorkflowBuilderPage() {
                 )}
                 {a.type === "wait" && (
                   <input className="input" style={{ maxWidth: 160 }} type="number" value={a.config?.minutes || 60} onChange={(e) => setActionConfig(i, { ...a.config, minutes: Number(e.target.value) })} placeholder="延迟分钟" />
+                )}
+              </div>
+
+              {/* 动作级条件（可选） */}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
+                <span className="muted" style={{ fontSize: 12 }}>仅当满足：</span>
+                <select className="input" style={{ maxWidth: 150 }} value={a.condition?.type || ""} onChange={(e) => (e.target.value ? setActionCondition(i, { type: e.target.value }) : clearActionCondition(i))}>
+                  <option value="">无条件（总是执行）</option>
+                  <option value="has_tag">有标签</option>
+                  <option value="in_segment">在分群内</option>
+                  <option value="event_count">事件次数 ≥</option>
+                  <option value="purchased">已购买</option>
+                </select>
+                {a.condition?.type === "has_tag" && (
+                  <select className="input" style={{ maxWidth: 180 }} value={a.condition.tagId || ""} onChange={(e) => setActionCondition(i, { tagId: e.target.value })}>
+                    <option value="">选择标签</option>
+                    {tags.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                )}
+                {a.condition?.type === "in_segment" && (
+                  <select className="input" style={{ maxWidth: 180 }} value={a.condition.segmentId || ""} onChange={(e) => setActionCondition(i, { segmentId: e.target.value })}>
+                    <option value="">选择分群</option>
+                    {segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                )}
+                {a.condition?.type === "event_count" && (
+                  <>
+                    <input className="input" style={{ maxWidth: 160 }} value={a.condition.eventType || ""} onChange={(e) => setActionCondition(i, { eventType: e.target.value })} placeholder="事件类型" />
+                    <input className="input" style={{ maxWidth: 110 }} type="number" value={a.condition.count || ""} onChange={(e) => setActionCondition(i, { count: Number(e.target.value) })} placeholder="次数 ≥" />
+                    <input className="input" style={{ maxWidth: 130 }} type="number" value={a.condition.windowDays || ""} onChange={(e) => setActionCondition(i, { windowDays: Number(e.target.value) })} placeholder="窗口天(可选)" />
+                  </>
+                )}
+                {a.condition?.type === "purchased" && (
+                  <span className="muted" style={{ fontSize: 12 }}>联系人发生过购买事件即满足</span>
                 )}
               </div>
             </div>
