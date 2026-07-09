@@ -18,6 +18,14 @@ const EVENT_MAP: Record<string, string> = {
   "mautic.email_on_send": "email_sent",
 };
 
+// 原始 eventName → 标准 eventType（写入 Event 中心）
+const NAME_TO_TYPE: Record<string, string> = {
+  email_opened: "OPEN_EMAIL",
+  email_clicked: "CLICK_LINK",
+  email_unsubscribed: "UNSUBSCRIBE",
+  email_sent: "SENT_EMAIL",
+};
+
 function extractEmail(item: any): string | null {
   if (!item) return null;
   const lead = item.lead ?? item.contact ?? {};
@@ -80,7 +88,7 @@ export async function POST(req: NextRequest) {
         create: {
           organizationId: org.id,
           contactId: contact.id,
-          eventType: "CUSTOM",
+          eventType: NAME_TO_TYPE[ev.type] || "CUSTOM",
           eventName: ev.type,
           source: "mautic",
           properties: JSON.stringify(ev.raw),

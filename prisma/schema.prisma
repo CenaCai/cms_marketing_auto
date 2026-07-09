@@ -152,7 +152,7 @@ model Event {
   organizationId String
   contactId      String?
   eventName      String
-  eventType      String    @default("CUSTOM") // REGISTER | LOGIN | BROWSE | PURCHASE | REFUND | CUSTOM
+  eventType      String    @default("CUSTOM") // REGISTER | LOGIN | BROWSE | OPEN_EMAIL | CLICK_LINK | PURCHASE | REFUND | UNSUBSCRIBE | SENT_EMAIL | CUSTOM
   source         String?
   properties     String?   // JSON 字符串
   occurredAt     DateTime

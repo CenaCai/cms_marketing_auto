@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api-client";
+import { eventMeta, resolveEventType } from "@/lib/event-types";
 
 type Tag = { id: string; name: string; color?: string };
 type Segment = { id: string; name: string };
@@ -171,21 +172,28 @@ export default function ContactDetailPage() {
             <div style={{ padding: 24 }} className="muted">暂无行为事件。可通过 API / Webhook 写入事件，或在工作流中触发。</div>
           ) : (
             <ul style={{ margin: 0, padding: 0, listStyle: "none" }}>
-              {c.events.map((e) => (
-                <li key={e.id} style={{ display: "flex", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ minWidth: 90 }}>
-                    <span style={{ fontSize: 11, background: "#eef2ff", color: "#1e3a8a", padding: "2px 8px", borderRadius: 6 }}>{e.eventType}</span>
+              {c.events.map((e) => {
+                const meta = eventMeta(resolveEventType(e.eventType, e.eventName));
+                return (
+                <li key={e.id} style={{ display: "flex", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--border)", borderLeft: `3px solid ${meta.color}` }}>
+                  <div style={{ minWidth: 110 }}>
+                    <span style={{ fontSize: 12, color: meta.color }}>{meta.icon} {meta.label}</span>
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 14 }}>{e.eventName}</div>
                     <div className="muted" style={{ fontSize: 12 }}>
                       {e.source ? `来源 ${e.source} · ` : ""}
                       {new Date(e.occurredAt).toLocaleString()}
-                      {e.properties ? ` · ${e.properties}` : ""}
+                      {e.properties ? (
+                        <span title={e.properties} style={{ fontFamily: "monospace", display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 360 }}>
+                          {e.properties}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </div>
