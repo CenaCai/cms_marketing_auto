@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getSession } from "@/lib/auth";
+import { getSession, requirePermission } from "@/lib/auth";
 import { handle, ok } from "@/lib/response";
 import {
   getSegmentMembers,
@@ -13,6 +13,7 @@ export async function GET(
 ) {
   return handle(async () => {
     const session = await getSession(req);
+    await requirePermission(session, "segments", "view");
     return ok(await getSegmentMembers(session.organizationId, params.id));
   });
 }
@@ -23,7 +24,8 @@ export async function POST(
   { params }: { params: { id: string } },
 ) {
   return handle(async () => {
-    await getSession(req);
+    const session = await getSession(req);
+    await requirePermission(session, "segments", "edit");
     const { contactIds } = await req.json();
     await addContactsToSegment(params.id, contactIds);
     return ok({ ok: true });
@@ -35,7 +37,8 @@ export async function DELETE(
   { params }: { params: { id: string } },
 ) {
   return handle(async () => {
-    await getSession(req);
+    const session = await getSession(req);
+    await requirePermission(session, "segments", "edit");
     const { contactIds } = await req.json();
     await removeContactsFromSegment(params.id, contactIds);
     return ok({ ok: true });

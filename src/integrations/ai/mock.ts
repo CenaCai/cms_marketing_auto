@@ -18,15 +18,40 @@ export class MockAiProvider implements AiProvider {
 
   async generateCopy(req: CopyRequest): Promise<CopyResult> {
     const lang = req.language ?? "zh";
+    const topic = req.activityName ?? req.campaignName ?? "我们的新品";
     const offer = req.offer ? `（优惠：${req.offer}）` : "";
-    const base =
-      lang === "en"
-        ? `Don't miss ${req.activityName ?? req.campaignName}! ${req.cta ?? "Book now"}${offer}`
-        : `别错过 ${req.activityName ?? req.campaignName}！${req.cta ?? "立即报名"}${offer}`;
+    const cta = req.cta ?? (lang === "en" ? "Learn more" : "立即了解");
+    const tone = req.tone ?? (lang === "en" ? "" : "亲切");
+
+    // 标题
+    if (req.channel === "EDM_TITLE") {
+      const title =
+        lang === "en"
+          ? `${topic} — Don't miss this ${offer}`
+          : `${topic}｜限时${offer}等你来`;
+      return {
+        variants: [
+          { content: title, note: "标准版" },
+          { content: lang === "en" ? `Last call: ${topic}` : `最后机会：${topic}`, note: "紧迫感版" },
+        ],
+      };
+    }
+
+    // 邮件正文（HTML）
+    const body = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#1f2937">
+  <h1 style="font-size:22px;margin:0 0 12px">${topic}</h1>
+  <p style="line-height:1.7;color:#374151">${tone ? `您好，${tone}地` : "您好，"}为您带来最新消息：${topic}。${offer ? `本次更有限时优惠 ${offer}，` : ""}期待您的参与。</p>
+  <p style="line-height:1.7;color:#374151">点击下方按钮${cta}，了解更多详情。</p>
+  <p style="margin:24px 0"><a href="{{landing_page_url}}" style="background:#2563eb;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;display:inline-block">${cta}</a></p>
+  <p style="font-size:12px;color:#9ca3af">若无法正常显示，请通过「邮箱客户端」查看。退订请点击邮件底部链接。</p>
+</div>`;
     return {
       variants: [
-        { content: base, note: "默认版本" },
-        { content: `${base} [A/B 变体 B]`, note: "强调紧迫感" },
+        { content: body, note: "标准版" },
+        {
+          content: body.replace("期待您的参与。", "现在就行动，名额有限！").replace("为您带来", "特别为您带来"),
+          note: "紧迫感版",
+        },
       ],
     };
   }

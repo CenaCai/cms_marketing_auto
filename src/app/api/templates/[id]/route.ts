@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getSession } from "@/lib/auth";
+import { getSession, requirePermission } from "@/lib/auth";
 import { handle, ok } from "@/lib/response";
 import { updateTemplate } from "@/services/template.service";
 
@@ -9,6 +9,7 @@ export async function PATCH(
 ) {
   return handle(async () => {
     const session = await getSession(req);
+    await requirePermission(session, "templates", "edit");
     const body = await req.json();
     return ok(await updateTemplate(session.organizationId, params.id, body));
   });

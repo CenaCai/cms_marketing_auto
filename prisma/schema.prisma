@@ -36,6 +36,7 @@ model User {
 
   memberships  OrganizationMember[]
   apiKeys      ApiKey[]
+  userPermissions UserPermission[]
 }
 
 model Organization {
@@ -61,6 +62,7 @@ model Organization {
   webhooks         Webhook[]
   importJobs       ImportJob[]
   systemLogs       SystemLog[]
+  userPermissions  UserPermission[]
 }
 
 model OrganizationMember {
@@ -205,6 +207,7 @@ model Segment {
   contactSegments ContactSegment[]
   campaigns    Campaign[]
 
+  @@unique([organizationId, name]) // 分组名称不能重复
   @@index([organizationId])
 }
 
@@ -412,4 +415,24 @@ model Setting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+// ----------------------------- Permissions ---------------------------
+// 细粒度权限矩阵：每个组织成员对每个「模块」的每种「操作」是否允许。
+// 仅在 requirePermission 中校验；SUPER_ADMIN 始终放行。
+// module: contacts|tags|segments|templates|campaigns|settings|users|reports|workflows|events|ai
+// action: view|create|edit|delete
+model UserPermission {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  module         String
+  action         String
+  allowed        Boolean  @default(true)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId, module, action])
+  @@index([organizationId, userId])
 }

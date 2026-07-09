@@ -142,6 +142,7 @@ export interface BatchSendInput {
   channel: Channel;
   scheduleAt?: string; // ISO，定时发送
   contactIds?: string[]; // 直接指定（不走分群）
+  tagIds?: string[]; // 按标签选人（多个标签取并集）
 }
 
 // 创建批量发送：解析目标联系人 -> 过滤 -> 创建任务 -> 入队
@@ -151,6 +152,16 @@ export async function createBatchSend(orgId: string, input: BatchSendInput) {
   let targetIds: string[];
   if (input.contactIds?.length) {
     targetIds = input.contactIds;
+  } else if (input.tagIds?.length) {
+    // 按标签选人：拥有任一所选标签的联系人（并集）
+    const contacts = await prisma.contact.findMany({
+      where: {
+        organizationId: orgId,
+        contactTags: { some: { tagId: { in: input.tagIds } } },
+      },
+      select: { id: true },
+    });
+    targetIds = contacts.map((c) => c.id);
   } else if (input.segmentId) {
     const seg = await prisma.segment.findFirst({
       where: { organizationId: orgId, id: input.segmentId },
@@ -168,7 +179,7 @@ export async function createBatchSend(orgId: string, input: BatchSendInput) {
       targetIds = members.map((m) => m.contactId);
     }
   } else {
-    throw new Error("必须指定 segmentId 或 contactIds");
+    throw new Error("必须指定 contactIds / tagIds / segmentId 之一");
   }
 
   const task = await prisma.sendTask.create({

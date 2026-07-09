@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getSession } from "@/lib/auth";
+import { getSession, requirePermission } from "@/lib/auth";
 import { handle, ok } from "@/lib/response";
 import {
   listSegments,
@@ -9,6 +9,7 @@ import {
 export async function GET(req: NextRequest) {
   return handle(async () => {
     const session = await getSession(req);
+    await requirePermission(session, "segments", "view");
     return ok(await listSegments(session.organizationId));
   });
 }
@@ -16,6 +17,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   return handle(async () => {
     const session = await getSession(req);
+    await requirePermission(session, "segments", "create");
     const body = await req.json();
     return ok(await createSegment(session.organizationId, body), 201);
   });

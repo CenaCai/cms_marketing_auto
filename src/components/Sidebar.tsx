@@ -14,6 +14,7 @@ const NAV: { href: string; label: string }[] = [
   { href: "/events", label: "Events" },
   { href: "/reports", label: "Reports" },
   { href: "/ai", label: "AI Assistant" },
+  { href: "/users", label: "账号管理" },
   { href: "/settings", label: "Settings" },
 ];
 

@@ -92,6 +92,44 @@ export function requireRole(session: Session, min: MemberRole): void {
   }
 }
 
+// --------------------- 细粒度权限（模块 × 增删改查） ---------------------
+// SUPER_ADMIN 始终放行；其余按 UserPermission 表中该用户在该模块该操作的记录判断。
+export type CrudAction = "view" | "create" | "edit" | "delete";
+
+export async function requirePermission(
+  session: Session,
+  module: string,
+  action: CrudAction,
+): Promise<void> {
+  if (session.role === "SUPER_ADMIN") return; // 全权
+  const perm = await prisma.userPermission.findFirst({
+    where: {
+      organizationId: session.organizationId,
+      userId: session.userId,
+      module,
+      action,
+      allowed: true,
+    },
+  });
+  if (!perm) throw forbidden(`无「${module}:${action}」权限，请联系管理员开通`);
+}
+
+// 读取某用户的完整权限矩阵（用于前端渲染勾选框 / 页面可见性判断）。
+export async function getPermissions(
+  orgId: string,
+  userId: string,
+): Promise<Record<string, Record<string, boolean>>> {
+  const rows = await prisma.userPermission.findMany({
+    where: { organizationId: orgId, userId, allowed: true },
+  });
+  const map: Record<string, Record<string, boolean>> = {};
+  for (const r of rows) {
+    map[r.module] = map[r.module] ?? {};
+    map[r.module][r.action] = true;
+  }
+  return map;
+}
+
 // 从 URL 解析组织隔离参数（多数接口强制 organizationId = session.organizationId）
 export function orgScoped(session: Session): { organizationId: string } {
   return { organizationId: session.organizationId };

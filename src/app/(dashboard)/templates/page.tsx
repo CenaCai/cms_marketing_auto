@@ -27,6 +27,14 @@ export default function TemplatesPage() {
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // AI 助手
+  const [aiTopic, setAiTopic] = useState("");
+  const [aiTone, setAiTone] = useState("");
+  const [aiOffer, setAiOffer] = useState("");
+  const [aiCta, setAiCta] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiErr, setAiErr] = useState("");
+
   async function load() {
     setLoading(true);
     try {
@@ -48,7 +56,12 @@ export default function TemplatesPage() {
     setBody("");
     setImageUrl("");
     setVariables("");
+    setAiTopic("");
+    setAiTone("");
+    setAiOffer("");
+    setAiCta("");
     setErr("");
+    setAiErr("");
     setFormOpen(true);
   }
 
@@ -74,6 +87,39 @@ export default function TemplatesPage() {
     const tag = `\n<img src="${url}" alt="" style="max-width:100%;border-radius:8px;margin:12px 0" />\n`;
     setBody((b) => b + tag);
     setImageUrl("");
+  }
+
+  async function generateAI() {
+    setAiErr("");
+    if (!aiTopic.trim()) return setAiErr("请填写推广主题");
+    setAiLoading(true);
+    try {
+      const base = {
+        activityName: aiTopic.trim(),
+        tone: aiTone.trim() || undefined,
+        offer: aiOffer.trim() || undefined,
+        cta: aiCta.trim() || undefined,
+        language: "zh",
+      };
+      const [titleRes, bodyRes] = await Promise.all([
+        api<{ variants: { content: string }[] }>("/api/ai/copy", {
+          method: "POST",
+          body: JSON.stringify({ ...base, channel: "EDM_TITLE" }),
+        }),
+        api<{ variants: { content: string }[] }>("/api/ai/copy", {
+          method: "POST",
+          body: JSON.stringify({ ...base, channel: "EDM_BODY" }),
+        }),
+      ]);
+      const title = titleRes?.variants?.[0]?.content;
+      const html = bodyRes?.variants?.[0]?.content;
+      if (title) setSubject(title);
+      if (html) setBody(html);
+    } catch (e: any) {
+      setAiErr(e.message || "生成失败");
+    } finally {
+      setAiLoading(false);
+    }
   }
 
   async function save() {
@@ -159,6 +205,37 @@ export default function TemplatesPage() {
       {formOpen && (
         <div className="card">
           <h2 style={{ fontSize: 16, marginBottom: 12 }}>{editing ? "编辑模板" : "新建模板"}</h2>
+
+          {/* AI 助手 */}
+          <div style={{ border: "1px solid #c7d2fe", background: "#eef2ff", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>🤖 AI 助手：输入推广主题，自动生成标题 + 正文</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div>
+                <label className="muted" style={{ fontSize: 13 }}>推广主题 *</label>
+                <input className="input" value={aiTopic} onChange={(e) => setAiTopic(e.target.value)} placeholder="如：618 年中大促" />
+              </div>
+              <div>
+                <label className="muted" style={{ fontSize: 13 }}>语气</label>
+                <input className="input" value={aiTone} onChange={(e) => setAiTone(e.target.value)} placeholder="如：亲切 / 专业 / 紧迫" />
+              </div>
+              <div>
+                <label className="muted" style={{ fontSize: 13 }}>优惠信息</label>
+                <input className="input" value={aiOffer} onChange={(e) => setAiOffer(e.target.value)} placeholder="如：全场 5 折" />
+              </div>
+              <div>
+                <label className="muted" style={{ fontSize: 13 }}>行动号召 (CTA)</label>
+                <input className="input" value={aiCta} onChange={(e) => setAiCta(e.target.value)} placeholder="如：立即抢购" />
+              </div>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <button className="btn btn-primary" type="button" onClick={generateAI} disabled={aiLoading}>
+                {aiLoading ? "生成中…" : "✨ 一键生成标题与正文"}
+              </button>
+              <span className="muted" style={{ fontSize: 12, marginLeft: 10 }}>生成结果将填入下方主题与正文（未配 API Key 时使用本地智能模板）。</span>
+            </div>
+            {aiErr && <div style={{ color: "#dc2626", fontSize: 13, marginTop: 6 }}>{aiErr}</div>}
+          </div>
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label className="muted" style={{ fontSize: 13 }}>模板名称</label>

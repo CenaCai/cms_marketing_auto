@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getSession, requireRole } from "@/lib/auth";
+import { getSession, requirePermission } from "@/lib/auth";
 import { handle, ok } from "@/lib/response";
 import { createBatchSend } from "@/services/send.service";
 type Channel = string;
@@ -11,12 +11,13 @@ export async function POST(
 ) {
   return handle(async () => {
     const session = await getSession(req);
-    requireRole(session, "MARKETING_OPERATOR");
+    await requirePermission(session, "campaigns", "edit");
     const body = await req.json().catch(() => ({}));
     const result = await createBatchSend(session.organizationId, {
       campaignId: params.id,
       segmentId: body.segmentId,
       contactIds: body.contactIds,
+      tagIds: body.tagIds,
       channel: (body.channel ?? "EMAIL") as Channel,
       scheduleAt: body.scheduleAt,
     });
