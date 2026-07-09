@@ -15,8 +15,17 @@ export class MockMauticClient implements MauticClient {
   async getContacts(): Promise<MauticContact[]> {
     return [];
   }
+  async findContactByEmail(): Promise<MauticContact | null> {
+    return null;
+  }
   async createContact(): Promise<MauticContact> {
     return { id: "0" };
+  }
+  async editContact(): Promise<void> {
+    /* noop */
+  }
+  async createSegment(): Promise<MauticSegment> {
+    return { id: "0", name: "" };
   }
   async addContactToSegment(): Promise<void> {
     /* noop */

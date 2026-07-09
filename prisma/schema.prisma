@@ -239,6 +239,7 @@ model Template {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   campaigns    Campaign[]
+  sendTasks    SendTask[]
 
   @@index([organizationId, type])
 }
@@ -249,8 +250,20 @@ model Campaign {
   name           String
   objective      String?
   segmentId      String?
-  channel        String   // EMAIL | SMS | WHATSAPP | ...
-  templateId     String?
+  channel        String   // EMAIL | SMS | WHATSAPP | ... （主渠道，兼容旧逻辑）
+  templateId     String?  // 主模板，兼容旧逻辑
+  // ---- 扩展字段（多渠道 / 圈人 / 落地页）----
+  activity       String?  // 活动 / IP
+  country        String?  // 目标国家
+  language       String?  // 目标语言
+  channels       String?  // JSON: ["EMAIL","SMS"]
+  edmTemplateId  String?  // EDM 模板 id
+  smsTemplateId  String?  // SMS 模板 id
+  landingPageId  String?  // 落地页（LANDING 模板）id
+  landingUrl     String?  // 跳转链接（无落地页时回退）
+  audienceType   String?  // segment | tags | sql
+  tagIds         String?  // JSON: ["tagId1","tagId2"]
+  sqlQuery       String?  // SQL 圈人语句
   status         String   @default("draft") // draft | scheduled | sending | sent | paused | failed | completed
   scheduledAt    DateTime?
   sentAt         DateTime?
@@ -270,6 +283,7 @@ model SendTask {
   organizationId String
   campaignId     String?
   channel        String
+  templateId     String?  // 该批次使用的模板（多渠道时按渠道区分）
   status         String   @default("queued") // queued | sending | success | failed | skipped
   totalCount     Int      @default(0)
   successCount   Int      @default(0)
@@ -279,6 +293,7 @@ model SendTask {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  template     Template?    @relation(fields: [templateId], references: [id], onDelete: SetNull)
   logs         SendLog[]
 
   @@index([organizationId, campaignId])

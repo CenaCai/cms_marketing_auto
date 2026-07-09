@@ -8,7 +8,7 @@
 //   Segment (leadlist)  → Segment(type=static)  (name 对齐)
 // 我们的标签 / 分群 / 联系人数据模型即按上述对齐，便于双向同步。
 // 沙箱内不运行 Mautic（PHP），这里提供标准 REST 客户端与 mock，
-// 待你提供 Mautic Base URL + API Token 即可真实同步。
+// 待你提供 Mautic Base URL + API 公钥/私钥即可真实同步。
 // =====================================================================
 
 export interface MauticTag {
@@ -33,10 +33,15 @@ export interface MauticContact {
 
 export interface MauticClient {
   readonly name: string;
+  // 拉取（Mautic → 本系统）
   getTags(): Promise<MauticTag[]>;
   createTag(name: string, color?: string): Promise<MauticTag>;
   getSegments(): Promise<MauticSegment[]>;
   getContacts(limit?: number): Promise<MauticContact[]>;
-  createContact(c: { email: string; firstname?: string; lastname?: string }): Promise<MauticContact>;
+  // 推送（本系统 → Mautic 执行层）
+  findContactByEmail(email: string): Promise<MauticContact | null>;
+  createContact(c: { email: string; firstname?: string; lastname?: string; tags?: string[] }): Promise<MauticContact>;
+  editContact(id: string, fields: Record<string, unknown>): Promise<void>;
+  createSegment(name: string): Promise<MauticSegment>;
   addContactToSegment(contactId: string, segmentId: string): Promise<void>;
 }

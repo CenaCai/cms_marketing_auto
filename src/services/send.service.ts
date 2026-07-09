@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/db";
+import { checkSql, bindOrg } from "@/lib/sql-guard";
+import { badRequest } from "@/lib/errors";
 import { getQueue } from "@/integrations/queue";
 import { getEmailProvider } from "@/integrations/email";
 import { getSmsProvider } from "@/integrations/sms";
@@ -34,11 +36,11 @@ async function processSingleSend(job: SingleSendJob) {
   const contact = await prisma.contact.findUnique({ where: { id: contactId } });
   const task = await prisma.sendTask.findUnique({
     where: { id: taskId },
-    include: { campaign: { include: { template: true } } },
+    include: { campaign: { include: { template: true } }, template: true },
   });
   if (!contact || !task) return;
 
-  const template = task.campaign?.template;
+  const template = task.template ?? task.campaign?.template;
   const to = channel === "EMAIL" ? contact.email : contact.phone;
 
   // ---- 过滤规则 ----
@@ -143,6 +145,7 @@ export interface BatchSendInput {
   scheduleAt?: string; // ISO，定时发送
   contactIds?: string[]; // 直接指定（不走分群）
   tagIds?: string[]; // 按标签选人（多个标签取并集）
+  sqlQuery?: string; // SQL 圈人（返回含 id 列的联系人）
 }
 
 // 创建批量发送：解析目标联系人 -> 过滤 -> 创建任务 -> 入队
@@ -178,8 +181,13 @@ export async function createBatchSend(orgId: string, input: BatchSendInput) {
       });
       targetIds = members.map((m) => m.contactId);
     }
+  } else if (input.sqlQuery) {
+    const check = checkSql(input.sqlQuery);
+    if (!check.ok) throw badRequest(check.error!);
+    const rows = (await prisma.$queryRawUnsafe(bindOrg(input.sqlQuery, orgId))) as Record<string, any>[];
+    targetIds = rows.map((r) => r.id).filter(Boolean).map(String);
   } else {
-    throw new Error("必须指定 contactIds / tagIds / segmentId 之一");
+    throw new Error("必须指定 contactIds / tagIds / segmentId / sqlQuery 之一");
   }
 
   const task = await prisma.sendTask.create({
@@ -187,6 +195,7 @@ export async function createBatchSend(orgId: string, input: BatchSendInput) {
       organizationId: orgId,
       campaignId: input.campaignId,
       channel: input.channel,
+      templateId: input.templateId ?? null,
       status: "queued",
       totalCount: targetIds.length,
     },
@@ -220,6 +229,7 @@ export async function getSendTask(orgId: string, taskId: string) {
     include: {
       logs: { orderBy: { sentAt: "desc" }, take: 50 },
       campaign: true,
+      template: true,
     },
   });
 }
