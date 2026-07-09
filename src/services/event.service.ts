@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 type EventType = string;
 import { processWorkflowTriggers } from "./workflow.engine";
+import { evaluateOnEvent } from "./auto-tag.service";
 
 export interface IngestEventInput {
   contactId?: string;
@@ -50,6 +51,18 @@ export async function ingestEvent(orgId: string, input: IngestEventInput) {
     });
   } catch (e) {
     console.error("[event:workflow] trigger failed", e);
+  }
+
+  // 触发自动打标签规则引擎（fire-and-forget）
+  try {
+    await evaluateOnEvent(orgId, {
+      contactId: input.contactId,
+      eventName: input.eventName,
+      eventType: event.eventType,
+      properties: input.properties ?? {},
+    });
+  } catch (e) {
+    console.error("[event:auto-tag] failed", e);
   }
 
   return event;

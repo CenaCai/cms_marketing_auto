@@ -63,6 +63,7 @@ model Organization {
   importJobs       ImportJob[]
   systemLogs       SystemLog[]
   userPermissions  UserPermission[]
+  autoTagRules     AutoTagRule[]
 }
 
 model OrganizationMember {
@@ -165,6 +166,31 @@ model Event {
   @@unique([dedupKey])
   @@index([organizationId, contactId])
   @@index([organizationId, eventType])
+}
+
+// ----------------------------- 自动打标签规则 (AutoTagRule) -----------
+// 规则引擎（非 AI）：事件触发（计数/即时）+ 不活跃定时扫描，命中即给联系人打标。
+
+model AutoTagRule {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  enabled        Boolean  @default(true)
+  trigger        String   // EVENT | INACTIVITY
+  eventType      String?  // EVENT 触发匹配的事件类型，如 BROWSE / CLICK_LINK / PURCHASE
+  matchMode      String   @default("always") // always | count
+  threshold      Int      @default(1)        // count 模式阈值（如浏览 2 次）
+  windowDays     Int?     // 统计窗口（天），null=不限
+  propMatch      String?  // JSON: {"field":"page","contains":"f1"} 可选属性过滤
+  tagTemplate    String   // 标签名模板，支持 {var} 取自 properties，如 purchased_{product}
+  inactiveDays   Int?     // INACTIVITY 触发：多少天未活跃
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, enabled])
 }
 
 // ----------------------------- Tags / Segments -----------------------

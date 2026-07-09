@@ -28,6 +28,7 @@ const GROUPS: { title: string; items: { href: string; label: string }[] }[] = [
     title: "自动化",
     items: [
       { href: "/events", label: "事件中心" },
+      { href: "/auto-tags", label: "自动打标规则" },
       { href: "/workflows", label: "工作流" },
     ],
   },
