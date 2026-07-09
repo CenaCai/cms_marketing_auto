@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api-client";
 
 type Contact = {
@@ -170,7 +171,9 @@ export default function ContactsPage() {
             <tbody>
               {list.map((c) => (
                 <tr key={c.id} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ padding: "10px 14px" }}>{c.name || "—"}</td>
+                  <td style={{ padding: "10px 14px" }}>
+                    <Link href={`/contacts/${c.id}`} style={{ color: "var(--brand)", textDecoration: "none" }}>{c.name || "—"}</Link>
+                  </td>
                   <td style={{ padding: "10px 14px" }}>{c.email || "—"}</td>
                   <td style={{ padding: "10px 14px" }}>{c.phone || "—"}</td>
                   <td style={{ padding: "10px 14px" }} className="muted">{[c.city, c.country].filter(Boolean).join(" / ") || "—"}</td>

@@ -192,6 +192,8 @@ async function sendAdHoc(
 
 // 工作流 CRUD（供 API 调用）
 export const workflowRepo = {
+  get: (orgId: string, id: string) =>
+    prisma.workflow.findFirst({ where: { organizationId: orgId, id } }),
   list: (orgId: string) =>
     prisma.workflow.findMany({ where: { organizationId: orgId }, orderBy: { createdAt: "desc" } }),
   create: (orgId: string, data: { name: string; description?: string; definition: WorkflowDefinition; enabled?: boolean }) =>

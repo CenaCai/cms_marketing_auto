@@ -48,12 +48,13 @@ const SECTIONS: Section[] = [
   },
   {
     id: "mautic",
-    title: "Mautic 集成（标签体系对齐）",
-    desc: "对接 Mautic 实例，同步标签 / 分群 / 联系人。沙箱内不运行 Mautic，填写后可在「账号/集成」中触发同步。",
+    title: "Mautic 集成（执行层）",
+    desc: "对接 Mautic 实例（采用 Basic Auth：API 公钥为 user、私钥为 secret）。配置后在「集成 (Mautic)」页触发推送/拉取，并配置行为回流 Webhook。沙箱内不运行 Mautic，未填写则保持 mock。",
     fields: [
       { key: "mautic.enabled", label: "启用 Mautic 同步", type: "checkbox" },
       { key: "mautic.baseUrl", label: "Mautic Base URL", type: "text", placeholder: "https://your-mautic.example.com" },
-      { key: "mautic.token", label: "API Token", type: "password" },
+      { key: "mautic.user", label: "API 公钥 / 用户名", type: "text", placeholder: "Mautic API Public Key" },
+      { key: "mautic.secret", label: "API 私钥 / 密码", type: "password" },
     ],
   },
 ];

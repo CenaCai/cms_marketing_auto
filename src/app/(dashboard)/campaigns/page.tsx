@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api-client";
 
 type Tpl = { id: string; name: string; subject?: string };
@@ -31,11 +32,7 @@ export default function CampaignsPage() {
   const [tags, setTags] = useState<Tag[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [formOpen, setFormOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [templateId, setTemplateId] = useState("");
   const [err, setErr] = useState("");
-  const [saving, setSaving] = useState(false);
 
   // 发送弹窗
   const [sendOpen, setSendOpen] = useState(false);
@@ -68,31 +65,6 @@ export default function CampaignsPage() {
   useEffect(() => {
     loadAll();
   }, []);
-
-  function openNew() {
-    setName("");
-    setTemplateId(templates[0]?.id ?? "");
-    setErr("");
-    setFormOpen(true);
-  }
-
-  async function createCampaign() {
-    setErr("");
-    if (!name.trim()) return setErr("请填写活动名称");
-    setSaving(true);
-    try {
-      await api("/api/campaigns", {
-        method: "POST",
-        body: JSON.stringify({ name: name.trim(), channel: "EMAIL", templateId: templateId || undefined }),
-      });
-      setFormOpen(false);
-      await loadAll();
-    } catch (e: any) {
-      setErr(e.message);
-    } finally {
-      setSaving(false);
-    }
-  }
 
   function openSend(c: Campaign) {
     setSendCampaign(c);
@@ -154,7 +126,7 @@ export default function CampaignsPage() {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <h1 style={{ fontSize: 22 }}>营销活动（发送邮件）</h1>
-        <button className="btn btn-primary" onClick={openNew}>＋ 新建活动</button>
+        <Link href="/campaigns/new" className="btn btn-primary">＋ 向导新建</Link>
       </div>
 
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
@@ -174,9 +146,9 @@ export default function CampaignsPage() {
               </tr>
             </thead>
             <tbody>
-              {campaigns.map((c) => (
-                <tr key={c.id} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ padding: "10px 14px" }}>{c.name}</td>
+                {campaigns.map((c) => (
+                  <tr key={c.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "10px 14px" }}><Link href={`/campaigns/${c.id}`} style={{ color: "var(--brand)", textDecoration: "none" }}>{c.name}</Link></td>
                   <td style={{ padding: "10px 14px" }}>{c.channel}</td>
                   <td style={{ padding: "10px 14px" }} className="muted">{c.template?.name || "未绑定"}</td>
                   <td style={{ padding: "10px 14px" }}>
@@ -191,33 +163,6 @@ export default function CampaignsPage() {
           </table>
         )}
       </div>
-
-      {/* 新建活动 */}
-      {formOpen && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>新建活动</h2>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label className="muted" style={{ fontSize: 13 }}>活动名称</label>
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="如：618 大促 EDM" />
-            </div>
-            <div>
-              <label className="muted" style={{ fontSize: 13 }}>绑定模板</label>
-              <select className="input" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
-                <option value="">（不绑定，仅建活动）</option>
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          {err && <div style={{ color: "red", fontSize: 13, marginTop: 8 }}>{err}</div>}
-          <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
-            <button className="btn btn-primary" onClick={createCampaign} disabled={saving}>{saving ? "创建中…" : "创建活动"}</button>
-            <button className="btn" onClick={() => setFormOpen(false)}>取消</button>
-          </div>
-        </div>
-      )}
 
       {/* 发送弹窗 */}
       {sendOpen && sendCampaign && (

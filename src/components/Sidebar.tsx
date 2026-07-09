@@ -9,6 +9,7 @@ const GROUPS: { title: string; items: { href: string; label: string }[] }[] = [
     title: "数据资产",
     items: [
       { href: "/contacts", label: "联系人" },
+      { href: "/contacts/import", label: "导入联系人" },
       { href: "/tags", label: "标签" },
       { href: "/segments", label: "分群" },
       { href: "/query", label: "SQL 精准圈人" },
@@ -17,8 +18,9 @@ const GROUPS: { title: string; items: { href: string; label: string }[] }[] = [
   {
     title: "营销",
     items: [
-      { href: "/templates", label: "邮件模板" },
+      { href: "/templates", label: "模板 (EDM/SMS)" },
       { href: "/campaigns", label: "活动 Campaign" },
+      { href: "/landing-pages", label: "落地页 / H5" },
       { href: "/ai", label: "AI 助手" },
     ],
   },
@@ -33,13 +35,14 @@ const GROUPS: { title: string; items: { href: string; label: string }[] }[] = [
     title: "分析",
     items: [{ href: "/reports", label: "报表" }],
   },
-  {
-    title: "系统",
-    items: [
-      { href: "/users", label: "账号与权限" },
-      { href: "/settings", label: "设置" },
-    ],
-  },
+    {
+      title: "系统",
+      items: [
+        { href: "/users", label: "账号与权限" },
+        { href: "/integrations", label: "集成 (Mautic)" },
+        { href: "/settings", label: "设置" },
+      ],
+    },
 ];
 
 export default function Sidebar() {
