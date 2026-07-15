@@ -31,6 +31,12 @@ export interface MauticContact {
   tags?: string[];
 }
 
+export interface MauticEmail {
+  id: string;
+  name: string;
+  subject?: string;
+}
+
 export interface MauticClient {
   readonly name: string;
   // 拉取（Mautic → 本系统）
@@ -44,4 +50,10 @@ export interface MauticClient {
   editContact(id: string, fields: Record<string, unknown>): Promise<void>;
   createSegment(name: string): Promise<MauticSegment>;
   addContactToSegment(contactId: string, segmentId: string): Promise<void>;
+  // 邮件（EDM 资源 + 真实发送 + 追踪，交由 Mautic 引擎）
+  createEmail(name: string, subject: string, html: string): Promise<MauticEmail>;
+  sendEmailToContact(emailId: string, contactId: string): Promise<void>;
+  getEmailStats(emailId: string): Promise<any>;
+  // 可视化 Campaign 旅程（在 Mautic UI 搭建，本系统触发/监控）
+  addContactToCampaign(campaignId: string, contactId: string): Promise<void>;
 }

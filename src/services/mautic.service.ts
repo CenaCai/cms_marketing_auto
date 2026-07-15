@@ -22,6 +22,11 @@ export interface PushResult {
   skipped: string[];
 }
 
+// 基础邮箱格式校验：脏数据（如种子里的 "1"）不应中断整批推送。
+function isValidEmail(e?: string | null): boolean {
+  return typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
 // Mautic → 本系统：拉取标签 / 分群（lead lists 映射为静态 Segment）
 export async function pullTagsAndSegmentsFromMautic(orgId: string): Promise<PullResult> {
   const client = getMauticClient();
@@ -84,22 +89,30 @@ export async function pushToMautic(orgId: string): Promise<PushResult> {
     result.tagsEnsured++;
   }
 
-  // 2) 推送联系人（按 email upsert，并带标签）
+  // 2) 推送联系人（按 email upsert，并带标签）。逐条容错：非法邮箱跳过，单条失败计入 skipped。
   const contacts = await prisma.contact.findMany({
     where: { organizationId: orgId, email: { not: null } },
     include: { contactTags: { include: { tag: true } } },
   });
   for (const c of contacts) {
+    if (!isValidEmail(c.email)) {
+      result.skipped.push(`联系人 ${c.id} 邮箱非法(${c.email})，跳过`);
+      continue;
+    }
     const [first, ...rest] = (c.name ?? "").split(" ");
     const last = rest.join(" ");
     const tagNames = c.contactTags.map((ct) => ct.tag.name);
-    const existing = await client.findContactByEmail(c.email!);
-    if (existing) {
-      await client.editContact(existing.id, { firstname: first, lastname: last, tags: tagNames });
-    } else {
-      await client.createContact({ email: c.email!, firstname: first, lastname: last, tags: tagNames });
+    try {
+      const existing = await client.findContactByEmail(c.email!);
+      if (existing) {
+        await client.editContact(existing.id, { firstname: first, lastname: last, tags: tagNames });
+      } else {
+        await client.createContact({ email: c.email!, firstname: first, lastname: last, tags: tagNames });
+      }
+      result.contactsPushed++;
+    } catch (e) {
+      result.skipped.push(`联系人 ${c.email} 推送失败: ${(e as Error).message}`);
     }
-    result.contactsPushed++;
   }
 
   // 3) 推送静态分群 → Mautic lead list，并加入成员
@@ -111,13 +124,17 @@ export async function pushToMautic(orgId: string): Promise<PushResult> {
       include: { contact: true },
     });
     for (const m of members) {
-      if (!m.contact.email) continue;
-      let cid = (await client.findContactByEmail(m.contact.email))?.id;
-      if (!cid) {
-        cid = (await client.createContact({ email: m.contact.email })).id;
+      if (!isValidEmail(m.contact.email)) continue;
+      try {
+        let cid = (await client.findContactByEmail(m.contact.email))?.id;
+        if (!cid) {
+          cid = (await client.createContact({ email: m.contact.email })).id;
+        }
+        await client.addContactToSegment(cid, mSeg.id);
+        result.segmentMembersAdded++;
+      } catch (e) {
+        result.skipped.push(`分群成员 ${m.contact.email} 推送失败: ${(e as Error).message}`);
       }
-      await client.addContactToSegment(cid, mSeg.id);
-      result.segmentMembersAdded++;
     }
     result.segmentsCreated++;
   }
