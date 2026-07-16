@@ -8,8 +8,7 @@ const GROUPS: { title: string; items: { href: string; label: string }[] }[] = [
   {
     title: "数据资产",
     items: [
-      { href: "/contacts", label: "联系人" },
-      { href: "/contacts/import", label: "导入联系人" },
+      { href: "/contacts", label: "联系人 / 导入 / 清洗" },
       { href: "/tags", label: "标签" },
       { href: "/segments", label: "分群" },
       { href: "/query", label: "SQL 精准圈人" },
@@ -20,8 +19,6 @@ const GROUPS: { title: string; items: { href: string; label: string }[] }[] = [
     items: [
       { href: "/templates", label: "模板 (EDM/SMS)" },
       { href: "/campaigns", label: "活动 Campaign" },
-      { href: "/landing-pages", label: "落地页 / H5" },
-      { href: "/ai", label: "AI 助手" },
     ],
   },
   {
@@ -29,21 +26,28 @@ const GROUPS: { title: string; items: { href: string; label: string }[] }[] = [
     items: [
       { href: "/events", label: "事件中心" },
       { href: "/auto-tags", label: "自动打标规则" },
-      { href: "/workflows", label: "工作流" },
     ],
   },
   {
     title: "分析",
     items: [{ href: "/reports", label: "报表" }],
   },
-    {
-      title: "系统",
-      items: [
-        { href: "/users", label: "账号与权限" },
-        { href: "/integrations", label: "集成 (Mautic)" },
-        { href: "/settings", label: "设置" },
-      ],
-    },
+  {
+    title: "系统",
+    items: [
+      { href: "/users", label: "账号与权限" },
+      { href: "/settings", label: "设置" },
+    ],
+  },
+  {
+    title: "其他",
+    items: [
+      { href: "/landing-pages", label: "落地页 / H5" },
+      { href: "/ai", label: "AI 助手" },
+      { href: "/workflows", label: "工作流" },
+      { href: "/integrations", label: "集成 (Mautic)" },
+    ],
+  },
 ];
 
 export default function Sidebar() {
@@ -62,7 +66,7 @@ export default function Sidebar() {
       }}
     >
       <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: "var(--brand)" }}>
-        🚀 CMS Marketing
+        CMS Marketing
       </div>
       <nav style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <Link
@@ -76,7 +80,7 @@ export default function Sidebar() {
             background: pathname === "/" ? "var(--brand)" : "transparent",
           }}
         >
-          Dashboard
+          运营总览
         </Link>
         {GROUPS.map((g) => (
           <div key={g.title}>
