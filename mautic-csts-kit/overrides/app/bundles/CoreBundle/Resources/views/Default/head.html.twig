@@ -1,0 +1,117 @@
+<head>
+    <meta charset="UTF-8" />
+    <title>
+        {% if headerTitle is defined and headerTitle is not empty %}
+            {{ headerTitle|replace({'<': ' <'})|striptags|purify }} |
+        {% endif %}
+        {{ pageTitle|default('CSTS') }}
+    </title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ getOverridableUrl('images/favicon-32.png') }}" />
+    <link rel="icon" type="image/png" sizes="64x64" href="{{ getOverridableUrl('images/favicon-64.png') }}" />
+    <link rel="icon" type="image/png" sizes="192x192" href="{{ getOverridableUrl('images/favicon-192.png') }}" />
+    <link rel="icon" type="image/x-icon" href="{{ getOverridableUrl('images/favicon.ico') }}" />
+    <link rel="apple-touch-icon" href="{{ getOverridableUrl('images/apple-touch-icon.png') }}" />
+
+    {{ outputSystemStylesheets() }}
+
+    {% include('@MauticCore/Default/script.html.twig') %}
+
+    {{ outputHeadDeclarations() }}
+    {# CSTS brand color scheme — overrides Mautic default primary scale with the frontend brand blue (#2563eb) #}
+    <style id="csts-brand">
+        :root {
+            --primary-10: #eff6ff !important;
+            --primary-20: #dbeafe !important;
+            --primary-30: #bfdbfe !important;
+            --primary-40: #93c5fd !important;
+            --primary-50: #60a5fa !important;
+            --primary-60: #2563eb !important; /* 主品牌色，沿用前端配色 */
+            --primary-70: #1d4ed8 !important; /* hover */
+            --primary-80: #1e40af !important; /* active */
+            --primary-90: #1e3a8a !important;
+            --primary-100: #172554 !important;
+            --link-primary: #2563eb !important;
+            --text-on-color: #ffffff !important;
+        }
+        /* 浅色主题下，表面贴近 3000 前端（#f8fafc 底 / 白面板 / #e2e8f0 边框 / #0f172a 文字） */
+        :root[theme="light"] {
+            --background: #f8fafc !important;
+            --layer-01: #ffffff !important;
+            --layer-02: #f1f5f9 !important;
+            --field-01: #ffffff !important;
+            --border-subtle-01: #e2e8f0 !important;
+            --border-strong-01: #cbd5e1 !important;
+            --text-primary: #0f172a !important;
+            --text-secondary: #64748b !important;
+        }
+        /* 3000 风格分组侧边栏 */
+        .app-sidebar.sidebar-left { width: 232px; }
+        .csts-nav { padding: 6px 0 16px; }
+        .csts-brand-header {
+            font-weight: 700; font-size: 15px; color: var(--primary-60);
+            padding: 4px 16px 12px; letter-spacing: .2px;
+        }
+        .csts-nav-group { margin-bottom: 12px; }
+        .csts-nav-heading {
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: .5px; color: #94a3b8; margin: 0 0 4px 16px;
+        }
+        .csts-nav-list { list-style: none; margin: 0; padding: 0; }
+        .csts-nav-link {
+            display: block; padding: 7px 14px; margin: 1px 10px;
+            border-radius: 8px; font-size: 14px; line-height: 1.3;
+            color: #334155; text-decoration: none; transition: background .15s, color .15s;
+        }
+        .csts-nav-link:hover { background: #f1f5f9; color: #0f172a; }
+        .csts-nav-link.active { background: var(--primary-60); color: #fff; font-weight: 500; }
+
+        /* ── 头部导航栏高度压缩 (原 ~141px → 60px) ── */
+        header.navbar-nocollapse,
+        .navbar-nocollapse,
+        div.navbar-nocollapse { min-height: 56px !important; max-height: 60px !important; height: 60px !important; }
+        .navbar-nocollapse .navbar-nav > li > a { padding-top: 14px !important; padding-bottom: 14px !important; }
+        .navbar-nocollapse .brand-logo--desktop img { height: 28px !important; width: auto !important; }
+        .navbar-nocollapse .brand-logo--mobile img { height: 22px !important; width: auto !important; }
+        .navbar-toolbar { margin-top: 4px !important; }
+
+        /* ── 手风琴侧边栏 (accordion nav) ── */
+        .app-sidebar.sidebar-left { width: 220px !important; }
+        .csts-nav { padding: 4px 0 20px; display: flex; flex-direction: column; gap: 2px; }
+        .csts-acc { border-radius: 8px; margin: 0 8px; }
+        .csts-acc > summary {
+            list-style: none; cursor: pointer;
+            font-size: 13px; font-weight: 600; color: #475569;
+            padding: 9px 12px; border-radius: 8px;
+            display: flex; align-items: center; justify-content: space-between;
+            user-select: none; transition: background .15s, color .15s;
+        }
+        .csts-acc > summary::-webkit-details-marker { display: none; }
+        .csts-acc > summary:hover { background: #f1f5f9; color: #0f172a; }
+        .csts-acc[open] > summary { background: var(--primary-60); color: #fff; }
+        .csts-acc > summary .csts-arr { transition: transform .2s; font-size: 11px; }
+        .csts-acc > summary i, .csts-nav-dash i { font-size: 15px; margin-right: 6px; vertical-align: -1px; }
+        .csts-arr i { font-size: 11px; margin: 0; vertical-align: 0; }
+        .csts-acc[open] > summary .csts-arr { transform: rotate(90deg); }
+        .csts-acc-list { list-style: none; margin: 0; padding: 4px 0 8px 16px; display: none; }
+        .csts-acc[open] .csts-acc-list { display: block; }
+        .csts-acc-list a {
+            display: block; padding: 5px 10px; margin: 1px 0; border-radius: 6px;
+            font-size: 13px; line-height: 1.35; color: #64748b; text-decoration: none;
+            transition: background .15s, color .15s;
+        }
+        .csts-acc-list a:hover { background: #f1f5f9; color: #0f172a; }
+        .csts-acc-list a.active { background: #e0e7ff; color: var(--primary-70); font-weight: 500; }
+        .csts-nav-dash {
+            display: flex; align-items: center; padding: 9px 12px; margin: 2px 8px; border-radius: 8px;
+            font-size: 13px; font-weight: 600; color: #334155; text-decoration: none;
+            transition: background .15s;
+        }
+        .csts-nav-dash:hover { background: #f1f5f9; }
+        .csts-nav-dash.active { background: var(--primary-60); color: #fff; }
+        /* ── 侧栏下移，避免被头部遮挡 ── */
+        .app-sidebar.sidebar-left { top: 60px !important; height: calc(100vh - 60px) !important; }
+        .sidebar-content { overflow-y: auto !important; overflow-x: hidden !important; }
+        .scroll-content.slimscroll { overflow: visible !important; height: auto !important; }
+    </style>
+</head>

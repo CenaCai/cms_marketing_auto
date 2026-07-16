@@ -1,0 +1,59 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <title>{% block pageTitle %}CSTS{% endblock %}</title>
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <link rel="icon" type="image/x-icon" href="{{ getOverridableUrl('images/favicon.ico') }}" />
+    <link rel="apple-touch-icon" href="{{ getOverridableUrl('images/apple-touch-icon.png') }}" />
+    {{ outputSystemStylesheets() }}
+    {{- include('@MauticCore/Default/script.html.twig') -}}
+    {{ outputHeadDeclarations() }}
+    {# CSTS brand color scheme — overrides Mautic default primary scale with the frontend brand blue (#2563eb) #}
+    <style id="csts-brand">
+        :root {
+            --primary-10: #eff6ff !important;
+            --primary-20: #dbeafe !important;
+            --primary-30: #bfdbfe !important;
+            --primary-40: #93c5fd !important;
+            --primary-50: #60a5fa !important;
+            --primary-60: #2563eb !important; /* 主品牌色，沿用前端配色 */
+            --primary-70: #1d4ed8 !important; /* hover */
+            --primary-80: #1e40af !important; /* active */
+            --primary-90: #1e3a8a !important;
+            --primary-100: #172554 !important;
+            --link-primary: #2563eb !important;
+            --text-on-color: #ffffff !important;
+        }
+    </style>
+</head>
+<body>
+<section id="main" role="main">
+    <div class="container ml-a mr-a" style="margin-top:100px;">
+        <div class="row">
+            <div class="col-lg-4 col-lg-offset-4">
+                <div class="panel" name="form-login">
+                    <div class="panel-body">
+                        <div class="mautic-logo img-circle mb-md text-center">
+                            <img src="{{ getOverridableUrl('images/logo--csts.png') }}" alt="CSTS" style="height: 48px; width: auto;" />
+                        </div>
+                        <div id="main-panel-flash-msgs">
+                            {{- include('@MauticCore/Notification/flashes.html.twig') -}}
+                        </div>
+                        {% block content %}{% endblock %}
+                    </div>
+                </div>
+            </div>
+        </div>
+         <div class="row">
+            <div class="col-lg-4 col-lg-offset-4 text-center text-secondary">
+                {{ 'mautic.core.copyright'|trans({'%date%' : date('Y').format('Y') }) }}
+            </div>
+        </div>
+    </div>
+</section>
+{{ securityGetAuthenticationContext() }}
+</body>
+</html>

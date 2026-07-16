@@ -1,0 +1,185 @@
+{% set extraMenu = menuRender('extra') %}
+{% if extraMenu is not empty %}
+    <!-- start: sidebar-header -->
+    <div class="sidebar-header">
+        <a class="mautic-brand{{ extraMenu is empty ? '' : ' pull-left pl-0 pr-0' }}" href="#">
+            <div class="dropdown extra-menu">
+                <a href="#" data-toggle="dropdown" class="dropdown-toggle">
+                    <i class="ri-arrow-down-s-line ri-lg"></i>
+                </a>
+                {{ extraMenu }}
+            </div>
+        </a>
+    </div>
+    <!--/ end: sidebar-header -->
+{% endif %}
+
+
+<!-- start: sidebar-content -->
+<div class="sidebar-content">
+    <!-- scroll-content -->
+    <div class="scroll-content slimscroll">
+        <!-- start: navigation (CSTS 手风琴侧边栏) -->
+        <nav class="nav-sidebar csts-nav" id="cstsSidebarNav">
+            {{ customContent('menu.above', _context) }}
+
+            {% set cstsPath = app.request.pathinfo %}
+            {% set cstsLocale = app.request.locale %}
+
+            {# ── i18n 文案映射 ── #}
+            {% set cstsLabels = {
+                dash:     cstsLocale starts with 'zh' ? '仪表盘' : 'Dashboard',
+                data:     cstsLocale starts with 'zh' ? '数据资产' : 'Data Assets',
+                mkt:      cstsLocale starts with 'zh' ? '营销' : 'Marketing',
+                auto:     cstsLocale starts with 'zh' ? '自动化' : 'Automation',
+                analytic: cstsLocale starts with 'zh' ? '分析' : 'Analytics',
+                sys:      cstsLocale starts with 'zh' ? '系统' : 'System',
+                other:    cstsLocale starts with 'zh' ? '其他' : 'Other',
+                contacts:        cstsLocale starts with 'zh' ? '联系人' : 'Contacts',
+                importContacts:  cstsLocale starts with 'zh' ? '导入联系人' : 'Import Contacts',
+                tags:            cstsLocale starts with 'zh' ? '标签' : 'Tags',
+                segments:        cstsLocale starts with 'zh' ? '分群' : 'Segments',
+                contactFields:   cstsLocale starts with 'zh' ? '联系人字段' : 'Contact Fields',
+                emails:          cstsLocale starts with 'zh' ? '电子邮件 EDM' : 'Emails (EDM)',
+                pages:           cstsLocale starts with 'zh' ? '落地页' : 'Landing Pages',
+                forms:           cstsLocale starts with 'zh' ? '表单' : 'Forms',
+                campaigns:       cstsLocale starts with 'zh' ? '活动 Campaign' : 'Campaigns',
+                reports:         cstsLocale starts with 'zh' ? '报表' : 'Reports',
+                users:           cstsLocale starts with 'zh' ? '用户与权限' : 'Users & Permissions',
+                roles:           cstsLocale starts with 'zh' ? '角色' : 'Roles',
+                categories:      cstsLocale starts with 'zh' ? '分类' : 'Categories',
+                config:          cstsLocale starts with 'zh' ? '配置' : 'Configuration',
+                themes:          cstsLocale starts with 'zh' ? '主题' : 'Themes',
+                sysinfo:         cstsLocale starts with 'zh' ? '系统信息' : 'System Info',
+                credentials:     cstsLocale starts with 'zh' ? '凭证' : 'Credentials',
+                plugins:         cstsLocale starts with 'zh' ? '插件' : 'Plugins',
+                webhooks:        cstsLocale starts with 'zh' ? 'Webhooks' : 'Webhooks',
+                account:         cstsLocale starts with 'zh' ? '账户' : 'Account',
+                points:          cstsLocale starts with 'zh' ? '积分 Points' : 'Points',
+                pointTriggers:   cstsLocale starts with 'zh' ? '积分触发器' : 'Point Triggers',
+                pointGroups:     cstsLocale starts with 'zh' ? '积分分组' : 'Point Groups',
+                stages:          cstsLocale starts with 'zh' ? '阶段 Stages' : 'Stages',
+                focus:           cstsLocale starts with 'zh' ? '聚焦项 Focus' : 'Focus Items',
+                dwc:             cstsLocale starts with 'zh' ? 'Dynamic Web Content' : 'Dynamic Content',
+                companies:       cstsLocale starts with 'zh' ? '公司 Companies' : 'Companies',
+                projects:        cstsLocale starts with 'zh' ? '项目 Projects' : 'Projects',
+                assets:          cstsLocale starts with 'zh' ? '资源 Assets' : 'Assets',
+                messages:        cstsLocale starts with 'zh' ? '渠道 Messages' : 'Channels',
+                marketplace:     cstsLocale starts with 'zh' ? '市场 Marketplace' : 'Marketplace',
+            } %}
+
+            {# 仪表盘 — 始终可见，flex 对齐与 summary 一致 #}
+            <a href="/s/dashboard" class="csts-nav-dash{{ cstsPath starts with '/s/dashboard' ? ' active' : '' }}">
+                <i class="ri-dashboard-line"></i> <span>{{ cstsLabels.dash }}</span>
+            </a>
+
+            {# ── 手风琴分组（图标用 Remix Icon 字体）── #}
+            {% set cstsGroups = [
+                {
+                    icon: 'ri-database-2-line', title: cstsLabels.data,
+                    items: [
+                        { label: cstsLabels.contacts, href: '/s/contacts' },
+                        { label: cstsLabels.importContacts, href: '/s/contacts/import' },
+                        { label: cstsLabels.tags, href: '/s/tags' },
+                        { label: cstsLabels.segments, href: '/s/segments' },
+                        { label: cstsLabels.contactFields, href: '/s/contacts/fields' },
+                    ]
+                },
+                {
+                    icon: 'ri-mail-send-line', title: cstsLabels.mkt,
+                    items: [
+                        { label: cstsLabels.emails, href: '/s/emails' },
+                        { label: cstsLabels.pages, href: '/s/pages' },
+                        { label: cstsLabels.forms, href: '/s/forms' },
+                    ]
+                },
+                {
+                    icon: 'ri-plug-line', title: cstsLabels.auto,
+                    items: [
+                        { label: cstsLabels.campaigns, href: '/s/campaigns' },
+                    ]
+                },
+                {
+                    icon: 'ri-pie-chart-line', title: cstsLabels.analytic,
+                    items: [
+                        { label: cstsLabels.reports, href: '/s/reports' },
+                    ]
+                },
+                {
+                    icon: 'ri-settings-3-line', title: cstsLabels.sys,
+                    items: [
+                        { label: cstsLabels.users, href: '/s/users' },
+                        { label: cstsLabels.roles, href: '/s/roles' },
+                        { label: cstsLabels.categories, href: '/s/categories' },
+                        { label: cstsLabels.config, href: '/s/config/edit' },
+                        { label: cstsLabels.themes, href: '/s/themes' },
+                        { label: cstsLabels.sysinfo, href: '/s/sysinfo' },
+                        { label: cstsLabels.credentials, href: '/s/credentials' },
+                        { label: cstsLabels.plugins, href: '/s/plugins' },
+                        { label: cstsLabels.webhooks, href: '/s/webhooks' },
+                        { label: cstsLabels.account, href: '/s/account' },
+                    ]
+                },
+                {
+                    icon: 'ri-tools-line', title: cstsLabels.other,
+                    items: [
+                        { label: cstsLabels.points, href: '/s/points' },
+                        { label: cstsLabels.pointTriggers, href: '/s/points/triggers' },
+                        { label: cstsLabels.pointGroups, href: '/s/points/groups' },
+                        { label: cstsLabels.stages, href: '/s/stages' },
+                        { label: cstsLabels.focus, href: '/s/focus' },
+                        { label: cstsLabels.dwc, href: '/s/dwc' },
+                        { label: cstsLabels.companies, href: '/s/companies' },
+                        { label: cstsLabels.projects, href: '/s/projects' },
+                        { label: cstsLabels.assets, href: '/s/assets' },
+                        { label: cstsLabels.messages, href: '/s/messages' },
+                        { label: cstsLabels.marketplace, href: '/s/marketplace' },
+                    ]
+                },
+            ] %}
+
+            {# 判断当前页属于哪个分组，用于默认展开 #}
+            {% set openGroup = null %}
+            {% for group in cstsGroups %}
+                {% for item in group.items %}
+                    {% if cstsPath starts with item.href and openGroup is null %}
+                        {% set openGroup = loop.parent.loop.index %}
+                    {% endif %}
+                {% endfor %}
+            {% endfor %}
+
+            {% for group in cstsGroups %}
+                {% set isOpen = (openGroup == loop.index) %}
+                <details class="csts-acc"{% if isOpen %} open{% endif %} data-csts-group="{{ loop.index }}">
+                    <summary><i class="{{ group.icon }}"></i> {{ group.title }}<span class="csts-arr"><i class="ri-arrow-right-s-line"></i></span></summary>
+                    <ul class="csts-acc-list">
+                        {% for item in group.items %}
+                            {% set active = cstsPath starts with item.href %}
+                            <li><a href="{{ item.href }}"{{ active ? ' class="active"' : '' }}>{{ item.label }}</a></li>
+                        {% endfor %}
+                    </ul>
+                </details>
+            {% endfor %}
+        </nav>
+
+        {# 手风琴互斥：每次只展开一个分组 #}
+        <script>
+        (function(){
+            var nav = document.getElementById('cstsSidebarNav');
+            if (!nav) return;
+            nav.addEventListener('toggle', function(e){
+                var tgt = e.target;
+                if (!tgt.classList || !tgt.classList.contains('csts-acc')) return;
+                if (!tgt.open) return;
+                var all = nav.querySelectorAll('.csts-acc[open]');
+                for (var i = 0; i < all.length; i++) {
+                    if (all[i] !== tgt) all[i].removeAttribute('open');
+                }
+            }, true);
+        })();
+        </script>
+        <!--/ end: navigation -->
+    </div>
+    <!--/ scroll-content -->
+</div>
+<!--/ end: sidebar-content -->
