@@ -22,6 +22,11 @@ yarn-error.log*
 # local env files (DO NOT COMMIT REAL SECRETS)
 .env
 .env*.local
+mautic-config.env
+
+# Mautic 核心（第三方 GPL，由 setup.sh 自动拉取，不入库）
+/mautic/
+/mautic
 
 # prisma
 /prisma/migrations/dev.db
