@@ -1,0 +1,71 @@
+{#
+  Renders a contact's tags and segment memberships inside the detail tab.
+  Variables:
+    - lead:  the contact entity (lead.tags)
+    - lists: array of segment/list entities the contact belongs to
+#}
+<div class="pr-md pl-md pb-md">
+    <div class="row">
+        {# Tags #}
+        <div class="col-md-6">
+            <div class="panel shd-none mb-0">
+                <div class="panel-heading">
+                    <div class="panel-title">
+                        <span class="fw-b">{{ 'mautic.lead.tags'|trans }}</span>
+                        <i class="ri-hashtag ml-sm" aria-hidden="true"></i>
+                    </div>
+                </div>
+                <div class="panel-body pt-sm">
+                    {% if lead.tags|length > 0 %}
+                        <div class="d-flex fw-wrap gap-xs">
+                            {% for tag in lead.tags %}
+                                {% include '@MauticCore/Helper/_tag.html.twig' with {'tags': [{
+                                    'label': tag.tag|purify,
+                                    'attributes': {
+                                        'href': path('mautic_tagmanager_action', {'objectAction': 'view', 'objectId': tag.id}),
+                                        'data-toggle': 'ajax'
+                                    },
+                                    'color': 'blue'
+                                }]} %}
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <p class="text-helper">{{ 'mautic.lead.tags.no_results'|trans }}</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        {# Segments #}
+        <div class="col-md-6">
+            <div class="panel shd-none mb-0">
+                <div class="panel-heading">
+                    <div class="panel-title">
+                        <span class="fw-b">{{ 'mautic.lead.lead.lists'|trans }}</span>
+                        <i class="ri-pie-chart-line ml-sm" aria-hidden="true"></i>
+                    </div>
+                </div>
+                <div class="panel-body pt-sm">
+                    {% if lists|length > 0 %}
+                        {% set classes = ['gray', 'red', 'magenta', 'purple', 'blue', 'cyan', 'teal', 'green'] %}
+                        <div class="d-flex fw-wrap gap-xs">
+                            {% for key, list in lists %}
+                                {% set tag = {
+                                    'label': list.name|purify,
+                                    'attributes': {
+                                        'href': path('mautic_segment_action', {'objectAction': 'view', 'objectId': list.id}),
+                                        'data-toggle': 'ajax'
+                                    },
+                                    'color': cycle(classes, key)
+                                } %}
+                                {% include '@MauticCore/Helper/_tag.html.twig' with {'tags': [tag]} %}
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <p class="text-helper">{{ 'mautic.lead.lead.lists.no_results'|trans }}</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
