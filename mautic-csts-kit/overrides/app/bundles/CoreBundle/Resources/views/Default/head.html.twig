@@ -103,10 +103,13 @@
         .csts-acc-list a:hover { background: #f1f5f9; color: #0f172a; }
         .csts-acc-list a.active { background: #e0e7ff; color: var(--primary-70); font-weight: 500; }
         .csts-nav-dash {
+            position: relative;
             display: flex; align-items: center; padding: 9px 12px; margin: 2px 8px; border-radius: 8px;
             font-size: 13px; font-weight: 600; color: #334155; text-decoration: none;
             transition: background .15s;
         }
+        .csts-nav-dash i { position: absolute; left: 12px; margin-right: 0; }
+        .csts-nav-dash span { flex: 1; text-align: center; }
         .csts-nav-dash:hover { background: #f1f5f9; }
         .csts-nav-dash.active { background: var(--primary-60); color: #fff; }
         /* ── 侧栏下移，避免被头部遮挡 ── */
