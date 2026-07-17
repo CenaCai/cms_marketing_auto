@@ -53,5 +53,5 @@ echo "▶ 清空生产缓存（可能耗时十几秒）..."
 php -d memory_limit=1024M "$ROOT/bin/console" cache:clear --env=prod
 
 echo ""
-echo "🎉 完成。访问后台 / 登录页应已是 CSTS 白标 + 简体中文界面。"
+echo "🎉 完成。访问后台 / 登录页应已是 CSTS 白标 + 简体中文界面；登录页已含「显示/隐藏密码」按钮，且输错密码不再锁定。"
 echo "   若 Mautic 版本与 7.x 不一致，请先 review overrides/ 下被覆盖的 twig 与 en_US 文件。"

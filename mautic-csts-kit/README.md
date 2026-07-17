@@ -11,8 +11,11 @@
 | en_US 品牌文案 | 23 | 核心翻译源中 "Mautic"→"CSTS" 的替换（英文回退时也显示 CSTS） |
 | zh_CN 中文包 | 43 bundle | 完整定制中文包（含垃圾键清理、默认中文） |
 | local.php 片段 | — | 仅合并 `brand_name=CSTS` + `locale=zh_CN` 两个键 |
+| 登录优化覆盖 | 2 | `app/config/security.php`（关闭输错锁定 `login_throttling=false`）+ `UserBundle/.../Security/login.html.twig`（密码框显示/隐藏明文切换按钮） |
 
 > `ri-` 图标字体来自 Mautic 7 核心自带的 Remix Icon 库，**无需额外打包**。
+
+> **登录体验优化**：套用本 kit 后，登录页密码框带「显示/隐藏明文」切换按钮，且 Symfony 默认的输入错误锁定已关闭（输错密码不再锁定 30 分钟）。这两项通过 `overrides/` 中的 `security.php` 与 `login.html.twig` 覆盖实现，随 `apply.sh` 自动生效。
 
 ## 前置条件
 
