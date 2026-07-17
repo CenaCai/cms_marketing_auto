@@ -13,6 +13,7 @@
 | local.php 片段 | — | 合并 `brand_name=CSTS` + `locale=zh_CN` + `sms_enabled=true` 三个键 |
 | 登录优化覆盖 | 2 | `app/config/security.php`（关闭输错锁定 `login_throttling=false`）+ `UserBundle/.../Security/login.html.twig`（密码框显示/隐藏明文切换按钮） |
 | 短信 SMS 模块 | — | 侧边栏「营销」组新增「短信SMS」(`/s/sms`) 入口；`apply.sh` 自动发布 Twilio 集成，使 Campaign 出现「发送短信」可选节点 |
+| 标签批量导入 | 5 | 覆盖 `plugins/MauticTagManagerBundle`：标签管理页新增「批量导入」按钮，支持上传 .txt 或粘贴文本，用逗号(半/全角均可)分隔批量建标签(不含描述，描述后续单独编辑)；含 UTF-8 兜底清洗 |
 
 > `ri-` 图标字体来自 Mautic 7 核心自带的 Remix Icon 库，**无需额外打包**。
 
@@ -59,5 +60,6 @@ mautic-csts-kit/
     ├── app/bundles/.../Translations/en_US/*.ini
     ├── app/assets/images/logo--csts.png
     ├── media/images/logo--csts.png
+    ├── plugins/MauticTagManagerBundle/...   # 标签批量导入(控制器/路由/视图/翻译)
     └── translations/zh_CN/<Bundle>/messages.ini
 ```

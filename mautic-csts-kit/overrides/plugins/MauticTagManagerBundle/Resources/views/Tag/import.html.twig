@@ -1,0 +1,60 @@
+{% extends '@MauticCore/Default/content.html.twig' %}
+{% block mauticContent %}tagmanager{% endblock %}
+
+{% block headerTitle %}{{ 'mautic.tagmanager.tag.import.header'|trans }}{% endblock %}
+
+{% block actions %}
+    {% include '@MauticCore/Helper/button.html.twig' with {
+        buttons: [
+            {
+                label: 'mautic.core.form.close'|trans,
+                variant: 'ghost',
+                icon: 'ri-close-line',
+                attributes: {
+                    'href': path('mautic_tagmanager_index'),
+                    'data-toggle': 'ajax',
+                    'type': 'button',
+                }
+            }
+        ]
+    } %}
+{% endblock %}
+
+{% block content %}
+    <div class="panel panel-default">
+        <div class="panel-body">
+            <form action="{{ action }}" method="post" enctype="multipart/form-data" class="csts-tag-import">
+                <p class="text-muted mb-md">
+                    {{ 'mautic.tagmanager.tag.import.intro'|trans }}
+                </p>
+
+                <div class="form-group">
+                    <label class="control-label" for="tag_import_file">
+                        {{ 'mautic.tagmanager.tag.import.file.label'|trans }}
+                    </label>
+                    <input type="file" id="tag_import_file" name="tag_import_file" accept=".txt,text/plain" class="form-control">
+                    <span class="help-block">{{ 'mautic.tagmanager.tag.import.file.help'|trans }}</span>
+                </div>
+
+                <div class="form-group">
+                    <label class="control-label" for="tag_import_text">
+                        {{ 'mautic.tagmanager.tag.import.text.label'|trans }}
+                    </label>
+                    <textarea id="tag_import_text" name="tag_import_text" rows="6" class="form-control"
+                              placeholder="{{ 'mautic.tagmanager.tag.import.text.placeholder'|trans }}"></textarea>
+                    <span class="help-block">{{ 'mautic.tagmanager.tag.import.text.help'|trans }}</span>
+                </div>
+
+                <div class="mt-md">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="ri-upload-2-line"></i>
+                        {{ 'mautic.tagmanager.tag.import.submit'|trans }}
+                    </button>
+                    <button type="submit" name="tag_import_cancel" value="1" class="btn btn-default">
+                        {{ 'mautic.core.form.cancel'|trans }}
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+{% endblock %}
