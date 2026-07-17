@@ -10,12 +10,15 @@
 | 自定义 logo | 3 | `logo--csts.png`（app/assets、CoreBundle/Assets、media/images 三处） |
 | en_US 品牌文案 | 23 | 核心翻译源中 "Mautic"→"CSTS" 的替换（英文回退时也显示 CSTS） |
 | zh_CN 中文包 | 43 bundle | 完整定制中文包（含垃圾键清理、默认中文） |
-| local.php 片段 | — | 仅合并 `brand_name=CSTS` + `locale=zh_CN` 两个键 |
+| local.php 片段 | — | 合并 `brand_name=CSTS` + `locale=zh_CN` + `sms_enabled=true` 三个键 |
 | 登录优化覆盖 | 2 | `app/config/security.php`（关闭输错锁定 `login_throttling=false`）+ `UserBundle/.../Security/login.html.twig`（密码框显示/隐藏明文切换按钮） |
+| 短信 SMS 模块 | — | 侧边栏「营销」组新增「短信SMS」(`/s/sms`) 入口；`apply.sh` 自动发布 Twilio 集成，使 Campaign 出现「发送短信」可选节点 |
 
 > `ri-` 图标字体来自 Mautic 7 核心自带的 Remix Icon 库，**无需额外打包**。
 
 > **登录体验优化**：套用本 kit 后，登录页密码框带「显示/隐藏明文」切换按钮，且 Symfony 默认的输入错误锁定已关闭（输错密码不再锁定 30 分钟）。这两项通过 `overrides/` 中的 `security.php` 与 `login.html.twig` 覆盖实现，随 `apply.sh` 自动生效。
+
+> **短信 SMS 模块**：`apply.sh` 会写入 `sms_enabled=true` 并发布 Twilio 集成，套用后左侧「营销」组出现「短信SMS」入口，营销活动(Campaign)里可选「发送短信」动作节点。**真正发送短信仍需凭证**——到 后台→设置→插件→Twilio 填 SID/Token，或按 `TransportInterface` 写一个国内短信商（阿里云/腾讯云）自定义 transport 插件。
 
 ## 前置条件
 
