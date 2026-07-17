@@ -7,11 +7,11 @@
         {{ pageTitle|default('CSTS') }}
     </title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-    <link rel="icon" type="image/png" sizes="32x32" href="{{ getOverridableUrl('images/favicon-32.png') }}" />
-    <link rel="icon" type="image/png" sizes="64x64" href="{{ getOverridableUrl('images/favicon-64.png') }}" />
-    <link rel="icon" type="image/png" sizes="192x192" href="{{ getOverridableUrl('images/favicon-192.png') }}" />
-    <link rel="icon" type="image/x-icon" href="{{ getOverridableUrl('images/favicon.ico') }}" />
-    <link rel="apple-touch-icon" href="{{ getOverridableUrl('images/apple-touch-icon.png') }}" />
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ getAssetUrl('images/favicon-32.png') }}" />
+    <link rel="icon" type="image/png" sizes="64x64" href="{{ getAssetUrl('images/favicon-64.png') }}" />
+    <link rel="icon" type="image/png" sizes="192x192" href="{{ getAssetUrl('images/favicon-192.png') }}" />
+    <link rel="icon" type="image/x-icon" href="{{ getAssetUrl('images/favicon.ico') }}" />
+    <link rel="apple-touch-icon" href="{{ getAssetUrl('images/apple-touch-icon.png') }}" />
 
     {{ outputSystemStylesheets() }}
 

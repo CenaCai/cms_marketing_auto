@@ -48,23 +48,7 @@
         {{ render(controller('Mautic\\CoreBundle\\Controller\\DefaultController::notificationsAction')) }}
         {{ include('@MauticCore/Menu/quick_help.html.twig') }}
 
-        {# Language Switcher #}
-        {% set currentLocale = app.user.locale|default('en_US') %}
-        {% set localeNames = {'en_US': 'English', 'zh_CN': '中文'} %}
-        <li class="dropdown">
-            <a href="javascript:void(0);" class="dropdown-toggle" data-toggle="dropdown" title="{{ currentLocale|language_name }}">
-                <i class="ri-translate-2"></i>
-            </a>
-            <ul class="dropdown-menu">
-                {% for code, label in localeNames %}
-                    <li>
-                        <a href="{{ path('mautic_core_switch_locale', {locale: code}) }}">
-                            {{ label }}{% if code == currentLocale %} &check;{% endif %}
-                        </a>
-                    </li>
-                {% endfor %}
-            </ul>
-        </li>
+        {# CSTS: 语言切换器已移除 —— 路由 mautic_core_switch_locale 在 Mautic 7.1.3 已不存在，locale 固定为 zh_CN #}
 
         {{ menuRender('admin') }}
         {{ include('@MauticCore/Menu/profile.html.twig') }}
