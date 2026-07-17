@@ -102,6 +102,7 @@ $firewalls = [
         'mautic_sso'       => [], // options are copied from `form_login` in \Mautic\UserBundle\DependencyInjection\Firewall\Factory\MauticSsoFactory
         'fos_oauth'        => true,
         'context'          => 'mautic',
+        'login_throttling' => false,
     ],
     'public' => [
         'pattern' => '^/',
