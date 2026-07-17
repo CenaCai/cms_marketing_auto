@@ -1,7 +1,9 @@
 # 克隆即跑：CSTS Mautic（白标 + 简体中文）
 
-本仓库 = **你的定制**（Next.js 运营台 + Mautic 白标/中文包 kit）。
+本仓库的主交付物是 **Mautic CSTS Kit**（白标 + 简体中文包），由 `setup.sh` 一键复现到一台 Mautic 7.x 核心上。
 Mautic 核心（第三方 GPL，约 1G）**不进仓库**，`setup.sh` 会在目标机按需拉取。
+
+> 早期 Next.js 运营台 MVP 脚手架已归档至 `legacy/nextjs-ops-console/`，仅作参考，不再是主交付物。
 
 ## 目标机前置
 - PHP 8.1+（含 `php` 命令行）

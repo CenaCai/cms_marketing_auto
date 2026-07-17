@@ -1,14 +1,14 @@
-# dependencies
-/node_modules
-/.pnp
+# dependencies（同时覆盖 legacy/nextjs-ops-console 下的 Node 工程）
+node_modules/
+.pnp/
 .pnp.js
 
 # next.js
-/.next/
-/out/
+.next/
+out/
 
 # production
-/build
+build/
 
 # misc
 .DS_Store
@@ -28,8 +28,8 @@ mautic-config.env
 /mautic/
 /mautic
 
-# prisma
-/prisma/migrations/dev.db
+# prisma（同时覆盖 legacy/nextjs-ops-console/prisma）
+**/prisma/migrations/dev.db
 *.db
 
 # typescript
