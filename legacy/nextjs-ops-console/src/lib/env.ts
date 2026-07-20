@@ -28,4 +28,7 @@ export const env = {
 
   crawlerEnabled: bool("CRAWLER_ENABLED", false),
   crawlerProvider: str("CRAWLER_PROVIDER", "mock"),
+
+  contactoutEnabled: bool("CONTACTOUT_ENABLED", false),
+  contactoutApiKey: str("CONTACTOUT_API_KEY", ""),
 };

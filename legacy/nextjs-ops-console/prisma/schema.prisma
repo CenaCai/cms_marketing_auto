@@ -89,6 +89,7 @@ model Contact {
   name           String?
   email          String?
   phone          String?
+  company        String?
   country        String?
   city           String?
   language       String?
