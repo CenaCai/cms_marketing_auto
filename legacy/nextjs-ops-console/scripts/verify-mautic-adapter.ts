@@ -16,7 +16,7 @@ const segName = `${u}_seg`;
 const email = `${u}@example.com`;
 
 async function main() {
-  const c = new MauticRestClient(BASE, USER, SECRET);
+  const c = new MauticRestClient(BASE, USER, SECRET!);
   console.log("▶ 连接", BASE, "as", USER);
 
   const tags = await c.getTags();
@@ -50,21 +50,21 @@ async function main() {
 }
 
 async function cleanup() {
-  const c = new MauticRestClient(BASE, USER, SECRET);
+  const c = new MauticRestClient(BASE, USER, SECRET!);
   try {
     const t = (await c.getTags()).find((x) => x.name === tagName);
     if (t) {
-      await fetch(`${BASE}/api/tags/${t.id}/delete`, { method: "DELETE", headers: c.headers() });
+      await c.delete(`/api/tags/${t.id}/delete`);
       console.log("🧹 删除标签", t.id);
     }
     const s = (await c.getSegments()).find((x) => x.name === segName);
     if (s) {
-      await fetch(`${BASE}/api/segments/${s.id}/delete`, { method: "DELETE", headers: c.headers() });
+      await c.delete(`/api/segments/${s.id}/delete`);
       console.log("🧹 删除分群", s.id);
     }
     const f = await c.findContactByEmail(email);
     if (f) {
-      await fetch(`${BASE}/api/contacts/${f.id}/delete`, { method: "DELETE", headers: c.headers() });
+      await c.delete(`/api/contacts/${f.id}/delete`);
       console.log("🧹 删除联系人", f.id);
     }
   } catch (e) {

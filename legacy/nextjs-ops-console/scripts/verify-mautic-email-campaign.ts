@@ -10,7 +10,7 @@ if (!SECRET) {
 }
 
 async function main() {
-  const c = new MauticRestClient(BASE, USER, SECRET);
+  const c = new MauticRestClient(BASE, USER, SECRET!);
 
   console.log("▶ createEmail");
   const email = await c.createEmail("__verify_email__", "验证主题", "<html><body>hi {{lead.email}}</body></html>");
@@ -29,7 +29,7 @@ async function main() {
   console.log("  ✅ 已把联系人加入 campaign，Mautic 旅程开始执行");
 
   // 清理邮件资源
-  await fetch(`${BASE}/api/emails/${email.id}/delete`, { method: "DELETE", headers: c.headers() });
+  await c.delete(`/api/emails/${email.id}/delete`);
   console.log("🧹 已删除验证邮件");
 }
 
