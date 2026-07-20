@@ -35,6 +35,7 @@
                 analytic: cstsLocale starts with 'zh' ? '分析' : 'Analytics',
                 sys:      cstsLocale starts with 'zh' ? '系统' : 'System',
                 other:    cstsLocale starts with 'zh' ? '其他' : 'Other',
+                lifecycle: cstsLocale starts with 'zh' ? '用户生命周期管理' : 'User Lifecycle Management',
                 contacts:        cstsLocale starts with 'zh' ? '联系人' : 'Contacts',
                 importContacts:  cstsLocale starts with 'zh' ? '导入联系人' : 'Import Contacts',
                 tags:            cstsLocale starts with 'zh' ? '标签' : 'Tags',
@@ -87,6 +88,15 @@
                     ]
                 },
                 {
+                    icon: 'ri-refresh-line', title: cstsLabels.lifecycle,
+                    items: [
+                        { label: cstsLabels.points, href: '/s/points' },
+                        { label: cstsLabels.pointTriggers, href: '/s/points/triggers' },
+                        { label: cstsLabels.pointGroups, href: '/s/points/groups' },
+                        { label: cstsLabels.stages, href: '/s/stages' },
+                    ]
+                },
+                {
                     icon: 'ri-mail-send-line', title: cstsLabels.mkt,
                     items: [
                         { label: cstsLabels.emails, href: '/s/emails' },
@@ -125,10 +135,6 @@
                 {
                     icon: 'ri-tools-line', title: cstsLabels.other,
                     items: [
-                        { label: cstsLabels.points, href: '/s/points' },
-                        { label: cstsLabels.pointTriggers, href: '/s/points/triggers' },
-                        { label: cstsLabels.pointGroups, href: '/s/points/groups' },
-                        { label: cstsLabels.stages, href: '/s/stages' },
                         { label: cstsLabels.focus, href: '/s/focus' },
                         { label: cstsLabels.dwc, href: '/s/dwc' },
                         { label: cstsLabels.companies, href: '/s/companies' },
