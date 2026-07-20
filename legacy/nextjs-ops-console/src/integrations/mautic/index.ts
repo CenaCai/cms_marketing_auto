@@ -11,13 +11,15 @@ export function getMauticClient(): MauticClient {
   const cfg = getMauticRuntime();
   const key = `${cfg.enabled}|${cfg.baseUrl}|${cfg.user}|${cfg.secret}`;
   if (cached && cacheKey === key) return cached;
+  let client: MauticClient;
   if (cfg.enabled && cfg.baseUrl && cfg.user && cfg.secret) {
-    cached = new MauticRestClient(cfg.baseUrl, cfg.user, cfg.secret);
+    client = new MauticRestClient(cfg.baseUrl, cfg.user, cfg.secret);
   } else {
-    cached = new MockMauticClient();
+    client = new MockMauticClient();
   }
+  cached = client;
   cacheKey = key;
-  return cached;
+  return client;
 }
 
 export { refreshMauticConfig, setMauticRuntime };

@@ -3,6 +3,7 @@ import type {
   MauticContact,
   MauticSegment,
   MauticTag,
+  MauticEmail,
 } from "./types";
 
 // Mautic REST API 客户端（Basic Auth：用 Mautic 用户登录账号作为 user、登录密码作为 secret）。
@@ -59,6 +60,18 @@ export class MauticRestClient implements MauticClient {
       throw new Error(`Mautic PATCH ${path} 失败 ${resp.status}: ${txt.slice(0, 200)}`);
     }
     return resp.json();
+  }
+
+  async delete(path: string): Promise<any> {
+    const resp = await fetch(`${this.baseUrl}${path}`, {
+      method: "DELETE",
+      headers: this.headers(),
+    });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      throw new Error(`Mautic DELETE ${path} 失败 ${resp.status}: ${txt.slice(0, 200)}`);
+    }
+    return resp.json().catch(() => undefined);
   }
 
   private static dictValues<T>(obj: Record<string, T> | undefined | null): T[] {

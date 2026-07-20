@@ -23,7 +23,7 @@ export interface PushResult {
 }
 
 // 基础邮箱格式校验：脏数据（如种子里的 "1"）不应中断整批推送。
-function isValidEmail(e?: string | null): boolean {
+function isValidEmail(e?: string | null): e is string {
   return typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 
