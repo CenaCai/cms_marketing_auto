@@ -48,18 +48,17 @@
         {{ render(controller('Mautic\\CoreBundle\\Controller\\DefaultController::notificationsAction')) }}
         {{ include('@MauticCore/Menu/quick_help.html.twig') }}
 
-        {# CSTS: 语言切换器。Mautic 7.x 已移除 mautic_core_switch_locale 路由，故图标链接到
-           账户/偏好设置页（mautic_user_account）改语言，不再就地切换 #}
+        {# CSTS: 语言切换器。点击即时切换 locale 并跳回来源页，不跳转到账户/系统目录 #}
         {% set currentLocale = app.user.locale|default('zh_CN') %}
         {% set localeNames = {'en_US': 'English', 'zh_CN': '中文'} %}
         <li class="dropdown">
-            <a href="{{ path('mautic_user_account') }}" class="dropdown-toggle" data-toggle="dropdown" title="{{ currentLocale|language_name }}">
+            <a href="#" class="dropdown-toggle" data-toggle="dropdown" title="{{ currentLocale|language_name }}">
                 <i class="ri-translate-2"></i>
             </a>
             <ul class="dropdown-menu">
                 {% for code, label in localeNames %}
                     <li>
-                        <a href="{{ path('mautic_user_account') }}">
+                        <a href="{{ path('mautic_core_switch_locale', {language: code}) }}">
                             {{ label }}{% if code == currentLocale %} &check;{% endif %}
                         </a>
                     </li>
