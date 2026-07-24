@@ -1,0 +1,7 @@
+{
+  "name": "Blank HTML",
+  "author": "CSTS",
+  "authorUrl": "https://connexustravel.com.cn",
+  "builder": ["grapesjsbuilder"],
+  "features": ["page", "email", "form"]
+}
