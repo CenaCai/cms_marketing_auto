@@ -167,15 +167,48 @@
       errorEl.style.display = 'none';
     }
 
-    generateBtn.addEventListener('click', () => {
-      if (!currentEditor) {
-        showError('编辑器尚未就绪，请稍候或重新打开编辑器。');
-        return;
-      }
+    function waitForEditor(timeoutMs) {
+      return new Promise((resolve) => {
+        const deadline = Date.now() + (timeoutMs || 6000);
+        (function tick() {
+          const ed = findEditor();
+          if (ed && isLikelyEditor(ed)) {
+            currentEditor = ed;
+            window.MauticAiEmailEditor = ed;
+            resolve(ed);
+            return;
+          }
+          if (Date.now() > deadline) {
+            resolve(null);
+            return;
+          }
+          setTimeout(tick, 200);
+        })();
+      });
+    }
+
+    generateBtn.addEventListener('click', async () => {
+      clearError();
       const prompt = promptEl.value.trim();
       if (!prompt) {
         showError('请输入邮件意图。');
         return;
+      }
+
+      loadingEl.style.display = 'block';
+      previewWrap.style.display = 'none';
+
+      let editor = currentEditor || findEditor();
+      if (!editor || !isLikelyEditor(editor)) {
+        // builder:show may have fired before this click; wait briefly.
+        showError('正在等待 GrapesJS 编辑器就绪…');
+        editor = await waitForEditor(6000);
+        if (!editor) {
+          loadingEl.style.display = 'none';
+          showError('编辑器尚未就绪，请稍候或重新打开编辑器。');
+          return;
+        }
+        clearError();
       }
 
       const selectedMode = modeEl.value;
@@ -271,33 +304,96 @@
     }
   }
 
-  function onBuilderShow(event, editor) {
-    currentEditor = editor || null;
-    if (editor) {
+  function findEditor() {
+    // The GrapesJS editor instance is created inside BuilderService and only
+    // passed as the 2nd argument of the `builder:show` jQuery trigger (see
+    // builder.js: $builder.trigger('builder:show', [builder.editor])). It is
+    // NEVER attached to any global we can read off `window`. So we cache the
+    // instance the first time we see the event (see installTriggerHook).
+    if (window.MauticAiEmailEditor && typeof window.MauticAiEmailEditor.setComponents === 'function') {
+      return window.MauticAiEmailEditor;
+    }
+    return null;
+  }
+
+  function grapesjsCanvasPresent() {
+    return !!document.querySelector('.gjs-editor, #gjs, iframe.gjs-frame, .builder iframe, [data-gjs]');
+  }
+
+  function isLikelyEditor(obj) {
+    return obj
+      && typeof obj === 'object'
+      && typeof obj.setComponents === 'function'
+      && typeof obj.getWrapper === 'function'
+      && typeof obj.on === 'function';
+  }
+
+  function installTriggerHook() {
+    // Mautic exposes jQuery as `mQuery` (alias of `$`). Monkey-patch its
+    // `trigger` once so that whenever GrapesJsBuilderBundle fires
+    // `builder:show` we capture the live editor instance.
+    if (!window.mQuery || !window.mQuery.fn) {
+      return;
+    }
+    if (mQuery.fn.trigger && mQuery.fn.trigger.__aiHooked) {
+      return;
+    }
+    const $ = window.mQuery;
+    const original = $.fn.trigger;
+    const hooked = function patchedTrigger(eventName) {
+      if (eventName === 'builder:show') {
+        // jQuery trigger(event, [args]) -> handler(event, ...args). Try both
+        // shapes to be safe.
+        const args = arguments.length > 1 ? Array.prototype.slice.call(arguments, 1) : [];
+        const flat = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+        const candidate = flat.find((x) => isLikelyEditor(x));
+        if (candidate) {
+          onBuilderReady(candidate);
+        }
+      } else if (eventName === 'builder:hide') {
+        // Show nothing synchronously; the panel-toggle button on the
+        // builder toolbar is the only path to hide in Mautic 7, so leaving
+        // the AI panel visible is acceptable.
+      }
+      return original.apply(this, arguments);
+    };
+    hooked.__aiHooked = true;
+    $.fn.trigger = hooked;
+  }
+
+  function onBuilderReady(editor) {
+    if (editor && isLikelyEditor(editor)) {
+      currentEditor = editor;
       window.MauticAiEmailEditor = editor;
     }
     ensurePanel();
   }
 
   function init() {
-    // Mautic fires builder:show on the `.builder` element, passing the editor.
-    mQuery('.builder').on('builder:show', onBuilderShow);
-    mQuery('.builder').on('builder:hide', hidePanel);
+    installTriggerHook();
 
-    // Fallback: if the builder is launched before this script binds (rare),
-    // retry a few times once the builder becomes active.
+    // Safety net: Mautic 7 may have already fired builder:show before this
+    // script ran (especially when the AI panel JS loads a fraction late).
+    // We poll briefly for the live canvas, and if a GrapesJS instance is
+    // hanging on any known global or DOM hook we grab it.
     let tries = 0;
-    const retry = setInterval(() => {
+    const retry = setInterval(function () {
       tries += 1;
-      if (currentEditor || tries > 20) {
+      const ed = findEditor();
+      if (ed && isLikelyEditor(ed)) {
+        onBuilderReady(ed);
         clearInterval(retry);
         return;
       }
-      if (mQuery('.builder.builder-active').length && window.MauticAiEmailEditor) {
-        onBuilderShow(null, window.MauticAiEmailEditor);
+      if (grapesjsCanvasPresent() && !panelBuilt) {
+        // Show the panel immediately even without an editor; the click
+        // handler will keep retrying findEditor() at call time.
+        ensurePanel();
+      }
+      if (tries > 80) {
         clearInterval(retry);
       }
-    }, 500);
+    }, 300);
   }
 
   if (document.readyState === 'loading') {

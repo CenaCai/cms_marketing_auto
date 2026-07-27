@@ -53,7 +53,7 @@ PROMPT;
             ? new Client(['proxy' => $proxy, 'timeout' => 60, 'connect_timeout' => 15])
             : $httpClient;
 
-        $model    = (string) $coreParametersHelper->get('gemini_model', 'gemini-1.5-flash');
+        $model    = (string) $coreParametersHelper->get('gemini_model', 'gemini-2.0-flash');
         $endpoint = (string) $coreParametersHelper->get(
             'gemini_endpoint',
             'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
@@ -125,7 +125,7 @@ PROMPT;
     public function configAction(CoreParametersHelper $coreParametersHelper): JsonResponse
     {
         $apiKey   = trim((string) $coreParametersHelper->get('gemini_api_key'));
-        $model    = (string) $coreParametersHelper->get('gemini_model', 'gemini-1.5-flash');
+        $model    = (string) $coreParametersHelper->get('gemini_model', 'gemini-2.0-flash');
         $endpoint = (string) $coreParametersHelper->get(
             'gemini_endpoint',
             'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'

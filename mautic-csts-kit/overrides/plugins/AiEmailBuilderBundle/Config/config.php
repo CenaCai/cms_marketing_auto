@@ -27,7 +27,7 @@ return [
     'services'    => [],
     'parameters'  => [
         'gemini_api_key'  => '',
-        'gemini_model'    => 'gemini-1.5-flash',
+        'gemini_model'    => 'gemini-2.0-flash',
         'gemini_endpoint' => 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
         'gemini_proxy'    => '',
     ],
