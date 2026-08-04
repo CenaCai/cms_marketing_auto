@@ -31,6 +31,16 @@ class FrequencyGateService
     public const SILENCE_START        = 22; // inclusive
     public const SILENCE_END          = 8;  // exclusive
 
+    /**
+     * Fallback timezone used when the contact has no `timezone` field value.
+     *
+     * MUST NOT fall back to the server/PHP timezone: this deployment runs on UTC,
+     * so an empty contact timezone would make Beijing 06:00-16:00 (= UTC 22:00-08:00)
+     * look like the silence window and block the whole prime-time send slot, while
+     * happily sending in the middle of the night. Audience is domestic -> Asia/Shanghai.
+     */
+    public const DEFAULT_TIMEZONE = 'Asia/Shanghai';
+
     private const TABLE_CHANNEL_LOG = 'sourcemarketing_channel_log';
     private const TABLE_EVENT_LOG   = 'sourcemarketing_event_log';
 
@@ -194,11 +204,13 @@ class FrequencyGateService
 
     public function inSilenceWindow(Lead $lead): bool
     {
-        $tzName = (string) $lead->getFieldValue('timezone');
+        $tzName = trim((string) $lead->getFieldValue('timezone'));
         try {
-            $tz = $tzName ? new \DateTimeZone($tzName) : new \DateTimeZone(date_default_timezone_get() ?: 'UTC');
+            $tz = new \DateTimeZone('' !== $tzName ? $tzName : self::DEFAULT_TIMEZONE);
         } catch (\Throwable $e) {
-            $tz = new \DateTimeZone('UTC');
+            // Contact carries a bogus timezone string -> fall back to the business default,
+            // never to the UTC server clock.
+            $tz = new \DateTimeZone(self::DEFAULT_TIMEZONE);
         }
         $hour = (int) (new \DateTime('now', $tz))->format('G');
 
