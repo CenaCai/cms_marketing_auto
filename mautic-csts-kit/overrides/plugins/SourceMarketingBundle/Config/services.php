@@ -5,6 +5,7 @@ use MauticPlugin\SourceMarketingBundle\Controller\PublicController;
 use MauticPlugin\SourceMarketingBundle\EventListener\CampaignSubscriber;
 use MauticPlugin\SourceMarketingBundle\Service\ArbitrationService;
 use MauticPlugin\SourceMarketingBundle\Service\ContactGuardService;
+use MauticPlugin\SourceMarketingBundle\Service\CountryPolicyService;
 use MauticPlugin\SourceMarketingBundle\Service\FrequencyGateService;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
@@ -21,6 +22,7 @@ return static function (ContainerConfigurator $configurator): void {
         ->bind(Connection::class, service('database_connection'));
 
     $services->set(PublicController::class);
+    $services->set(CountryPolicyService::class);
     $services->set(FrequencyGateService::class);
     $services->set(ArbitrationService::class);
     $services->set(ContactGuardService::class);

@@ -13,7 +13,9 @@ use Mautic\LeadBundle\Entity\Lead;
  * Rules enforced:
  *  - single channel <= 3 messages / 7 days
  *  - cross channel  <= 5 messages / 7 days
- *  - 22:00-08:00 silence window (per contact timezone)
+ *  - 22:00-08:00 silence window, evaluated in the contact's LOCAL time; the clock is
+ *    picked as: `timezone` field -> `country` field (auto-mapped) -> server clock
+ *  - country send policy: blocked markets / opt-in-required jurisdictions (CountryPolicyService)
  *  - high-value content exempt from single/cross caps BUT still respects 24h gap + silence
  *  - contact frozen (complaint/unsub) or topic frozen -> hard block
  *  - same asset (email/sms id) not reused within 30 days (dedup)
@@ -28,24 +30,17 @@ class FrequencyGateService
     public const CROSS_CHANNEL_LIMIT  = 5;
     public const WINDOW_DAYS          = 7;
     public const ASSET_DEDUP_DAYS     = 30;
-    public const SILENCE_START        = 22; // inclusive
-    public const SILENCE_END          = 8;  // exclusive
 
-    /**
-     * Fallback timezone used when the contact has no `timezone` field value.
-     *
-     * MUST NOT fall back to the server/PHP timezone: this deployment runs on UTC,
-     * so an empty contact timezone would make Beijing 06:00-16:00 (= UTC 22:00-08:00)
-     * look like the silence window and block the whole prime-time send slot, while
-     * happily sending in the middle of the night. Audience is domestic -> Asia/Shanghai.
-     */
-    public const DEFAULT_TIMEZONE = 'Asia/Shanghai';
+    // NOTE: quiet hours (default 22:00-08:00) now live in CountryPolicyService, because
+    // they are resolved per country. Change them there / via config, not here.
 
     private const TABLE_CHANNEL_LOG = 'sourcemarketing_channel_log';
     private const TABLE_EVENT_LOG   = 'sourcemarketing_event_log';
 
-    public function __construct(private Connection $conn)
-    {
+    public function __construct(
+        private Connection $conn,
+        private CountryPolicyService $countryPolicy,
+    ) {
     }
 
     private function conn(): Connection
@@ -67,6 +62,13 @@ class FrequencyGateService
             if ($topic && $this->isTopicFrozen($lead, $topic)) {
                 return $this->deny('topic_frozen', 0, 0);
             }
+
+            // Country-level send policy (blocked markets / opt-in-only jurisdictions).
+            $countryCheck = $this->checkCountryPolicy($lead, $channel);
+            if (null !== $countryCheck) {
+                return $this->deny($countryCheck, 0, 0);
+            }
+
             if ($this->inSilenceWindow($lead) && !$exemptHighValue) {
                 return $this->deny('silence_window', 0, 0);
             }
@@ -202,19 +204,111 @@ class FrequencyGateService
         }
     }
 
-    public function inSilenceWindow(Lead $lead): bool
+    /**
+     * Resolve which clock decides "is it night for this contact".
+     *
+     * Priority:
+     *   1. contact `timezone` field  - explicit per-contact preference, most precise
+     *   2. contact `country` field   - auto-mapped to the country's primary IANA zone
+     *   3. server clock              - documented fallback when country is empty
+     *
+     * @return array{timezone:string,source:string,country:?string}
+     */
+    public function resolveTimezone(Lead $lead): array
     {
         $tzName = trim((string) $lead->getFieldValue('timezone'));
-        try {
-            $tz = new \DateTimeZone('' !== $tzName ? $tzName : self::DEFAULT_TIMEZONE);
-        } catch (\Throwable $e) {
-            // Contact carries a bogus timezone string -> fall back to the business default,
-            // never to the UTC server clock.
-            $tz = new \DateTimeZone(self::DEFAULT_TIMEZONE);
-        }
-        $hour = (int) (new \DateTime('now', $tz))->format('G');
+        if ('' !== $tzName) {
+            try {
+                new \DateTimeZone($tzName);
 
-        return $hour >= self::SILENCE_START || $hour < self::SILENCE_END;
+                return ['timezone' => $tzName, 'source' => 'contact_timezone', 'country' => null];
+            } catch (\Throwable $e) {
+                // bogus value -> keep walking the chain
+            }
+        }
+
+        $country = trim((string) $lead->getFieldValue('country'));
+        if ('' !== $country) {
+            $resolved = $this->countryPolicy->resolveTimezone($country);
+            if ($resolved) {
+                try {
+                    new \DateTimeZone($resolved);
+
+                    return ['timezone' => $resolved, 'source' => 'country', 'country' => $country];
+                } catch (\Throwable $e) {
+                    // fall through to server clock
+                }
+            }
+        }
+
+        return [
+            'timezone' => $this->countryPolicy->serverTimezone(),
+            'source'   => 'server_default',
+            'country'  => '' !== $country ? $country : null,
+        ];
+    }
+
+    /**
+     * @return string|null deny reason, or null when the country allows this send
+     */
+    public function checkCountryPolicy(Lead $lead, string $channel): ?string
+    {
+        // Only email is jurisdiction-gated today; other channels pass through.
+        if ('email' !== strtolower($channel)) {
+            return null;
+        }
+
+        $country = trim((string) $lead->getFieldValue('country'));
+        if ('' === $country) {
+            return null;
+        }
+
+        $policy = $this->countryPolicy->emailPolicy($country);
+
+        if (!$policy['allowed']) {
+            return 'country_blocked:'.($policy['alpha2'] ?? $country);
+        }
+
+        if ($policy['needs_consent'] && !$this->hasEmailConsent($lead)) {
+            return 'country_consent_required:'.($policy['alpha2'] ?? $country);
+        }
+
+        return null;
+    }
+
+    /**
+     * Opt-in proof for consent-required jurisdictions: either the `email_consent`
+     * field carries a truthy value, or the contact is tagged `consent_optin`.
+     */
+    private function hasEmailConsent(Lead $lead): bool
+    {
+        $flag = strtolower(trim((string) $lead->getFieldValue('email_consent')));
+        if (in_array($flag, ['1', 'yes', 'true', 'y', 'optin', 'opt-in'], true)) {
+            return true;
+        }
+
+        foreach ($lead->getTags() as $tag) {
+            if ('consent_optin' === strtolower((string) $tag->getTag())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function inSilenceWindow(Lead $lead): bool
+    {
+        $resolved = $this->resolveTimezone($lead);
+        try {
+            $tz = new \DateTimeZone($resolved['timezone']);
+        } catch (\Throwable $e) {
+            $tz = new \DateTimeZone('UTC');
+        }
+
+        $hour            = (int) (new \DateTime('now', $tz))->format('G');
+        [$start, $end]   = $this->countryPolicy->silenceWindow($resolved['country']);
+
+        return $this->countryPolicy->hourInWindow($hour, $start, $end);
     }
 
     /**

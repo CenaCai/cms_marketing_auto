@@ -10,6 +10,7 @@ use Mautic\LeadBundle\Entity\Lead;
 use Mautic\LeadBundle\Model\LeadModel;
 use MauticPlugin\SourceMarketingBundle\Service\ArbitrationService;
 use MauticPlugin\SourceMarketingBundle\Service\ContactGuardService;
+use MauticPlugin\SourceMarketingBundle\Service\CountryPolicyService;
 use MauticPlugin\SourceMarketingBundle\Service\FrequencyGateService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -26,6 +27,7 @@ use Symfony\Component\HttpFoundation\Request;
  *   POST /sourcemarketing/channel-log  ?token=&email=&channel=&asset_id=              log external send
  *   POST /sourcemarketing/arbitrate    ?token=&email=&source=&anchor_time=            manual arbitration
  *   POST /sourcemarketing/guard        ?token=&email=&action=freeze|topic_freeze|downgrade|blacklist
+ *   GET  /sourcemarketing/country-policy?token=&country=|email=                        inspect tz + policy
  */
 class PublicController
 {
@@ -47,6 +49,7 @@ class PublicController
         private FrequencyGateService $frequencyGate,
         private ArbitrationService $arbitration,
         private ContactGuardService $guard,
+        private CountryPolicyService $countryPolicy,
     ) {
     }
 
@@ -108,7 +111,11 @@ class PublicController
         return (null !== $token && hash_equals($expected, (string) $token)) ? $expected : null;
     }
 
-    private function resolveContact(Request $request): ?Lead
+    /**
+     * @param bool $createIfMissing false for read-only endpoints, so a lookup never
+     *                              pollutes the database with an empty contact
+     */
+    private function resolveContact(Request $request, bool $createIfMissing = true): ?Lead
     {
         $contactId = $this->param($request, 'contact_id');
         $email     = trim((string) ($this->param($request, 'email') ?? ''));
@@ -141,6 +148,10 @@ class PublicController
                 if ($lead && $lead->getId()) {
                     return $lead;
                 }
+            }
+
+            if (!$createIfMissing) {
+                return null;
             }
 
             // Create on the fly (One-ID keyed by email, per PRD).
@@ -198,11 +209,20 @@ class PublicController
             'form_type'      => 'form_type',
             'consult_type'   => 'consult_type',
             'source_detail'  => 'source_detail',
+            'timezone'       => 'timezone',
         ] as $param => $alias) {
             $val = $this->param($request, $param);
             if (null !== $val && '' !== (string) $val) {
                 $lead->addUpdatedField($alias, (string) $val);
             }
+        }
+
+        // Country drives both the send-time timezone and the jurisdiction policy, so
+        // normalise whatever the platform sent ("中国" / "CN" / "CHN") into Mautic's
+        // canonical English name -- otherwise it won't match Mautic's country picker.
+        $countryIn = $this->param($request, 'country');
+        if (null !== $countryIn && '' !== trim((string) $countryIn)) {
+            $lead->addUpdatedField('country', $this->countryPolicy->normalizeName((string) $countryIn));
         }
 
         /** @var LeadModel $leadModel */
@@ -253,7 +273,55 @@ class PublicController
             $assetId ? (int) $assetId : null
         );
 
-        return new JsonResponse(array_merge(['ok' => true], $res));
+        // Surface WHICH clock decided the silence window, so a "why was this held?"
+        // question can be answered without digging into the DB.
+        $tz    = $this->frequencyGate->resolveTimezone($lead);
+        $local = null;
+        try {
+            $local = (new \DateTime('now', new \DateTimeZone($tz['timezone'])))->format('Y-m-d H:i');
+        } catch (\Throwable $e) {
+        }
+
+        return new JsonResponse(array_merge(['ok' => true], $res, [
+            'country'    => $tz['country'],
+            'timezone'   => $tz['timezone'],
+            'tz_source'  => $tz['source'],
+            'local_time' => $local,
+        ]));
+    }
+
+    /**
+     * Inspect how a country value resolves: timezone, local time, quiet hours and
+     * whether email may be sent. Read-only, handy for wiring up platform feeds.
+     *
+     *   GET /sourcemarketing/country-policy?token=…&country=Philippines
+     *   GET /sourcemarketing/country-policy?token=…&email=user@x.com   (uses contact's country)
+     */
+    public function countryPolicyAction(Request $request): JsonResponse
+    {
+        if (null === $this->auth($request)) {
+            return new JsonResponse(['ok' => false, 'error' => 'invalid_token'], 403);
+        }
+
+        $country = $this->param($request, 'country');
+
+        if (null === $country || '' === trim((string) $country)) {
+            $lead = $this->resolveContact($request, false);
+            if ($lead && $lead->getId()) {
+                $country = (string) $lead->getFieldValue('country');
+                $tz      = $this->frequencyGate->resolveTimezone($lead);
+
+                return new JsonResponse(array_merge(
+                    ['ok' => true, 'contact_id' => $lead->getId()],
+                    $this->countryPolicy->describe($country),
+                    ['effective_timezone' => $tz['timezone'], 'tz_source' => $tz['source']]
+                ));
+            }
+
+            return new JsonResponse(['ok' => false, 'error' => 'country_or_contact_required'], 400);
+        }
+
+        return new JsonResponse(array_merge(['ok' => true], $this->countryPolicy->describe((string) $country)));
     }
 
     public function channelLogAction(Request $request): JsonResponse
