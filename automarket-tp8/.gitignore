@@ -1,0 +1,22 @@
+# --- ThinkPHP 默认 ---
+*.log
+.env
+composer.phar
+.DS_Store
+Thumbs.db
+/.idea
+/.vscode
+/vendor
+/.settings
+/.buildpath
+/.project
+
+# --- 运行时 / 缓存（自动生成，勿提交）---
+/runtime
+/.phpunit.cache
+
+# --- 测试运行器二进制（体积大，clone 后本地下载即可）---
+/phpunit.phar
+
+# 注意：此处特意保留 composer.lock（不忽略），以锁定依赖版本
+#       think-orm v4 有破坏性变更，锁 lock 才能保证复现
