@@ -1,0 +1,116 @@
+<?php
+
+declare(strict_types=1);
+
+use think\migration\Migrator;
+
+class CreateLeadsTable extends Migrator
+{
+    public function up(): void
+    {
+        $this->execute(<<<'SQL'
+CREATE TABLE IF NOT EXISTS `leads` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `owner_id` int(10) unsigned DEFAULT NULL,
+  `stage_id` int(10) unsigned DEFAULT NULL,
+  `is_published` tinyint(1) NOT NULL,
+  `date_added` datetime DEFAULT NULL,
+  `created_by` int(11) DEFAULT NULL,
+  `created_by_user` varchar(191) DEFAULT NULL,
+  `date_modified` datetime DEFAULT NULL,
+  `modified_by` int(11) DEFAULT NULL,
+  `modified_by_user` varchar(191) DEFAULT NULL,
+  `checked_out` datetime DEFAULT NULL,
+  `checked_out_by` int(11) DEFAULT NULL,
+  `checked_out_by_user` varchar(191) DEFAULT NULL,
+  `points` int(11) NOT NULL,
+  `last_active` datetime DEFAULT NULL,
+  `internal` longtext DEFAULT NULL COMMENT '(DC2Type:array)',
+  `social_cache` longtext DEFAULT NULL COMMENT '(DC2Type:array)',
+  `date_identified` datetime DEFAULT NULL,
+  `preferred_profile_image` varchar(191) DEFAULT NULL,
+  `title` varchar(191) DEFAULT NULL,
+  `firstname` varchar(191) DEFAULT NULL,
+  `lastname` varchar(191) DEFAULT NULL,
+  `company` varchar(191) DEFAULT NULL,
+  `position` varchar(191) DEFAULT NULL,
+  `email` varchar(191) DEFAULT NULL,
+  `phone` varchar(191) DEFAULT NULL,
+  `mobile` varchar(191) DEFAULT NULL,
+  `address1` varchar(191) DEFAULT NULL,
+  `address2` varchar(191) DEFAULT NULL,
+  `city` varchar(191) DEFAULT NULL,
+  `state` varchar(191) DEFAULT NULL,
+  `zipcode` varchar(191) DEFAULT NULL,
+  `timezone` varchar(191) DEFAULT NULL,
+  `country` varchar(191) DEFAULT NULL,
+  `fax` varchar(191) DEFAULT NULL,
+  `preferred_locale` varchar(191) DEFAULT NULL,
+  `attribution_date` datetime DEFAULT NULL,
+  `attribution` double DEFAULT NULL,
+  `website` varchar(191) DEFAULT NULL,
+  `facebook` varchar(191) DEFAULT NULL,
+  `foursquare` varchar(191) DEFAULT NULL,
+  `instagram` varchar(191) DEFAULT NULL,
+  `linkedin` varchar(191) DEFAULT NULL,
+  `skype` varchar(191) DEFAULT NULL,
+  `twitter` varchar(191) DEFAULT NULL,
+  `generated_email_domain` varchar(255) GENERATED ALWAYS AS (substr(`email`,locate('@',`email`) + 1)) VIRTUAL COMMENT '(DC2Type:generated)',
+  `order_count` double DEFAULT NULL,
+  `total_spent` double DEFAULT NULL,
+  `last_activity_date` date DEFAULT NULL,
+  `tuiding_yuanyin` longtext DEFAULT NULL,
+  `nian_ling` date DEFAULT NULL,
+  `source_primary` varchar(64) DEFAULT NULL,
+  `last_source_event` varchar(64) DEFAULT NULL,
+  `last_anchor_time` datetime DEFAULT NULL,
+  `last_anchor_source` varchar(64) DEFAULT NULL,
+  `active_journey` varchar(64) DEFAULT NULL,
+  `comm_freeze_until` date DEFAULT NULL,
+  `topic_freeze_until` date DEFAULT NULL,
+  `topic_frozen_list` varchar(64) DEFAULT NULL,
+  `intensity_level` varchar(64) DEFAULT NULL,
+  `order_status` text DEFAULT NULL,
+  `departure_date` date DEFAULT NULL,
+  `behavior_type` text DEFAULT NULL,
+  `form_type` text DEFAULT NULL,
+  `consult_type` text DEFAULT NULL,
+  `camp_start_date` date DEFAULT NULL,
+  `camp_end_date` date DEFAULT NULL,
+  `source_detail` text DEFAULT NULL,
+  `reply_intent` varchar(64) DEFAULT NULL,
+  `reply_summary` longtext DEFAULT NULL,
+  `reply_raw` longtext DEFAULT NULL,
+  `reply_classified_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `IDX_179045527E3C61F9` (`owner_id`),
+  KEY `IDX_179045522298D193` (`stage_id`),
+  KEY `lead_date_added` (`date_added`),
+  KEY `lead_date_modified` (`date_modified`),
+  KEY `date_identified` (`date_identified`),
+  KEY `fax_search` (`fax`),
+  KEY `preferred_locale_search` (`preferred_locale`),
+  KEY `attribution_date_search` (`attribution_date`),
+  KEY `attribution_search` (`attribution`),
+  KEY `website_search` (`website`),
+  KEY `facebook_search` (`facebook`),
+  KEY `foursquare_search` (`foursquare`),
+  KEY `instagram_search` (`instagram`),
+  KEY `linkedin_search` (`linkedin`),
+  KEY `skype_search` (`skype`),
+  KEY `twitter_search` (`twitter`),
+  KEY `contact_attribution` (`attribution`,`attribution_date`),
+  KEY `date_added_country_index` (`date_added`,`country`),
+  KEY `email_search` (`email`),
+  KEY `generated_email_domain` (`generated_email_domain`),
+  CONSTRAINT `FK_179045522298D193` FOREIGN KEY (`stage_id`) REFERENCES `stages` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `FK_179045527E3C61F9` FOREIGN KEY (`owner_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
+SQL);
+    }
+
+    public function down(): void
+    {
+        $this->execute('DROP TABLE IF EXISTS `leads`');
+    }
+}
