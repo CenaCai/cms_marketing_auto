@@ -1,0 +1,5 @@
+-- Mautic 去 PII 配置 SQL 快照（字段 / 分群 / 标签）
+-- 生成日期: 2026-08-11
+-- 说明：本目录仅含配置定义，不含任何联系人数据（leads / 成员关系 / 标签关联均不导出）。
+-- 还原：依次执行 lead_tags.sql -> lead_fields.sql -> lead_lists.sql（顺序无关，REPLACE 幂等）。
+-- 行数：lead_fields=90, lead_lists=61, lead_tags=317
