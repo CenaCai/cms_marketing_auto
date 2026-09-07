@@ -115,6 +115,9 @@ def parse_brief(raw: dict) -> GoalSpec:
     data.setdefault("kpi", {"type": "conversion_rate", "target": 0.15})
     data.setdefault("locale", "zh_CN")
     data.setdefault("goal_id", "goal_" + uuid.uuid4().hex[:8])
+    # 目标名称默认回退到 goal_id：未填写则用 id 值，填写则保留填写内容
+    if not data.get("name"):
+        data["name"] = data["goal_id"]
 
     # MVP 渠道裁定：未显式指定渠道时，强制 email 主 + sms 预留
     if "channels" not in data or not data["channels"]:

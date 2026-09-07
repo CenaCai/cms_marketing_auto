@@ -37,7 +37,8 @@ check("Brief 含运营目标字段", "营销目标" in bf)
 check("Brief 目标字段默认空", "UEFA" not in bf and "name='objective'" in bf)
 check("Brief 含目标名称字段", "name='goal_name'" in bf)
 check("Brief 含总体转化率字段", "name='overall_conv'" in bf)
-check("Brief 含单campaign点击率字段", "name='click_rate'" in bf)
+check("Brief 单campaign点击率改为系统反推(只读)",
+      "name='click_rate_disp'" in bf and "name='click_rate'" not in bf)
 check("Brief 含约束字段", "name='constraints'" in bf)
 check("Brief 含 StrategySpec 字段", "name='strategy_spec'" in bf)
 check("Brief StrategySpec 已译中文", "策略规格（Agent 产出，可选）" in bf)
@@ -57,7 +58,7 @@ check("策略预览含摘要标题", "策略摘要（只读" in pv)
 check("策略预览含 rationale/evidence", "理由：" in pv and "依据：" in pv)
 check("策略预览 generate 邮件显示[待生成]", "[待生成]" in pv)
 
-# ---------- 路径 A：未提交 StrategySpec → 默认递进策略（3 campaign）----------
+# ---------- 路径 A：未提交 StrategySpec → 默认递进策略（按日期跨度派生 N）----------
 st, loc, _ = post("/brief",
     "objective=TEST+GOAL&locale=zh_CN&budget=0&"
     "start_date=2028-05-01&end_date=2028-07-09&"
@@ -75,6 +76,10 @@ check("Program 头部展示目标名称", "目标名称" in ph)
 check("Program 展示运营约束", "免打扰" in ph)
 check("Program 标记默认策略来源", "默认递进策略" in ph)
 check("Program 首波初始为未审核", "未审核" in ph)
+check("Program 含派生计划摘要(系统反推点击率)", "派生计划摘要" in ph)
+check("Program 告知合理性判定", "合理性判定" in ph)
+check("Program 含 Agent 优化说明", "Agent 优化说明" in ph)
+check("Program 反推点击率字段已落库", "click_rate" in program_of(gid)["plan"])
 
 c1 = f"{gid}_c1"
 st, _, body = post(f"/program/{gid}/campaign/{c1}/approve", "approver=alice")
@@ -246,3 +251,36 @@ pg4 = get(f"/program/{gid4}")
 check("Program 页明示静默窗豁免", "已豁免静默窗" in pg4)
 
 print("DONE gid=", gid, " gid2=", gid2, " gid3=", gid3, " gid4=", gid4)
+
+# ---------- 路径 E：提交总体目标转化率 → 系统反推单campaign点击率 + 合理性 ----------
+st, loc, _ = post("/brief",
+    "objective=CONV+GOAL&locale=zh_CN&budget=0&"
+    "start_date=2028-05-01&end_date=2028-07-09&"
+    "overall_conv=0.15")
+check("Conv Brief→302 Program", st == 302, f"loc={loc}")
+gid5 = loc.split("/")[-1]
+ph5 = get(f"/program/{gid5}")
+prog5 = program_of(gid5)
+check("Conv 派生 click_rate>0", prog5["plan"]["click_rate"] > 0, f"cr={prog5['plan']['click_rate']}")
+check("Conv 合理(reasonable=True)", prog5["plan"]["reasonable"] is True, f"n={prog5['plan']['n_campaigns']}")
+check("Conv campaign 数受日期跨度约束(1<=n<=8)",
+      1 <= prog5["plan"]["n_campaigns"] <= 8, f"n={prog5['plan']['n_campaigns']}")
+check("Conv per_campaign_target=oc/n",
+      abs(prog5["plan"]["per_campaign_target"] - round(0.15 / prog5["plan"]["n_campaigns"], 4)) < 1e-9,
+      f"t={prog5['plan']['per_campaign_target']}")
+check("Conv Program 展示反推点击率+合理性", "推算" in ph5 and "合理性判定" in ph5)
+check("Conv Program 展示 Agent 优化说明", "Agent 优化说明" in ph5)
+
+# ---------- 路径 F：高目标 + 短跨度 → 点击率超阈值，标记「需优化」 ----------
+st, loc, _ = post("/brief",
+    "objective=HIGH+GOAL&locale=zh_CN&budget=0&"
+    "start_date=2028-06-01&end_date=2028-06-30&"
+    "overall_conv=0.50")
+check("HighConv Brief→302 Program", st == 302, f"loc={loc}")
+gid6 = loc.split("/")[-1]
+prog6 = program_of(gid6)
+check("HighConv 标记需优化(reasonable=False)",
+      prog6["plan"]["reasonable"] is False, f"cr={prog6['plan']['click_rate']} n={prog6['plan']['n_campaigns']}")
+check("HighConv 优化说明指向超阈值压缩节奏", "超阈值" in prog6["plan"]["optimization_note"])
+
+print("DONE2 gid5=", gid5, " gid6=", gid6)

@@ -48,38 +48,89 @@ def _split_windows(start_date: str, end_date: str, n: int) -> list:
     return out
 
 
-def derive_plan(overall_conv, click_rate, start_date, end_date) -> dict:
+def derive_plan(overall_conv, start_date, end_date, strategy=None) -> dict:
     """
-    由「总体目标转化率 + 单 campaign 打开/点击率」派生 program 计划（确定性启发式）：
+    由「总体目标转化率 + 起止日期」派生 program 计划（确定性启发式；单 campaign 点击率不再手填，改由系统推算）：
 
       ASSUMED_LP_CONV = 0.10  （假设落地页承接转化率，可调）
-      per_campaign_conv = click_rate * ASSUMED_LP_CONV   （单波有效转化贡献）
-      n = max(1, min(8, ceil(log(1-overall_conv)/log(1-per_campaign_conv))))
-                               （缺输入/无效 → 回落 n=3）
+      单 campaign 打开/点击率（click_rate）由总体目标转化率反推：
+          pc        = 1 - (1-overall_conv)^(1/n)      （每 campaign 需贡献的转化）
+          click_rate = pc / ASSUMED_LP_CONV            （= 打开/点击率，系统推算，非运营手填）
+      n（campaign 数）= 策略依据「日期跨度(最小节奏 MIN_CADENCE_DAYS) + 总体目标」选出：
+          max_by_span = clamp(span_days // MIN_CADENCE_DAYS, 1, 8)   （跨度决定上限）
+          取使 click_rate <= RC_MAX 的最小 n；若跨度内无法满足则取 max_by_span 并标记需优化
       windows = [start,end] 均分成 n 段连续执行窗口
       per_campaign_target = round(overall_conv / n, 4)  （线性归因，可编辑）
 
-    返回 {"n_campaigns", "windows", "per_campaign_target"}。
+    返回 {"n_campaigns","windows","per_campaign_target","click_rate","reasonable","optimization_note"}。
+
+    strategy: 可选 dict，可覆盖 MIN_CADENCE_DAYS / max_campaigns / rc_max（Agent 调参入口）。
     """
     try:
         oc = float(overall_conv)
-        cr = float(click_rate)
     except (TypeError, ValueError):
-        oc, cr = 0.0, 0.0
+        oc = 0.0
+    if oc < 0:
+        oc = 0.0
+    if oc >= 1:
+        oc = 0.99  # 转化率上限保护，避免 (1-oc) 非正导致幂运算异常
 
-    if oc > 0 and cr > 0:
-        per_campaign_conv = cr * ASSUMED_LP_CONV
-        if 0 < per_campaign_conv < 1:
-            n = max(1, min(8, math.ceil(math.log(1 - oc) / math.log(1 - per_campaign_conv))))
-        else:
-            n = 1
+    # 策略参数（Agent 可按 StrategySpec 调参）
+    MIN_CADENCE_DAYS = 7
+    MAX_CAMPAIGNS = 8
+    RC_MAX = 0.50
+    if isinstance(strategy, dict):
+        MIN_CADENCE_DAYS = int(strategy.get("min_cadence_days", MIN_CADENCE_DAYS))
+        MAX_CAMPAIGNS = int(strategy.get("max_campaigns", MAX_CAMPAIGNS))
+        RC_MAX = float(strategy.get("rc_max", RC_MAX))
+
+    # 日期跨度
+    try:
+        s = date.fromisoformat(start_date)
+        e = date.fromisoformat(end_date)
+        span = (e - s).days
+    except Exception:  # noqa: BLE001
+        span = 0
+    if span < 0:
+        span = 0
+    max_by_span = (max(1, min(MAX_CAMPAIGNS, span // MIN_CADENCE_DAYS))
+                   if span > 0 else MAX_CAMPAIGNS)
+
+    if oc <= 0:
+        n = max_by_span if span > 0 else DEFAULT_N_CAMPAIGNS
+        per_campaign_target = 0.0
+        click_rate = 0.0
+        reasonable = True
+        opt_note = "未配置总体目标转化率：跳过可达性校验，n 按日期跨度默认派生"
     else:
-        # 输入缺失/无效 → 回落默认 3 个战役
-        n = DEFAULT_N_CAMPAIGNS
+        # 选使 click_rate <= RC_MAX 的最小 n（在跨度上限内）
+        n = None
+        for k in range(1, max_by_span + 1):
+            pc = 1 - (1 - oc) ** (1.0 / k)
+            cr = pc / ASSUMED_LP_CONV if ASSUMED_LP_CONV > 0 else 0.0
+            if cr <= RC_MAX:
+                n = k
+                break
+        if n is None:
+            n = max_by_span
+        pc = 1 - (1 - oc) ** (1.0 / n)
+        click_rate = round(pc / ASSUMED_LP_CONV, 4) if ASSUMED_LP_CONV > 0 else 0.0
+        per_campaign_target = round(oc / n, 4)
+        reasonable = (click_rate <= RC_MAX) and (n <= MAX_CAMPAIGNS)
+        if not reasonable:
+            opt_note = ("单 campaign 点击率超阈值：Agent 将按策略压缩节奏 / 提升单波内容转化以满足总体目标")
+        else:
+            opt_note = "默认递进策略派生；Agent 可按 StrategySpec 进一步优化频次 / 内容 / 受众"
 
     windows = _split_windows(start_date, end_date, n)
-    per_campaign_target = round(oc / n, 4) if oc > 0 else 0.0
-    return {"n_campaigns": n, "windows": windows, "per_campaign_target": per_campaign_target}
+    return {
+        "n_campaigns": n,
+        "windows": windows,
+        "per_campaign_target": per_campaign_target,
+        "click_rate": click_rate,
+        "reasonable": reasonable,
+        "optimization_note": opt_note,
+    }
 
 # L1 策略规格加载：Agent 产出 → PoC 消费（re-export，方便调用方一处 import）
 from strategy_spec import (  # noqa: F401  (re-export)

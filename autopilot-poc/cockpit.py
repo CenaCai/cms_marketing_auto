@@ -34,7 +34,11 @@ from approval_gate import (bind_and_approve, verify_push, is_valid,
                            ApprovalDecision)
 from mautic_client import push, load_config, mautic_read_assets
 from adaptive import (build_program, evaluate_and_replan, default_strategies,
-                      DEFAULT_N_CAMPAIGNS, derive_plan, _split_windows)
+                      DEFAULT_N_CAMPAIGNS, derive_plan, _split_windows,
+                      ASSUMED_LP_CONV)
+
+# 与 adaptive.derive_plan 一致的策略阈值（Agent 可达性校验用）
+RC_MAX = 0.50
 
 PORT = 8090
 HOST = "127.0.0.1"
@@ -193,6 +197,76 @@ def _dash_body() -> str:
             f"<div class='card'>{items}</div>")
 
 
+# 自动派生计划预览（前端实时计算：由总体目标转化率 + 起止日期反推单 campaign 点击率与战役数）
+# 纯字符串（非 f-string），避免 JS 大括号转义；通过 f"<script>{DERIVE_JS}</script>" 注入。
+DERIVE_JS = """
+(function(){
+function derive(){
+  var oc=parseFloat(document.querySelector("[name=overall_conv]").value)||0;
+  var sd=document.querySelector("[name=start_date]").value;
+  var ed=document.querySelector("[name=end_date]").value;
+  var LP=0.10, MIN_CAD=7, MAXN=8, RC_MAX=0.50;
+  var span=0;
+  try{ var s=new Date(sd), e=new Date(ed); span=Math.max(0,(e-s)/86400000); }catch(err){ span=0; }
+  var maxBySpan = (span>0)? Math.max(1, Math.min(MAXN, Math.floor(span/MIN_CAD))) : MAXN;
+  var n=maxBySpan, click_rate=0, target=0, reasonable=true, optNote='';
+  if(oc>0){
+    var k=null;
+    for(var c=1;c<=maxBySpan;c++){
+      var pc=1-Math.pow(1-oc,1/c);
+      var cr=pc/LP;
+      if(cr<=RC_MAX){ k=c; break; }
+    }
+    if(k===null){ k=maxBySpan; }
+    n=k;
+    var pc=1-Math.pow(1-oc,1/n);
+    click_rate=Math.round(pc/LP*10000)/10000;
+    target=Math.round(oc/n*10000)/10000;
+    reasonable=(click_rate<=RC_MAX)&&(n<=MAXN);
+    optNote = reasonable
+      ? '默认递进策略派生；Agent 可按 StrategySpec 进一步优化频次 / 内容 / 受众'
+      : '单 campaign 点击率超阈值：Agent 将按策略压缩节奏 / 提升单波内容转化以满足总体目标';
+  } else {
+    n=maxBySpan;
+    target=0;
+    click_rate=0;
+    reasonable=true;
+    optNote='未配置总体目标转化率：跳过可达性校验，n 按日期跨度默认派生';
+  }
+  var rows='';
+  try{
+    var s=new Date(sd), e=new Date(ed), spanD=Math.max(0,(e-s)/86400000), step=spanD/n;
+    for(var i=0;i<n;i++){
+      var ws=new Date(s.getTime()+step*i*86400000);
+      var we=(i<n-1)?new Date(s.getTime()+step*(i+1)*86400000):e;
+      var f=function(x){return x.toISOString().slice(0,10);};
+      rows+='<tr><td>'+(i+1)+'</td><td>'+f(ws)+' ~ '+f(we)+'</td><td>'+target+'</td></tr>';
+    }
+  }catch(err){ rows='<tr><td colspan=3>请同时填写开始 / 结束日期</td></tr>'; }
+  var crDisp = (click_rate>0)? (Math.round(click_rate*10000)/100) + '%' : '—';
+  var verdict = reasonable
+    ? "<span class='b-ok'>合理 ✓</span>"
+    : "<span class='b-bad'>需优化 ⚠</span>";
+  var el=document.getElementById('plan-preview');
+  if(oc>0||span>0){
+    el.innerHTML='<h4 style="margin:6px 0">自动派生计划预览</h4>'
+      +'<p class="note">将生成 <b>'+n+'</b> 个战役（基于日期跨度 + 总体目标）</p>'
+      +'<table><tr><th>战役</th><th>执行窗口</th><th>各 campaign 转化目标</th></tr>'+rows+'</table>'
+      +'<p class="note">单 campaign 打开/点击率（推算）：<b>'+crDisp+'</b>（='+click_rate+'）</p>'
+      +'<p class="note">合理性判定：'+verdict+'</p>'
+      +'<p class="note">Agent 优化说明：'+optNote+'</p>';
+  } else {
+    el.innerHTML='填写「总体目标转化率」与「开始 / 结束日期」后，将自动推算派生战役数量、单 campaign 点击率与合理性。';
+  }
+}
+['overall_conv','start_date','end_date'].forEach(function(nm){
+  var el=document.querySelector('[name='+nm+']'); if(el){ el.addEventListener('input', derive); }
+});
+derive();
+})();
+"""
+
+
 def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict = None,
                 service_spec: list = None) -> str:
     """
@@ -200,18 +274,19 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     strategy_spec 非空时，右侧只读展示逐条策略摘要（供提交前确认）。
     """
     ex = {"objective": "", "locale": "zh_CN", "budget": "0", "start_date": "2028-05-01",
-          "end_date": "2028-07-09", "overall_conv": "", "click_rate": "", "goal_name": ""}
+          "end_date": "2028-07-09", "overall_conv": "", "goal_name": ""}
     fld = lambda k, lbl, v, t="text", ph="": (f"<label>{lbl}</label><input name='{k}' type='{t}' value='{_esc(v)}' placeholder='{_esc(ph)}'>")
     operator = (f"<div class='card'><h3>① 你的目标与约束（运营填写）</h3>"
                 f"<p class='note'>分群 / 内容 / 频次 / 落库 tag 由 Agent 在策略里产出，这里不填。</p>"
+                f"{fld('goal_name','目标名称（便于阅读，留空则使用 ID 值）',ex['goal_name'])}"
                 f"{fld('objective','营销目标（一句话）',ex['objective'])}"
-                f"{fld('goal_name','目标名称（便于阅读，如 UCL2028 票务预售）',ex['goal_name'])}"
                 f"<div class='grid2'>"
                 f"{fld('start_date','开始日期',ex['start_date'])}"
                 f"{fld('end_date','结束日期',ex['end_date'])}</div>"
                 f"<div class='grid2'>"
                 f"{fld('overall_conv','总体目标转化率（最终期望，0~1，如 0.15）',ex['overall_conv'])}"
-                f"{fld('click_rate','单 campaign 打开/点击率（0~1，如 0.30）',ex['click_rate'])}</div>"
+                f"<label>单 campaign 打开/点击率（由系统根据总体目标转化率反推，无需填写）</label>"
+                f"<input name='click_rate_disp' type='text' placeholder='填写总体转化率后自动推算' readonly></div>"
                 f"<div class='grid2'>"
                 f"{fld('budget','预算金额（¥，留空或 0 = 无营收活动）',ex['budget'])}"
                 f"<label>语言/地区</label>"
@@ -230,47 +305,10 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"</ul></div>"
                 f"<textarea name='strategy_spec' placeholder='strategies/ucl2028_send_strategy.json, strategies/ucl2028_content_map.json'>"
                 f"{_esc('strategies/example_strategy.json' if strategy_spec else '')}</textarea>"
-                f"<div id='plan-preview' class='note'>填写总体转化率与单 campaign 点击率后，将自动预览派生的战役数量与执行窗口。</div>"
+                f"<div id='plan-preview' class='note'>填写「总体目标转化率」与「开始 / 结束日期」后，将自动推算派生战役数量、单 campaign 点击率与合理性。</div>"
                 f"<button class='btn' type='submit' style='margin-top:14px'>编译并生成 Program →</button>"
                 f"</div>"
-                f"<script>"
-                f"(function(){{"
-                f"function derive(){{"
-                f"  var oc=parseFloat(document.querySelector(\"[name=overall_conv]\").value)||0;"
-                f"  var cr=parseFloat(document.querySelector(\"[name=click_rate]\").value)||0;"
-                f"  var sd=document.querySelector(\"[name=start_date]\").value;"
-                f"  var ed=document.querySelector(\"[name=end_date]\").value;"
-                f"  var LP=0.10, n=3, target=0;"
-                f"  if(oc>0 && cr>0){{"
-                f"    var pc=cr*LP;"
-                f"    if(pc>0 && pc<1){{ n=Math.max(1,Math.min(8,Math.ceil(Math.log(1-oc)/Math.log(1-pc)))); }}"
-                f"    else {{ n=1; }}"
-                f"    target=Math.round(oc/n*10000)/10000;"
-                f"  }}"
-                f"  var rows='';"
-                f"  try{{"
-                f"    var s=new Date(sd), e=new Date(ed), span=Math.max(0,(e-s)/86400000), step=span/n;"
-                f"    for(var i=0;i<n;i++){{"
-                f"      var ws=new Date(s.getTime()+step*i*86400000);"
-                f"      var we=(i<n-1)?new Date(s.getTime()+step*(i+1)*86400000):e;"
-                f"      var f=function(x){{return x.toISOString().slice(0,10);}};"
-                f"      rows+='<tr><td>'+(i+1)+'</td><td>'+f(ws)+' ~ '+f(we)+'</td><td>'+target+'</td></tr>';"
-                f"    }}"
-                f"  }}catch(err){{ rows='<tr><td colspan=3>请同时填写开始 / 结束日期</td></tr>'; }}"
-                f"  var el=document.getElementById('plan-preview');"
-                f"  if(oc>0||cr>0){{"
-                f"    el.innerHTML='<h4 style=\"margin:6px 0\">自动派生计划预览</h4><p class=\"note\">将生成 '+n+' 个战役</p>"
-                f"<table><tr><th>战役</th><th>执行窗口</th><th>转化目标</th></tr>'+rows+'</table>';"
-                f"  }} else {{"
-                f"    el.innerHTML='填写总体转化率与单 campaign 点击率后，将自动预览派生的战役数量与执行窗口。';"
-                f"  }}"
-                f"}}"
-                f"['overall_conv','click_rate','start_date','end_date'].forEach(function(nm){{"
-                f"  var el=document.querySelector('[name='+nm+']'); if(el){{ el.addEventListener('input', derive); }}"
-                f"}});"
-                f"derive();"
-                f"}})();"
-                f"</script>")
+                f"<script>{DERIVE_JS}</script>")
     agent = ("<div class='agent'><h4>② Agent 自动决策（运营无需、也不能改）</h4>"
              "<div class='row'>"
              "<span class='tag biz'>主渠道 email（MVP 裁定）</span>"
@@ -508,6 +546,22 @@ def _program_body(program: dict, msg: str = "") -> str:
     rules = ("<p class='note'>自适应规则（确定性，可审计）：上游完成后按「达成率/退订率」改写下游 —— "
              "达标→保持略降本；未达标(≥50%)→提频+换内容+urgency；乏力→大幅提频+扩分组(broaden/reengage)+换内容；"
              "退订超阈→降频+suppression。</p>")
+    # 派生计划摘要（单 campaign 点击率由系统反推 + 合理性判定 + Agent 优化说明）
+    plan = program.get("plan") or {}
+    plan_html = ""
+    if plan:
+        _cr = plan.get("click_rate")
+        _cr_disp = (f"{round(_cr*10000)/100}%" if isinstance(_cr, (int, float)) and _cr > 0 else "—")
+        _reasonable = plan.get("reasonable", True)
+        _verdict = ("<span class='b-ok'>合理 ✓</span>" if _reasonable
+                    else "<span class='b-bad'>需优化 ⚠</span>")
+        plan_html = (f"<div class='card'><h3>派生计划摘要（系统反推，无需手填）</h3>"
+                     f"<p class='note'>战役数：<b>{_esc(plan.get('n_campaigns','—'))}</b> · "
+                     f"各 campaign 转化目标：<b>{_esc(plan.get('per_campaign_target','—'))}</b></p>"
+                     f"<p class='note'>单 campaign 打开/点击率（推算）：<b>{_cr_disp}</b>"
+                     f"（={_esc(_cr)}，由总体目标反推）</p>"
+                     f"<p class='note'>合理性判定：{_verdict}</p>"
+                     f"<p class='note'>Agent 优化说明：{_esc(plan.get('optimization_note',''))}</p></div>")
     # campaign 流水线
     cards = ""
     campaigns = program["campaigns"]
@@ -696,7 +750,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                    f"{(' + ' + str(program.get('n_service_sequences', 0)) + ' 条服务序列') if program.get('n_service_sequences') else ''}"
                    f" · 策略来源 {src_html}</p>")
     return (f"{msg}{header_html}"
-            f"{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{clog}")
+            f"{plan_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{clog}")
 
 
 def _proposal_body(d: dict, msg: str = "") -> str:
@@ -866,22 +920,43 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError(f"StrategySpec 解析失败：{spec_err}")
             d = spec_meta or {}
 
-            # N 由策略数组长度决定；未提交策略时由 derive_plan 派生（总体转化率 + 点击率）
+            # N 由策略数组长度决定；未提交策略时由 derive_plan 派生（总体目标转化率 + 起止日期反推点击率）
             overall_conv = (form.get("overall_conv", "") or "").strip()
-            click_rate = (form.get("click_rate", "") or "").strip()
-            plan_raw = derive_plan(overall_conv, click_rate,
+            plan_raw = derive_plan(overall_conv,
                                    form.get("start_date", "") or d.get("start_date", ""),
-                                   form.get("end_date", "") or d.get("end_date", ""))
-            n = len(strategies) if strategies else plan_raw["n_campaigns"]
-            # 执行窗口按真实 campaign 数均分（派生 n 与策略 n 可能不同）
-            n_actual = len(strategies) if strategies else plan_raw["n_campaigns"]
+                                   form.get("end_date", "") or d.get("end_date", ""),
+                                   strategy=strategies or None)
             sd_raw = (form.get("start_date", "") or d.get("start_date", "")).strip()
             ed_raw = (form.get("end_date", "") or d.get("end_date", "")).strip()
+            try:
+                _oc = float(overall_conv)
+            except (TypeError, ValueError):
+                _oc = 0.0
+            # 已提交 StrategySpec 时按策略中 campaign 数派生，并据总体目标重算可达性
+            if strategies:
+                n_actual = len(strategies)
+                if _oc > 0 and ASSUMED_LP_CONV > 0:
+                    _pc = 1 - (1 - _oc) ** (1.0 / n_actual)
+                    click_rate = round(_pc / ASSUMED_LP_CONV, 4)
+                    reasonable = click_rate <= RC_MAX
+                    opt_note = "已提交 StrategySpec：Agent 按策略中 campaign 数派生，仍按总体目标校验可达性"
+                else:
+                    click_rate, reasonable, opt_note = 0.0, True, "未配置总体目标转化率：跳过可达性校验"
+            else:
+                n_actual = plan_raw["n_campaigns"]
+                click_rate = plan_raw["click_rate"]
+                reasonable = plan_raw["reasonable"]
+                opt_note = plan_raw["optimization_note"]
+            n = n_actual
+            per_campaign_target = (round(_oc / n_actual, 4)
+                                   if _oc > 0 else plan_raw["per_campaign_target"])
             windows = (_split_windows(sd_raw, ed_raw, n_actual)
                        if sd_raw and ed_raw else
                        [{"start": sd_raw, "end": ed_raw} for _ in range(n_actual)])
             plan = {"n_campaigns": n_actual, "windows": windows,
-                    "per_campaign_target": plan_raw["per_campaign_target"]}
+                    "per_campaign_target": per_campaign_target,
+                    "click_rate": click_rate, "reasonable": reasonable,
+                    "optimization_note": opt_note}
 
             # ---- L0：运营只填目标与约束，其余由 Agent 策略补 ----
             locale_raw = (form.get("locale", "") or d.get("locale", "zh_CN") or "zh_CN").strip()
@@ -916,7 +991,7 @@ class Handler(BaseHTTPRequestHandler):
             goal.meta = {
                 "locales": locales or d.get("locales", []),
                 "constraints": constraints,
-                "name": goal_name,
+                "name": goal.name,
                 "strategy_source": (strategies[0].get("strategy_source", "default")
                                     if strategies else "default"),
             }
@@ -925,7 +1000,7 @@ class Handler(BaseHTTPRequestHandler):
             # 每个 campaign 绑定派生计划：转化目标 + 执行窗口（可在 /program 上编辑）
             for i, c in enumerate(program["campaigns"]):
                 w = windows[i] if i < len(windows) else {"start": sd_raw, "end": ed_raw}
-                c["conv_target"] = plan_raw["per_campaign_target"]
+                c["conv_target"] = per_campaign_target
                 c["unsub_cap"] = 0.003
                 c["exec_start"] = w["start"]
                 c["exec_end"] = w["end"]
