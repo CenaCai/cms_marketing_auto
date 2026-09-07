@@ -84,8 +84,9 @@ check("Brief 含运营目标字段", "营销目标" in bf)
 check("Brief 目标字段默认空", "UEFA" not in bf and "name='objective'" in bf)
 check("Brief 含目标名称字段", "name='goal_name'" in bf)
 check("Brief 含总体转化率字段", "name='overall_conv'" in bf)
-check("Brief 单campaign点击率改为系统反推(只读)",
-      "name='click_rate_disp'" in bf and "name='click_rate'" not in bf)
+check("Brief 不再让运营填单campaign点击率(系统反推,只读控件已下架)",
+      "name='click_rate_disp'" not in bf and "name='click_rate'" not in bf
+      and "此处不可手填" in bf)
 check("Brief 含「用 WorkBuddy 生成策略」按钮", "gen-strategy-btn" in bf)
 check("Brief 展示策略生成说明(端点优先/降级)",
       ("已配置策略自动生成端点" in bf) or ("未配置自动生成端点" in bf))
