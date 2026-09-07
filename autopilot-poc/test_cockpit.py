@@ -24,6 +24,16 @@ def post(path, data: str):
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Location"), e.read().decode()
 
+def post_json(path, obj: dict):
+    req = u.Request(BASE + path, data=json.dumps(obj, ensure_ascii=False).encode(),
+                    method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        r = op.open(req, timeout=10)
+        return r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
 def check(name, cond, extra=""):
     print(("✅" if cond else "❌"), name, extra)
 
@@ -39,6 +49,9 @@ check("Brief 含目标名称字段", "name='goal_name'" in bf)
 check("Brief 含总体转化率字段", "name='overall_conv'" in bf)
 check("Brief 单campaign点击率改为系统反推(只读)",
       "name='click_rate_disp'" in bf and "name='click_rate'" not in bf)
+check("Brief 含「用 WorkBuddy 生成策略」按钮", "gen-strategy-btn" in bf)
+check("Brief 展示策略生成说明(端点优先/降级)",
+      ("已配置策略自动生成端点" in bf) or ("未配置自动生成端点" in bf))
 check("Brief 含约束字段", "name='constraints'" in bf)
 check("Brief 含 StrategySpec 字段", "name='strategy_spec'" in bf)
 check("Brief StrategySpec 已译中文", "策略规格（Agent 产出，可选）" in bf)
@@ -282,5 +295,16 @@ prog6 = program_of(gid6)
 check("HighConv 标记需优化(reasonable=False)",
       prog6["plan"]["reasonable"] is False, f"cr={prog6['plan']['click_rate']} n={prog6['plan']['n_campaigns']}")
 check("HighConv 优化说明指向超阈值压缩节奏", "超阈值" in prog6["plan"]["optimization_note"])
+
+# ---------- 路径 G：策略生成按钮后端（无端点 → 降级复制提示词） ----------
+st_g, body_g = post_json("/brief/generate-strategy",
+    {"goal_name": "SMOKE", "objective": "2028 欧冠决赛邀请", "start_date": "2028-05-01",
+     "end_date": "2028-07-09", "overall_conv": "0.15", "budget": "0", "locale": "zh_CN",
+     "constraints": "22:00-09:00 免打扰"})
+gj = json.loads(body_g)
+check("策略生成端点返回 JSON", st_g == 200 and isinstance(gj, dict), f"st={st_g}")
+check("无端点时降级 fallback=True", gj.get("fallback") is True, f"{gj.get('error','')}")
+check("降级返回自包含提示词", "StrategySpec" in gj.get("prompt", ""))
+check("提示词含 Brief 目标", "2028 欧冠决赛邀请" in gj.get("prompt", ""))
 
 print("DONE2 gid5=", gid5, " gid6=", gid6)

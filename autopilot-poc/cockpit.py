@@ -267,6 +267,169 @@ derive();
 """
 
 
+# 「用 WorkBuddy 生成策略」按钮逻辑（纯字符串，免 f-string 大括号转义）
+# 端点优先·降级复制：配置端点 → 直接回填 StrategySpec；未配置 → 复制提示词到剪贴板。
+STRATEGY_GEN_JS = """
+(function(){
+function gatherBrief(){
+  var get=function(n){var el=document.querySelector('[name='+n+']');return el?(el.value||'').trim():'';};
+  return {goal_name:get('goal_name'),objective:get('objective'),start_date:get('start_date'),
+    end_date:get('end_date'),overall_conv:get('overall_conv'),budget:get('budget'),
+    locale:get('locale'),constraints:get('constraints')};
+}
+function setStatus(msg, ok){
+  var el=document.getElementById('gen-strategy-status');
+  if(!el) return;
+  el.innerHTML="<span class='"+(ok?'b-ok':'b-warn')+"'>"+msg+"</span>";
+}
+function escapeHtml(s){
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function doGen(){
+  var btn=document.getElementById('gen-strategy-btn');
+  if(btn) btn.disabled=true;
+  setStatus('正在生成策略…', false);
+  var brief=gatherBrief();
+  fetch('/brief/generate-strategy', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(brief)
+  }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){
+      var j=res.j||{};
+      if(res.ok && j.ok && j.strategy_spec){
+        var ta=document.querySelector('[name=strategy_spec]');
+        if(ta){ ta.value=j.strategy_spec; }
+        setStatus('✅ 已生成 StrategySpec 并填入上方文本框', true);
+      } else if(j.fallback){
+        var p=j.prompt||'';
+        if(navigator.clipboard && navigator.clipboard.writeText){
+          navigator.clipboard.writeText(p).then(function(){
+            setStatus('已复制提示词到剪贴板：请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框', false);
+          }, function(){
+            setStatus('自动复制失败，请手动复制：<br><textarea readonly style="width:100%;height:110px">'+escapeHtml(p)+'</textarea>', false);
+          });
+        } else {
+          setStatus('请复制并在 WorkBuddy 发给小腾：<br><textarea readonly style="width:100%;height:110px">'+escapeHtml(p)+'</textarea>', false);
+        }
+      } else {
+        setStatus('生成失败：'+(j.error||'未知错误'), false);
+      }
+    })
+    .catch(function(e){ setStatus('请求失败：'+e, false); })
+    .finally(function(){ if(btn) btn.disabled=false; });
+}
+var b=document.getElementById('gen-strategy-btn');
+if(b){ b.addEventListener('click', function(ev){ ev.preventDefault(); doGen(); }); }
+})();
+"""
+
+
+def load_strategy_gen_config() -> dict:
+    """
+    读取「策略自动生成端点」配置（端点优先·降级复制）。
+    来源优先级：环境变量 WORKBUDDY_STRATEGY_ENDPOINT/TOKEN > config.json [env].strategy_gen。
+    返回 {enabled, endpoint, method, headers, timeout}。
+    """
+    endpoint = os.environ.get("WORKBUDDY_STRATEGY_ENDPOINT", "").strip()
+    token = os.environ.get("WORKBUDDY_STRATEGY_TOKEN", "").strip()
+    cfg: dict = {}
+    cfg_path = os.path.join(HERE, "config.json")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                allcfg = json.load(f)
+            sg = (allcfg.get("local", {}) or {}).get("strategy_gen") or {}
+            if not endpoint:
+                endpoint = (sg.get("endpoint") or "").strip()
+            if not token:
+                token = (sg.get("auth_token") or "").strip()
+            cfg = sg
+        except Exception:  # noqa: BLE001
+            pass
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    for k, v in (cfg.get("headers") or {}).items():
+        headers[k] = v
+    return {
+        "enabled": bool(endpoint),
+        "endpoint": endpoint,
+        "method": (cfg.get("method") or "POST").upper(),
+        "headers": headers,
+        "timeout": int(cfg.get("timeout") or 30),
+    }
+
+
+def build_strategy_prompt(brief: dict) -> str:
+    """把 Brief 上下文拼成自包含提示词，交给 WorkBuddy（小腾）生成 StrategySpec JSON。"""
+    oc = (brief.get("overall_conv") or "").strip()
+    oc_json = oc if oc else "0.0"
+    cons = (brief.get("constraints") or "").strip().replace("\n", "；").replace("\r", "")
+    name = (brief.get("goal_name") or "").strip() or "(未命名，请用 goal_id 或一句话概括)"
+    locale = (brief.get("locale") or "zh_CN").strip() or "zh_CN"
+    lang_label = "中文" if locale == "zh_CN" else "英文" if locale == "en_US" else locale
+    budget = (brief.get("budget") or "").strip() or "0"
+    objective = (brief.get("objective") or "").strip() or "(未填写)"
+    start_date = (brief.get("start_date") or "").strip() or "(未填写)"
+    end_date = (brief.get("end_date") or "").strip() or "(未填写)"
+    tpl = (
+        "你是营销 Agent 的 L1 策略合成角色。请基于以下 Brief 生成一份 StrategySpec JSON"
+        "（严格 JSON，不要解释文字、不要 markdown 代码块包裹，只输出可被 json.loads 解析的对象），"
+        "供「活动驾驶舱」PoC 编译成 Mautic 事件图。\n\n"
+        "【Brief】\n"
+        "- 目标名称：{name}\n"
+        "- 营销目标：{objective}\n"
+        "- 开始日期：{start_date}  结束日期：{end_date}\n"
+        "- 总体目标转化率：{oc}（0~1；留空表示仅意向登记 / 品牌曝光，无营收转化）\n"
+        "- 语言/地区：{lang_label}（{locale}）\n"
+        "- 预算：{budget}（¥；0 或留空 = 无营收活动）\n"
+        "- 约束/红线：{cons}\n\n"
+        "【输出要求】\n"
+        "1. 顶层：goal_id（slug）、objective、kpi（{{\"metric\":\"conversion\",\"target\":{oc_json}}}）、"
+        "locale（[\"{locale}\"]）、campaigns（数组）、service_sequences（数组，可选）。\n"
+        "2. 每个 campaign：{{\"cid\",\"name\",\"segment\":{{\"mode\":\"propose\",\"ref\":\"SEG_xxx\"}},"
+        "\"send_conditions\":{{\"delay_hours\":int,\"max_per_24h\":int,\"max_per_7d\":int,"
+        "\"quiet_hours\":\"22:00-09:00\"}},\"tags_to_write\":[...],\"email_mode\":\"reuse\"|\"generate\","
+        "\"email_ref\":(reuse 填真实资产 alias/id，generate 填空),\"landing_page_url\":str,"
+        "\"content_variant\":int(可选),\"deferred\":bool(可选)}}\n"
+        "3. 分群必须按意图天然互斥（seed / broad / no-reach / host-confirm 等），不要共用同一 segment。\n"
+        "4. 如需「用户动作即时触发」的确认件（非促销），放进 service_sequences 并设 quiet_hours_exempt=true + send_within_minutes<=5。\n"
+        "5. 严格遵守约束/红线（免打扰、抑制名单、退订熔断 0.3% 等）。\n"
+        "6. 只输出 JSON。\n"
+    )
+    return tpl.format(name=name, objective=objective, start_date=start_date, end_date=end_date,
+                      oc=oc, lang_label=lang_label, locale=locale, budget=budget, cons=cons,
+                      oc_json=oc_json)
+
+
+def _extract_strategy_spec(raw: str):
+    """从端点响应里尽量抽出 StrategySpec（对象 / 包裹字段 / JSON 字符串均可）。"""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        obj = json.loads(s)
+    except Exception:  # noqa: BLE001
+        obj = None
+    if isinstance(obj, dict):
+        if "campaigns" in obj or "goal_id" in obj or "service_sequences" in obj:
+            return json.dumps(obj, ensure_ascii=False, indent=2)
+        for key in ("strategy_spec", "strategy", "spec", "strategySpec"):
+            v = obj.get(key)
+            if isinstance(v, str):
+                try:
+                    pv = json.loads(v)
+                    return json.dumps(pv, ensure_ascii=False, indent=2)
+                except Exception:  # noqa: BLE001
+                    return v
+            if isinstance(v, dict):
+                return json.dumps(v, ensure_ascii=False, indent=2)
+        return None
+    if isinstance(obj, str):
+        return obj
+    return None
+
+
 def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict = None,
                 service_spec: list = None) -> str:
     """
@@ -275,6 +438,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     """
     ex = {"objective": "", "locale": "zh_CN", "budget": "0", "start_date": "2028-05-01",
           "end_date": "2028-07-09", "overall_conv": "", "goal_name": ""}
+    _strategy_gen_on = load_strategy_gen_config()["enabled"]
     fld = lambda k, lbl, v, t="text", ph="": (f"<label>{lbl}</label><input name='{k}' type='{t}' value='{_esc(v)}' placeholder='{_esc(ph)}'>")
     operator = (f"<div class='card'><h3>① 你的目标与约束（运营填写）</h3>"
                 f"<p class='note'>分群 / 内容 / 频次 / 落库 tag 由 Agent 在策略里产出，这里不填。</p>"
@@ -305,10 +469,14 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"</ul></div>"
                 f"<textarea name='strategy_spec' placeholder='strategies/ucl2028_send_strategy.json, strategies/ucl2028_content_map.json'>"
                 f"{_esc('strategies/example_strategy.json' if strategy_spec else '')}</textarea>"
+                f"<button id='gen-strategy-btn' class='btn sec' type='button' style='margin-top:8px'>✨ 用 WorkBuddy 生成策略</button>"
+                f"<div id='gen-strategy-status' class='note'></div>"
+                f"<p class='note'>{('已配置策略自动生成端点：点击将直接把 StrategySpec 填回上方文本框。' if _strategy_gen_on else '未配置自动生成端点：点击后将把提示词复制到剪贴板，请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框。')}</p>"
                 f"<div id='plan-preview' class='note'>填写「总体目标转化率」与「开始 / 结束日期」后，将自动推算派生战役数量、单 campaign 点击率与合理性。</div>"
                 f"<button class='btn' type='submit' style='margin-top:14px'>编译并生成 Program →</button>"
                 f"</div>"
-                f"<script>{DERIVE_JS}</script>")
+                f"<script>{DERIVE_JS}</script>"
+                f"<script>{STRATEGY_GEN_JS}</script>")
     agent = ("<div class='agent'><h4>② Agent 自动决策（运营无需、也不能改）</h4>"
              "<div class='row'>"
              "<span class='tag biz'>主渠道 email（MVP 裁定）</span>"
@@ -824,6 +992,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_json(self, obj: dict):
+        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
         path = self.path.split("?")[0]
         if path in ("/", ""):
@@ -854,13 +1030,22 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode("utf-8")
-        form = {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
+        ctype = self.headers.get("Content-Type", "")
+        if "application/json" in ctype:
+            try:
+                jsbody = json.loads(raw) if raw.strip() else {}
+            except Exception:  # noqa: BLE001
+                jsbody = {}
+        else:
+            jsbody = {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
 
         if path == "/brief":
-            return self._handle_brief(form)
+            return self._handle_brief(jsbody)
+        if path == "/brief/generate-strategy":
+            return self._handle_generate_strategy(jsbody)
         if path.endswith("/approve") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_approve(gid, cid, form)
+            return self._handle_campaign_approve(gid, cid, jsbody)
         if path.endswith("/push") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
             return self._handle_campaign_push(gid, cid)
@@ -869,24 +1054,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_campaign_activate(gid, cid)
         if path.endswith("/goals") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_goals(gid, cid, form)
+            return self._handle_campaign_goals(gid, cid, jsbody)
         if path.endswith("/create") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
             return self._handle_campaign_create(gid, cid)
         if path.endswith("/feedback") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_feedback(gid, cid, form)
+            return self._handle_campaign_feedback(gid, cid, jsbody)
         if path.endswith("/complete"):
-            return self._handle_complete(form)
+            return self._handle_complete(jsbody)
         if path.endswith("/approve") and "/service/" in path:
             parts = [x for x in path.split("/") if x]
-            return self._handle_service_approve(parts[1], parts[3], form)
+            return self._handle_service_approve(parts[1], parts[3], jsbody)
         if path.endswith("/push") and "/service/" in path:
             parts = [x for x in path.split("/") if x]
             return self._handle_service_push(parts[1], parts[3])
         if path.endswith("/approve"):
             gid = path.split("/")[-2]
-            return self._handle_legacy_approve(gid, form)
+            return self._handle_legacy_approve(gid, jsbody)
         if path.endswith("/push"):
             gid = path.split("/")[-2]
             return self._handle_legacy_push(gid)
@@ -1012,6 +1197,39 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
         except Exception as e:  # noqa: BLE001
             self._send(200, _page("Brief 错误", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/brief'>返回</a></p>"))
+
+    def _handle_generate_strategy(self, brief: dict):
+        """
+        Brief 上下文 → 调策略生成端点（若配置）或直接返回提示词降级。
+        返回 JSON：{"ok":true,"strategy_spec":<json字符串>,...}
+                  或 {"ok":false,"fallback":true,"prompt":<str>,"error":<可选>}。
+        """
+        prompt = build_strategy_prompt(brief)
+        try:
+            sg = load_strategy_gen_config()
+            if not sg["enabled"]:
+                return self._send_json({"ok": False, "fallback": True, "prompt": prompt})
+            import urllib.request as _u, urllib.error as _ue  # noqa: E402
+            payload = json.dumps(brief, ensure_ascii=False).encode("utf-8")
+            req = _u.Request(sg["endpoint"], data=payload, method=sg["method"])
+            for k, v in sg["headers"].items():
+                req.add_header(k, v)
+            try:
+                with _u.urlopen(req, timeout=sg["timeout"]) as resp:
+                    raw = resp.read().decode("utf-8", "replace")
+            except _ue.HTTPError as e:
+                raw = e.read().decode("utf-8", "replace")
+            except Exception as e:  # noqa: BLE001
+                return self._send_json({"ok": False, "fallback": True,
+                                        "prompt": prompt, "error": f"端点请求失败：{e}"})
+            spec = _extract_strategy_spec(raw)
+            if spec is None:
+                return self._send_json({"ok": False, "fallback": True,
+                                        "prompt": prompt, "error": "端点返回无法解析为 StrategySpec"})
+            return self._send_json({"ok": True, "strategy_spec": spec, "prompt": prompt})
+        except Exception as e:  # noqa: BLE001
+            return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
+                                    "error": str(e)})
 
     def _handle_campaign_approve(self, gid, cid, form):
         p = _load_program(gid)
