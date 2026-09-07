@@ -36,11 +36,15 @@ class GoalSpec:
     channels: list = field(default_factory=lambda: list(DEFAULT_CHANNELS))
     reserved_channels: list = field(default_factory=lambda: list(DEFAULT_RESERVED_CHANNELS))
     landing_page_url: str = ""                      # email 内 CTA 调起的着陆页
-    budget: float = 0.0
+    budget: float = 0.0                             # 仅在 is_revenue=True 时有意义（与金额无关，仅审计）
+    is_revenue: bool = False                        # 涉及营收/付费目标（取代 budget>0 判据）
     start_date: str = ""
     end_date: str = ""
     frequency_cap: dict = field(default_factory=dict)    # 频次闸门参数
     guardrails: dict = field(default_factory=dict)       # 护栏参数（退订阈值等）
+    # 目标人群画像（来自 Brief 表单 ① 段；结构化字段，L1 专家按 audience-content-map 命中画像包）
+    audience_package: str = "GENERIC"               # 选定的画像包 code；CUSTOM 时由 L1 重算
+    audience_profile: dict = field(default_factory=dict)  # {age, gender, income, education, industry, source, region}
     meta: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -53,6 +57,7 @@ _FIELD_ALIASES = {
     "id": "goal_id",
     "name": "name",
     "目标名称": "name",
+    "营销活动名称": "name",
     "objective": "objective",
     "goal": "objective",
     "目标": "objective",
@@ -72,6 +77,9 @@ _FIELD_ALIASES = {
     "着陆页": "landing_page_url",
     "budget": "budget",
     "预算": "budget",
+    "is_revenue": "is_revenue",
+    "is_revenue_bool": "is_revenue",
+    "是否涉及营收": "is_revenue",
     "start_date": "start_date",
     "开始": "start_date",
     "end_date": "end_date",
@@ -80,6 +88,11 @@ _FIELD_ALIASES = {
     "频次": "frequency_cap",
     "guardrails": "guardrails",
     "护栏": "guardrails",
+    "audience_package": "audience_package",
+    "画像包": "audience_package",
+    "audience_profile": "audience_profile",
+    "目标人群特点": "audience_profile",
+    "画像": "audience_profile",
 }
 
 
@@ -132,6 +145,22 @@ def parse_brief(raw: dict) -> GoalSpec:
         "unsubscribe_burn_threshold": 0.003,
         "honor_suppression": True,
     })
+
+    # 画像包与画像 profile：默认 GENERIC + 空 profile（运营未填时）
+    data.setdefault("audience_package", "GENERIC")
+    if not isinstance(data.get("audience_profile"), dict):
+        data["audience_profile"] = {}
+    # is_revenue 规整为 bool（表单可能传 "1"/"0"/"true"/"false"/True）
+    rv = data.get("is_revenue")
+    if isinstance(rv, str):
+        data["is_revenue"] = rv.strip().lower() in ("1", "true", "yes", "on")
+    elif rv is None:
+        data["is_revenue"] = False
+    else:
+        data["is_revenue"] = bool(rv)
+    # is_revenue=False 时清零 budget（避免误用旧值触发 T4 审批门）
+    if not data["is_revenue"]:
+        data["budget"] = 0.0
 
     return GoalSpec(**data)
 

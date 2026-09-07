@@ -87,6 +87,19 @@ check("Brief 含总体转化率字段", "name='overall_conv'" in bf)
 check("Brief 不再让运营填单campaign点击率(系统反推,只读控件已下架)",
       "name='click_rate_disp'" not in bf and "name='click_rate'" not in bf
       and "此处不可手填" in bf)
+check("Brief 含画像包下拉(默认 GENERIC 兜底)",
+      "name='audience_package'" in bf and "value='GENERIC' selected" in bf)
+check("Brief 含 7 个画像字段(年龄/性别/收入/教育/行业/来源/区域)",
+      all(f"name='audience_{k}'" in bf for k in
+          ("age", "gender", "income", "education", "industry", "source", "region")))
+check("Brief 含是否涉及营收(默认无营收)",
+      "name='is_revenue'" in bf and "value='0' selected" in bf)
+check("Brief 预算字段默认隐藏(仅 is_revenue=1 才显示)",
+      "id='budget_wrap'" in bf and "display:none" in bf.replace(" ", "").lower())
+check("Brief 字段命名『营销/活动名称』",
+      "营销/活动名称" in bf)
+check("Brief 提示画像包决定内容侧重",
+      "决定内容侧重与频次" in bf)
 check("Brief 含「用 WorkBuddy 生成策略」按钮", "gen-strategy-btn" in bf)
 check("Brief 展示策略生成说明(端点优先/降级)",
       ("已配置策略自动生成端点" in bf) or ("未配置自动生成端点" in bf))
@@ -94,7 +107,8 @@ check("Brief 含约束字段", "name='constraints'" in bf)
 check("Brief 含 StrategySpec 字段", "name='strategy_spec'" in bf)
 check("Brief StrategySpec 已译中文", "策略规格（Agent 产出，可选）" in bf)
 check("Brief 语言为下拉(中文/英文)", "中文" in bf and "英文" in bf and "name='locale'" in bf)
-check("Brief 预算字段已重标无营收", "无营收活动" in bf)
+check("Brief 预算字段仅在 is_revenue=1 时显示(budget 已并入营收开关)",
+      "无营收活动" not in bf and "仅审计/审批用" in bf)
 check("Brief 不再让运营填分群", "name='audience_segment'" not in bf)
 check("Brief 不再让运营填 KPI/落页/波次数",
       "name='kpi_target'" not in bf and "name='landing_page_url'" not in bf
@@ -116,7 +130,10 @@ check("策略预览 generate 邮件显示[待生成]", "[待生成]" in pv)
 
 # ---------- 路径 A：未提交 StrategySpec → 默认递进策略（按日期跨度派生 N）----------
 st, loc, _ = post("/brief",
-    "objective=TEST+GOAL&locale=zh_CN&budget=0&"
+    "objective=TEST+GOAL&locale=zh_CN&is_revenue=0&budget=0&"
+    "audience_package=HNW_FAMILY&"
+    "audience_age=35-44&audience_gender=%E7%94%B7&audience_income=L4&"
+    "audience_education=MBA&audience_industry=IT&audience_source=&audience_region=%E4%B8%AD%E5%9B%BD%E5%A4%A7%E9%99%86&"
     "start_date=2028-05-01&end_date=2028-07-09&"
     "constraints=22%3A00-09%3A00+%E5%85%8D%E6%89%93%E6%89%B0")
 check("Brief→302 Program", st == 302, f"loc={loc}")
@@ -310,7 +327,8 @@ print("DONE gid=", gid, " gid2=", gid2, " gid3=", gid3, " gid4=", gid4)
 
 # ---------- 路径 E：提交总体目标转化率 → 系统反推单campaign点击率 + 合理性 ----------
 st, loc, _ = post("/brief",
-    "objective=CONV+GOAL&locale=zh_CN&budget=0&"
+    "objective=CONV+GOAL&locale=zh_CN&is_revenue=0&budget=0&"
+    "audience_package=GENERIC&"
     "start_date=2028-05-01&end_date=2028-07-09&"
     "overall_conv=0.15")
 check("Conv Brief→302 Program", st == 302, f"loc={loc}")
@@ -329,7 +347,8 @@ check("Conv Program 展示 Agent 优化说明", "Agent 优化说明" in ph5)
 
 # ---------- 路径 F：高目标 + 短跨度 → 点击率超阈值，标记「需优化」 ----------
 st, loc, _ = post("/brief",
-    "objective=HIGH+GOAL&locale=zh_CN&budget=0&"
+    "objective=HIGH+GOAL&locale=zh_CN&is_revenue=0&budget=0&"
+    "audience_package=GENERIC&"
     "start_date=2028-06-01&end_date=2028-06-30&"
     "overall_conv=0.50")
 check("HighConv Brief→302 Program", st == 302, f"loc={loc}")

@@ -49,8 +49,9 @@ def classify_gate(goal: GoalSpec) -> tuple:
     """返回 (level, 说明)。"""
     active_multi = len(goal.channels) > 1
     cross_locale = goal.locale not in ("zh_CN",)
-    if goal.budget and goal.budget > 0:
-        return "T4", "涉及营收预算，需高级审批人复核"
+    # T4 触发条件改用 is_revenue（取代 budget>0 数值判据；与金额解耦）
+    if getattr(goal, "is_revenue", False):
+        return "T4", "涉及营收/付费目标，需高级审批人复核"
     if active_multi or cross_locale:
         return "T3", "多渠道或跨 locale，需人工 + 复核"
     return "T2", "单渠道(email)单 locale 无营收，需人工审批"
