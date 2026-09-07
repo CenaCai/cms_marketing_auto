@@ -996,7 +996,9 @@ def _program_body(program: dict, msg: str = "") -> str:
         kpi_html = ("<div class='card'><p class='b-warn'>KPI 目标值未设置（运营尚未给 R）："
                     "不做达成率判定、不触发『目标达成』终止，本 Program 只做基线采集与护栏观测。</p></div>")
     goal_name = (goal.get("meta") or {}).get("name") or goal.get("name") or ""
-    header_html = (f"<h1>Program {_esc(gid)}</h1>"
+    header_html = (f"<p style='margin:0 0 12px'><button class='btn ghost sm' type='button' "
+                   f"onclick='if(history.length>1){{history.back()}}else{{location.href=\"/\"}}'>← 返回</button></p>"
+                   f"<h1>Program {_esc(gid)}</h1>"
                    f"<p class='sub'>目标名称：{_esc(goal_name) if goal_name else '（未命名）'} "
                    f"（ID: {_esc(gid)}）<br>"
                    f"{_esc(goal.get('objective',''))} · 渠道 {_esc(','.join(goal.get('channels',[])))}"

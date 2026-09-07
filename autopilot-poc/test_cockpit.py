@@ -105,6 +105,7 @@ check("Brief 不暴露频次闸门编辑", "频次闸门 1/24h" in bf and "name=
 # ---------- wave→campaign 实时校验（svctest 详情页） ----------
 svc = get("/program/ucl2028_svctest")
 check("svctest 详情 wave→campaign 重命名", "campaign_1" in svc and "wave_1" not in svc)
+check("svctest 详情含返回按钮", "返回" in svc and "history.back()" in svc)
 
 # ---------- /brief?spec= 预览 Agent 策略（只读摘要）----------
 pv = get("/brief?spec=" + EXAMPLE_SPEC.replace(os.sep, "/"))
