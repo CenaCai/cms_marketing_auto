@@ -120,6 +120,14 @@ check("未提交策略时提示默认递进", "Agent 尚未产出策略" in bf)
 check("Brief 不暴露频次闸门编辑", "频次闸门 1/24h" in bf and "name='max_per_24h'" not in bf)
 check("Brief 含取消/返回列表按钮(显式href=/)",
       "取消并返回列表" in bf and "href='/'" in bf and "←" in bf)
+# ---------- 必填/非必填视觉区分 (issue 2026-09-07) ----------
+check("Brief 含必填项图例说明", "必填项" in bf and "缺一不可" in bf and "兜底" in bf)
+check("Brief objective 标 .req 必填星号", "class='req'" in bf and "营销目标" in bf)
+check("Brief objective 有 HTML5 required 属性",
+      "name='objective'" in bf and "required" in bf)
+check("Brief 非必填字段标 .opt 可选小标", "class=\"opt\"" in bf)
+check("Brief 含 objective 质量说明(非占位词)",
+      "占位" in bf and "业务描述" in bf)
 
 # ---------- wave→campaign 实时校验（svctest 详情页） ----------
 svc = get("/program/ucl2028_svctest")
@@ -160,6 +168,33 @@ m6 = inf({"age": "25-34", "gender": "女", "income": "L4", "education": "普通�
 check("infer 命中时 alternatives 字段为 list(供前端/详情页展示候选)",
       m6["code"] == "PARENT_FAM" and isinstance(m6.get("alternatives"), list),
       f"got {m6}")
+
+# ---------- _check_objective_quality 单元测试 (issue 2026-09-07, 防「测试」输入派生 8 campaign) ----------
+q = GI._check_objective_quality
+check("quality 空字符串 → 拒绝", q("") is not None and "为空" in q(""))
+check("quality 纯空白 → 拒绝", q("   ") is not None)
+check("quality 短字符串(3字符) → 拒绝", q("abc") is not None and "过短" in q("abc"))
+check("quality 占位词 测试 → 拒绝", q("测试") is not None and ("过短" in q("测试") or "占位" in q("测试")))
+check("quality 占位词 test → 拒绝", q("test") is not None and "占位" in q("test"))
+check("quality 占位词 demo → 拒绝", q("demo") is not None and "占位" in q("demo"))
+check("quality 占位词 1234 → 拒绝(纯数字)", q("1234") is not None)
+check("quality 有效目标 → 通过", q("邀请 2028 欧超决赛意向客户") is None)
+check("quality 有效英文目标 → 通过", q("Increase brand awareness for Q4") is None)
+
+# ---------- 服务端薄输入拒绝 (issue 2026-09-07 修复验证) ----------
+st, loc, body = post("/brief", "objective=" + urllib.parse.quote("测试") + "&start_date=2028-05-01&end_date=2028-07-09&goal_name=demo&is_revenue=0")
+check("服务端 objective=测试 → 200 错误页(非 302)",
+      st == 200 and "营销目标" in body and ("过短" in body or "占位" in body or "命中占位" in body),
+      f"st={st} loc={loc}")
+st, loc, body = post("/brief", "objective=test&start_date=2028-05-01&end_date=2028-07-09&goal_name=demo&is_revenue=0")
+check("服务端 objective=test → 200 错误页(占位模式)",
+      st == 200 and "命中占位" in body, f"st={st} loc={loc}")
+st, loc, body = post("/brief", "objective=ab&start_date=2028-05-01&end_date=2028-07-09&goal_name=xx&is_revenue=0")
+check("服务端 objective=ab → 200 错误页(过短)",
+      st == 200 and "过短" in body, f"st={st} loc={loc}")
+st, loc, body = post("/brief", "objective=正式营销目标&start_date=2028-05-01&end_date=2028-07-09&goal_name=ok&is_revenue=0")
+check("服务端 objective=正式营销目标 → 302 成功",
+      st == 302, f"st={st} loc={loc}")
 
 
 # ---------- 路径 A：未提交 StrategySpec → 默认递进策略（按日期跨度派生 N）----------
@@ -327,7 +362,7 @@ CONTENT = os.path.join(HERE, "strategies", "ucl2028_content_map.json").replace(o
 BOTH = SEND + "," + CONTENT
 pv2 = get("/brief?spec=" + BOTH)
 check("多文件预览显示合并徽章", "已合并 2 个策略文件" in pv2)
-st, loc, body = post("/brief", "objective=UCL&strategy_spec=" + urllib.parse.quote(BOTH))
+st, loc, body = post("/brief", "objective=UCL+Invite&strategy_spec=" + urllib.parse.quote(BOTH))
 check("多文件 Brief→302", st == 302, f"loc={loc}")
 gid4 = loc.split("/")[-1]
 prog4 = program_of(gid4)

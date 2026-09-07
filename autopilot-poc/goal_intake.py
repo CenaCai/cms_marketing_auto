@@ -14,6 +14,7 @@ PoC 阶段所有渠道默认遵循 MVP 裁定：
 """
 from __future__ import annotations
 
+import re
 import json
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -22,6 +23,44 @@ from typing import Optional
 # MVP 渠道裁定默认值（见合并规格 v1.0 附录 D：2026-09-07 用户裁定）
 DEFAULT_CHANNELS = ["email"]
 DEFAULT_RESERVED_CHANNELS = ["sms"]
+
+
+# ===== objective 质量门槛 =====
+# 规则: 营销目标必须体现业务意图, 太短/纯占位/纯测试字符串一律拒绝.
+# 防止「测试 / test / asdf / 123」等输入被默认派生逻辑硬派 8 个 campaign (issue 2026-09-07).
+OBJECTIVE_MIN_LEN = 4                                    # 最少 4 字符(去前后空白)
+# 纯占位/测试模式: 大小写不敏感; 中文/英文常见占位词 + 纯数字/纯字母重复
+_THIN_OBJECTIVE_RE = re.compile(
+    r"^("
+    r"test|tests|testing|t1|t2|tmp|temp|demo|sample|samples|example|examples|"
+    r"asdf|qwer|qaz|wsx|zxc|abc|xyz|hello|hi|hey|ok|yes|no|"
+    r"测试|测|试试|试|试一下|测试一下|演示|示例|样例|占位|空|无|"
+    r"未填|随便|瞎填|先|一二三|一二|abc|甲乙丙|"
+    r"\d{1,9}"  # 纯数字(如 123 / 12345)
+    r")+$",
+    re.IGNORECASE,
+)
+
+
+def _check_objective_quality(text: str) -> Optional[str]:
+    """
+    营销目标质量校验: 返回 None = 通过, 返回 str = 错误说明.
+    触发条件 (任一):
+      1. 去除前后空白后长度 < OBJECTIVE_MIN_LEN (默认 4)
+      2. 整体命中 _THIN_OBJECTIVE_RE (占位/测试模式)
+    """
+    if text is None:
+        return "营销目标为空"
+    s = text.strip()
+    if not s:
+        return "营销目标为空"
+    if len(s) < OBJECTIVE_MIN_LEN:
+        return (f"营销目标过短（{len(s)} 字符），至少 {OBJECTIVE_MIN_LEN} 字符。"
+                f"请补全为业务描述，如「邀请 2028 欧超决赛意向客户」")
+    if _THIN_OBJECTIVE_RE.match(s):
+        return (f"营销目标命中占位/测试模式（{s}），不是有效业务描述。"
+                f"请补全为业务描述，如「邀请 2028 欧超决赛意向客户」")
+    return None
 
 
 # ===== 受众画像包（与专家库 references/audience-content-map.json 保持同步） =====
@@ -222,6 +261,10 @@ def parse_brief(raw: dict) -> GoalSpec:
     # 必填项兜底
     if not data.get("objective"):
         raise ValueError("Brief 缺少必填项：objective（营销目标）")
+    # objective 质量门槛: 太短/纯占位/测试模式一律拒绝(防止「测试」被硬派 8 个 campaign)
+    qual_err = _check_objective_quality(str(data["objective"]))
+    if qual_err:
+        raise ValueError(qual_err)
     # audience_segment 改为可选：分群由 Agent 在 StrategySpec 里按波次产出，
     # L0 不再强校验（缺失时留空，由策略首波 segment.ref 兜底）。
     if not data.get("audience_segment"):

@@ -148,6 +148,8 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);bord
 .b-ok{background:var(--ok-soft);color:var(--ok)} .b-bad{background:var(--bad-soft);color:var(--bad)}
 .b-warn{background:var(--warn-soft);color:var(--warn)} .b-gov{background:var(--gov-soft);color:var(--gov)}
 .b-idle{background:#eef0f3;color:#5f5e5a}
+.req{color:#c0392b;font-weight:700;margin-right:2px}  /* 必填星号 */
+.opt{color:#7f8896;font-size:11px;font-weight:500;margin-left:2px}  /* 可选小标 */
 table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:12px}
@@ -202,16 +204,37 @@ def _dash_body() -> str:
 # 纯字符串（非 f-string），避免 JS 大括号转义；通过 f"<script>{DERIVE_JS}</script>" 注入。
 DERIVE_JS = """
 (function(){
+function isThinObjective(s){
+  // 与 server 端 _check_objective_quality 镜像: 长度<4 / 占位测试模式
+  if(!s) return 'empty';
+  var t=(s||'').trim();
+  if(!t) return 'empty';
+  if(t.length<4) return 'too_short:'+t.length;
+  // 占位词 (case insensitive)
+  var thin=/^(test|tests|testing|t1|t2|tmp|temp|demo|sample|samples|example|examples|asdf|qwer|qaz|wsx|zxc|abc|xyz|hello|hi|hey|ok|yes|no|测试|测|试试|试|试一下|测试一下|演示|示例|样例|占位|空|无|未填|随便|瞎填|先|一二三|一二|甲乙丙|\\d{1,9})$/i;
+  if(thin.test(t)) return 'placeholder:'+t;
+  return null;
+}
 function derive(){
   var oc=parseFloat(document.querySelector("[name=overall_conv]").value)||0;
   var sd=document.querySelector("[name=start_date]").value;
   var ed=document.querySelector("[name=end_date]").value;
+  var objEl=document.querySelector("[name=objective]");
+  var obj=objEl?objEl.value:'';
   var LP=0.10, MIN_CAD=7, MAXN=8, RC_MAX=0.50;
   var span=0;
   try{ var s=new Date(sd), e=new Date(ed); span=Math.max(0,(e-s)/86400000); }catch(err){ span=0; }
   var maxBySpan = (span>0)? Math.max(1, Math.min(MAXN, Math.floor(span/MIN_CAD))) : MAXN;
   var n=maxBySpan, click_rate=0, target=0, reasonable=true, optNote='';
-  if(oc>0){
+  // 薄输入检测: 命中即强制 n=1 (与 server 端 objective 质量门槛镜像, 提交时仍会 422 拒)
+  var thinReason=isThinObjective(obj);
+  var thinWarn='';
+  if(thinReason){
+    n=1;
+    var label=thinReason.startsWith('too_short')?'过短':(thinReason.startsWith('placeholder')?'命中占位/测试模式':'空');
+    thinWarn="<p class='b-bad' style='margin:6px 0'>⚠️ 营销目标"+label+"：\""+_esc(obj)+"\"。提交将被拒绝（至少 4 字符、非占位词）。请补全为业务描述，如「邀请 2028 欧超决赛意向客户」。</p>";
+    optNote="营销目标"+label+"：已派生 1 个占位预览（提交会被拒）";
+  } else if(oc>0){
     var k=null;
     for(var c=1;c<=maxBySpan;c++){
       var pc=1-Math.pow(1-oc,1/c);
@@ -249,18 +272,21 @@ function derive(){
     ? "<span class='b-ok'>合理 ✓</span>"
     : "<span class='b-bad'>需优化 ⚠</span>";
   var el=document.getElementById('plan-preview');
-  if(oc>0||span>0){
-    el.innerHTML='<h4 style="margin:6px 0">自动派生计划预览</h4>'
-      +'<p class="note">将生成 <b>'+n+'</b> 个战役（基于日期跨度 + 总体目标）</p>'
+  if(oc>0||span>0||thinReason){
+    el.innerHTML=thinWarn
+      +'<h4 style="margin:6px 0">自动派生计划预览</h4>'
+      +'<p class="note">将生成 <b>'+n+'</b> 个战役'+(thinReason?'（薄输入，强制 1）':'')+'（基于日期跨度 + 总体目标）</p>'
       +'<table><tr><th>战役</th><th>执行窗口</th><th>各 campaign 转化目标</th></tr>'+rows+'</table>'
       +'<p class="note">单 campaign 打开/点击率（推算）：<b>'+crDisp+'</b>（='+click_rate+'）</p>'
       +'<p class="note">合理性判定：'+verdict+'</p>'
       +'<p class="note">Agent 优化说明：'+optNote+'</p>';
   } else {
-    el.innerHTML='填写「总体目标转化率」与「开始 / 结束日期」后，将自动推算派生战役数量、单 campaign 点击率与合理性。';
+    el.innerHTML=thinWarn
+      +'填写「总体目标转化率」与「开始 / 结束日期」后，将自动推算派生战役数量、单 campaign 点击率与合理性。';
   }
 }
-['overall_conv','start_date','end_date'].forEach(function(nm){
+function _esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+['objective','overall_conv','start_date','end_date'].forEach(function(nm){
   var el=document.querySelector('[name='+nm+']'); if(el){ el.addEventListener('input', derive); }
 });
 derive();
@@ -469,7 +495,11 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
           "start_date": "2028-05-01", "end_date": "2028-07-09", "overall_conv": "",
           "goal_name": ""}
     _strategy_gen_on = load_strategy_gen_config()["enabled"]
-    fld = lambda k, lbl, v, t="text", ph="": (f"<label>{lbl}</label><input name='{k}' type='{t}' value='{_esc(v)}' placeholder='{_esc(ph)}'>")
+    fld = lambda k, lbl, v, t="text", ph="", req=False: (
+        f"<label>{lbl}</label>"
+        f"<input name='{k}' type='{t}' value='{_esc(v)}' placeholder='{_esc(ph)}'"
+        f"{' required' if req else ''}>"
+    )
     sel = lambda k, lbl, v, opts: (
         f"<label>{lbl}</label><select name='{k}'>" +
         "".join(f"<option value='{_esc(o)}' {'selected' if o == v else ''}>{_esc(o)}</option>" for o in opts) +
@@ -483,14 +513,16 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     region_opts = ["", "中国大陆", "港澳台", "海外"]
 
     operator = (f"<div class='card'><h3>① 你的目标与约束（运营填写）</h3>"
-                f"<p class='note'>分群 / 内容 / 频次 / 落库 tag 由 Agent 在策略里产出，这里不填。</p>"
-                f"{fld('goal_name','营销/活动名称（便于阅读，留空则使用 ID 值）',ex['goal_name'])}"
-                f"{fld('objective','营销目标（一句话，可选；画像 + 目的 才是核心）',ex['objective'])}"
+                f"<p class='note'><span class='req'>*</span> <b>必填项</b> = 缺一不可（无合理兜底）；"
+                f"其余字段均有兜底，可留空。"
+                f"示例：<code>objective</code> 必填；<code>goal_name</code>/<code>overall_conv</code>/<code>audience_*</code> 均可空。</p>"
+                f"{fld('goal_name','营销/活动名称（留空则用 ID 值；<span class=\"opt\">可选</span>）',ex['goal_name'])}"
+                f"{fld('objective','<span class=\"req\">*</span> 营销目标（必填，业务描述，至少 4 字符，非占位词）',ex['objective'], req=True)}"
                 f"<div class='grid2'>"
-                f"{fld('start_date','开始日期',ex['start_date'])}"
-                f"{fld('end_date','结束日期',ex['end_date'])}</div>"
+                f"{fld('start_date','开始日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['start_date'])}"
+                f"{fld('end_date','结束日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['end_date'])}</div>"
                 f"<div class='grid2'>"
-                f"{fld('overall_conv','总体目标转化率（最终期望，0~1，如 0.15）',ex['overall_conv'])}"
+                f"{fld('overall_conv','总体目标转化率（<span class=\"opt\">可选</span>，最终期望，0~1，如 0.15；留空=无 KPI 校验）',ex['overall_conv'])}"
                 f"<p class='note'>单 campaign 打开/点击率由系统根据「总体目标转化率」自动反推，详情页与策略预览可见，此处不可手填。</p>"
                 f"</div>"
 
