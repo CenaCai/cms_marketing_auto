@@ -79,6 +79,29 @@ def program_of(gid):
 
 # ---------- 首页 + brief 页 ----------
 check("首页", "活动驾驶舱" in get("/"))
+# ---------- KPI 看板 (issue 2026-09-07) ----------
+home = get("/")
+check("首页含总览 KPI 标题", "总览 KPI" in home)
+check("首页含 6 张 KPI 卡", home.count("kpi-card") >= 6)
+check("KPI 卡含 4 种状态色(brand/gov/warn/ok)",
+      "kpi-card brand" in home and "kpi-card gov" in home
+      and "kpi-card warn" in home and "kpi-card ok" in home)
+check("KPI 含核心维度标签",
+      "Program" in home and "Campaign" in home and "待审" in home
+      and "执行中" in home and "已发" in home and "达标/未达标" in home)
+# ---------- Brief 预填 (回链) ----------
+bf_pre = get("/brief?goal_id=ucl2028")
+check("Brief?goal_id= 改 Brief 模式", "改 Brief" in bf_pre and "预填原 Program" in bf_pre)
+check("Brief 预填 objective", "value='UCL Invite'" in bf_pre and "name='objective'" in bf_pre)
+check("Brief 预填 goal_name", "value='ucl2028'" in bf_pre and "name='goal_name'" in bf_pre)
+check("Brief 无效 goal_id 不报错(回落普通新建模式)",
+      "改 Brief" not in get("/brief?goal_id=nonexistent_xyz_999"))
+# ---------- Program 详情页改 Brief 按钮 ----------
+prog = get("/program/ucl2028")
+check("Program 详情含 改 Brief 按钮",
+      "改 Brief" in prog and "href='/brief?goal_id=ucl2028'" in prog)
+check("Program 详情 改 Brief 按钮含 title 提示",
+      "title=" in prog and "预填原 Brief 字段" in prog)
 bf = get("/brief")
 check("Brief 含运营目标字段", "营销目标" in bf)
 check("Brief 目标字段默认空", "UEFA" not in bf and "name='objective'" in bf)

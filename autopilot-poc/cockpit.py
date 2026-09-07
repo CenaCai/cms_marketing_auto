@@ -150,6 +150,17 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);bord
 .b-idle{background:#eef0f3;color:#5f5e5a}
 .req{color:#c0392b;font-weight:700;margin-right:2px}  /* 必填星号 */
 .opt{color:#7f8896;font-size:11px;font-weight:500;margin-left:2px}  /* 可选小标 */
+/* KPI 看板 (issue 2026-09-07) */
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:8px 0}
+.kpi-card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;text-align:center;position:relative;overflow:hidden}
+.kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--brand)}
+.kpi-card.gov::before{background:var(--gov)} .kpi-card.warn::before{background:var(--warn)}
+.kpi-card.ok::before{background:var(--ok)} .kpi-card.bad::before{background:var(--bad)}
+.kpi-num{font-size:30px;font-weight:700;line-height:1.1;color:var(--ink);margin:6px 0 2px}
+.kpi-card.gov .kpi-num{color:var(--gov)} .kpi-card.warn .kpi-num{color:var(--warn)}
+.kpi-card.ok .kpi-num{color:var(--ok)} .kpi-card.bad .kpi-num{color:var(--bad)}
+.kpi-label{font-size:12px;color:var(--muted);font-weight:500}
+.kpi-sub{font-size:10px;color:var(--muted);margin-top:3px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:12px}
@@ -179,8 +190,65 @@ def _page(title: str, body: str) -> str:
 
 
 # --------------------------- 页面 ---------------------------
+def _kpi_dashboard() -> str:
+    """
+    首页 KPI 看板：6 张小卡（自动从 output/program_*.json 聚合）。
+    维度: Program 总数 / Campaign 总数 / 待审 / 执行中 / 已发 / 达标/未达标
+    """
+    progs = _list_programs()
+    n_prog = len(progs)
+    n_camp = 0
+    n_pending = 0          # status == unreviewed
+    n_executing = 0        # executing + approved_idle
+    n_deployed = 0         # proposal.deployed == True
+    n_done_met = 0         # done_met
+    n_done_below = 0       # done_below
+    n_deferred = 0         # deferred (外部事件挂起)
+    for p in progs:
+        for c in p.get("campaigns", []):
+            n_camp += 1
+            st = c.get("status", "")
+            if st == "unreviewed":
+                n_pending += 1
+            elif st in ("executing", "approved_idle"):
+                n_executing += 1
+            elif st == "done_met":
+                n_done_met += 1
+            elif st == "done_below":
+                n_done_below += 1
+            elif st == "deferred":
+                n_deferred += 1
+            if (c.get("proposal") or {}).get("deployed"):
+                n_deployed += 1
+    pct_done = (round((n_done_met + n_done_below) * 1000 / n_camp) / 10
+                if n_camp > 0 else 0.0)
+    cards = [
+        ("brand",  str(n_prog),   "Program",     "已发起的目标数"),
+        ("gov",    str(n_camp),   "Campaign",    "总战役数（含未审/执行中/已完成）"),
+        ("warn",   str(n_pending),"待审",         "需运营/审批人介入的 unreviewed"),
+        ("gov",    str(n_executing),"执行中",     "executing + approved_idle"),
+        ("ok",     str(n_deployed),"已发",        f"已部署到 Mautic（含 KPI 已达/未达 {pct_done}%）" if n_camp else "已部署到 Mautic"),
+        ("ok" if n_done_met >= n_done_below else "bad",
+         f"{n_done_met}<span style='font-size:14px;color:var(--muted)'>/{n_done_below}</span>",
+         "达标/未达标", "done_met / done_below"),
+    ]
+    out = "<div class='kpi-row'>"
+    for cls, num, lbl, sub in cards:
+        out += (f"<div class='kpi-card {cls}'>"
+                f"<div class='kpi-num'>{num}</div>"
+                f"<div class='kpi-label'>{_esc(lbl)}</div>"
+                f"<div class='kpi-sub'>{_esc(sub)}</div></div>")
+    out += "</div>"
+    # deferred 提示（仅在有挂起时显示）
+    if n_deferred > 0:
+        out += (f"<p class='b-warn' style='margin:6px 0'>⚠️ 当前有 <b>{n_deferred}</b> 个 campaign "
+                f"因外部事件挂起（status=deferred），启用后转未审核进入标准通道。</p>")
+    return out
+
+
 def _dash_body() -> str:
     progs = _list_programs()
+    kpi = _kpi_dashboard()
     if not progs:
         items = "<p class='sub'>暂无 Program。先 <a href='/brief'>填写一份 Brief</a> 发起目标。</p>"
     else:
@@ -197,6 +265,7 @@ def _dash_body() -> str:
     return (f"<h1>活动驾驶舱</h1><p class='sub'>一个目标 → 多个 campaign 自适应编排；"
             f"运营只填业务意图，治理/渠道/频次由 Agent 自动决策。</p>"
             f"<div class='card'><a class='btn' href='/brief'>+ 新建 Brief（发起目标）</a></div>"
+            f"<div class='card'><h3>总览 KPI</h3>{kpi}</div>"
             f"<div class='card'>{items}</div>")
 
 
@@ -483,10 +552,12 @@ def _extract_strategy_spec(raw: str):
 
 
 def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict = None,
-                service_spec: list = None) -> str:
+                service_spec: list = None, prefill: dict = None) -> str:
     """
     运营只填「目标 + 约束」；分群/落库 tag/内容/频次等策略由 Agent 产出 StrategySpec。
     strategy_spec 非空时，右侧只读展示逐条策略摘要（供提交前确认）。
+    prefill: 可选 dict（来自 /brief?goal_id=<id>），覆盖 ex 默认值。
+             含 ref_goal_id 时，标题改为「改 Brief」+ 顶部 banner 提示。
     """
     ex = {"objective": "", "locale": "zh_CN", "budget": "0", "is_revenue": "0",
           "audience_age": "", "audience_gender": "", "audience_income": "",
@@ -494,6 +565,11 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
           "audience_region": "",
           "start_date": "2028-05-01", "end_date": "2028-07-09", "overall_conv": "",
           "goal_name": ""}
+    if prefill:
+        for k, v in prefill.items():
+            if k in ex and v not in (None, ""):
+                ex[k] = str(v)
+    _is_prefill = bool(prefill and prefill.get("ref_goal_id"))
     _strategy_gen_on = load_strategy_gen_config()["enabled"]
     fld = lambda k, lbl, v, t="text", ph="", req=False: (
         f"<label>{lbl}</label>"
@@ -639,11 +715,15 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
              + _spec_preview_html(strategy_spec, spec_err, spec_meta)
              + _service_preview_html(service_spec)
              + "</div>")
+    _title = "改 Brief" if _is_prefill else "新建 Brief"
+    _banner = (f"<p class='b-warn' style='margin:4px 0 12px'>📝 改 Brief 模式：已预填原 Program <code>{_esc(prefill.get('ref_goal_id',''))}</code> 的字段。"
+               f"提交后将生成新的 Program（不会修改原 Program）。</p>") if _is_prefill else ""
     return (f"<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px'>"
-            f"<h1 style='margin:0'>新建 Brief</h1>"
+            f"<h1 style='margin:0'>{_title}</h1>"
             f"<a class='btn sec' href='/' style='white-space:nowrap'>← 取消并返回列表</a>"
             f"</div>"
             f"<p class='sub'>方案 A 驾驶舱 · 独立 :8090 → Mautic :8080</p>" \
+           f"{_banner}" \
            f"<form method='post' action='/brief'><div class='grid2'>{operator}{agent}</div></form>")
 
 
@@ -1147,8 +1227,11 @@ def _program_body(program: dict, msg: str = "") -> str:
         kpi_html = ("<div class='card'><p class='b-warn'>KPI 目标值未设置（运营尚未给 R）："
                     "不做达成率判定、不触发『目标达成』终止，本 Program 只做基线采集与护栏观测。</p></div>")
     goal_name = (goal.get("meta") or {}).get("name") or goal.get("name") or ""
-    header_html = (f"<p style='margin:0 0 12px'><button class='btn ghost sm' type='button' "
-                   f"onclick='if(history.length>1){{history.back()}}else{{location.href=\"/\"}}'>← 返回</button></p>"
+    header_html = (f"<p style='margin:0 0 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap'>"
+                   f"<button class='btn ghost sm' type='button' "
+                   f"onclick='if(history.length>1){{history.back()}}else{{location.href=\"/\"}}'>← 返回</button>"
+                   f"<a class='btn ghost sm' href='/brief?goal_id={_esc(gid)}' title='预填原 Brief 字段以便迭代优化'>📝 改 Brief</a>"
+                   f"</p>"
                    f"<h1>Program {_esc(gid)}</h1>"
                    f"<p class='sub'>目标名称：{_esc(goal_name) if goal_name else '（未命名）'} "
                    f"（ID: {_esc(gid)}）<br>"
@@ -1245,12 +1328,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, _page("驾驶舱", _dash_body()))
         if path == "/brief":
             # 支持 /brief?spec=<StrategySpec 文件路径> 预览 Agent 策略（只读）
+            # 支持 /brief?goal_id=<id> 预填已存在 Program 的字段（"改 Brief" 回链用）
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             spec_src = (q.get("spec") or [""])[0].strip()
+            goal_id_src = (q.get("goal_id") or [""])[0].strip()
             strategies, services, err, meta = [], [], "", None
+            prefill = None  # 来自已有 Program 的预填值
             if spec_src:
                 strategies, services, err, meta = _resolve_strategy_spec(spec_src)
-            return self._send(200, _page("新建 Brief", _brief_form(strategies, err, meta, services)))
+            if goal_id_src:
+                p = _load_program(goal_id_src)
+                if p:
+                    g = p.get("goal", {}) or {}
+                    ap = g.get("audience_profile") or {}
+                    kpi = g.get("kpi") or {}
+                    prefill = {
+                        "goal_name": g.get("name", "") or "",
+                        "objective": g.get("objective", "") or "",
+                        "start_date": g.get("start_date", "") or "",
+                        "end_date": g.get("end_date", "") or "",
+                        "overall_conv": str(kpi.get("target", "")) if kpi.get("target") not in (None, 0, 0.0) else "",
+                        "audience_age": ap.get("age", "") or "",
+                        "audience_gender": ap.get("gender", "") or "",
+                        "audience_income": ap.get("income", "") or "",
+                        "audience_education": ap.get("education", "") or "",
+                        "audience_industry": ap.get("industry", "") or "",
+                        "audience_source": ap.get("source", "") or "",
+                        "audience_region": ap.get("region", "") or "",
+                        "is_revenue": "1" if g.get("is_revenue") else "0",
+                        "budget": str(g.get("budget", 0) or 0),
+                        "locale": g.get("locale", "zh_CN") or "zh_CN",
+                        "ref_goal_id": goal_id_src,  # 告诉 form 这是改 Brief
+                    }
+            return self._send(200, _page("新建 Brief", _brief_form(strategies, err, meta, services, prefill)))
         if path.startswith("/program/"):
             gid = path[len("/program/"):]
             p = _load_program(gid)
