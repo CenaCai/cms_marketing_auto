@@ -463,7 +463,6 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     strategy_spec 非空时，右侧只读展示逐条策略摘要（供提交前确认）。
     """
     ex = {"objective": "", "locale": "zh_CN", "budget": "0", "is_revenue": "0",
-          "audience_package": "GENERIC",
           "audience_age": "", "audience_gender": "", "audience_income": "",
           "audience_education": "", "audience_industry": "", "audience_source": "",
           "audience_region": "",
@@ -475,8 +474,6 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
         f"<label>{lbl}</label><select name='{k}'>" +
         "".join(f"<option value='{_esc(o)}' {'selected' if o == v else ''}>{_esc(o)}</option>" for o in opts) +
         "</select>")
-    # 画像包选项（含 CUSTOM 切换为字段可改）
-    pkg_options = ["GENERIC", "HNW_FAMILY", "YOUNG_TREND", "PARENT_FAM", "CORP_GRP", "DORMANT", "CUSTOM"]
     age_buckets = ["", "18-24", "25-34", "35-44", "45-54", "55+"]
     gender_opts = ["", "男", "女", "未知"]
     income_opts = ["", "L1", "L2", "L3", "L4", "L5"]
@@ -497,12 +494,11 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<p class='note'>单 campaign 打开/点击率由系统根据「总体目标转化率」自动反推，详情页与策略预览可见，此处不可手填。</p>"
                 f"</div>"
 
-                # --- 目标人群特点（决定内容侧重 + 频次） ---
+                # --- 目标人群特点（7 字段；画像包由系统推断） ---
                 f"<div class='card-inner' style='background:#fafbf5;padding:12px;border-radius:8px;margin:8px 0'>"
-                f"<h4 style='margin:6px 0'>目标人群特点（决定内容侧重与频次）</h4>"
-                f"<p class='note'>选画像包 → 自动套用频次/文案/画面策略；选「自定义」可逐项覆盖字段。</p>"
-                f"{sel('audience_package','画像包',ex['audience_package'],pkg_options)}"
-                f"<div class='grid2' style='margin-top:8px'>"
+                f"<h4 style='margin:6px 0'>目标人群特点</h4>"
+                f"<p class='note'>填入受众字段后，系统按打分公式自动匹配画像包（HNW_FAMILY / YOUNG_TREND / PARENT_FAM / CORP_GRP / DORMANT）；无匹配则用 GENERIC 兜底。</p>"
+                f"<div class='grid2'>"
                 f"{sel('audience_age','年龄段',ex['audience_age'],age_buckets)}"
                 f"{sel('audience_gender','性别',ex['audience_gender'],gender_opts)}</div>"
                 f"<div class='grid2'>"
@@ -512,6 +508,11 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"{sel('audience_industry','行业',ex['audience_industry'],ind_opts)}"
                 f"{sel('audience_source','首选来源（channel tag）',ex['audience_source'],src_opts)}</div>"
                 f"{sel('audience_region','国家/地区',ex['audience_region'],region_opts)}"
+                # --- 画像匹配实时显示（系统推断，不可改） ---
+                f"<div id='audience-match' style='margin-top:10px;padding:10px;background:#f0f7e8;border-radius:6px'>"
+                f"<div style='font-weight:600;color:var(--gov);margin-bottom:4px'>画像匹配（系统推断）</div>"
+                f"<div id='audience-match-result'><span class='b-idle'>填入受众字段后自动匹配</span></div>"
+                f"</div>"
                 f"</div>"
 
                 # --- 营收门 + 预算（替代原 budget 字段） ---
@@ -548,22 +549,46 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<button class='btn' type='submit' style='margin-top:14px'>编译并生成 Program →</button>"
                 f"</div>"
 
-                # 画像包 → 受众字段自动填充 JS（GENERIC/CUSTOM 留空；其他按 audience-content-map 锁定）
+                # 画像匹配实时推断 JS（与 goal_intake.infer_audience_package 同公式）
                 f"<script>"
-                f"var _pkg={{}}; "
-                f"_pkg.GENERIC={{age:'',gender:'',income:'',education:'',industry:'',source:'',region:''}};"
-                f"_pkg.HNW_FAMILY={{age:'35-44',gender:'男',income:'L4',education:'MBA',industry:'IT',source:'',region:'中国大陆'}};"
-                f"_pkg.YOUNG_TREND={{age:'25-34',gender:'',income:'L2',education:'普通本科',industry:'',source:'CSTS',region:'中国大陆'}};"
-                f"_pkg.PARENT_FAM={{age:'35-44',gender:'女',income:'L3',education:'普通本科',industry:'教育',source:'',region:'中国大陆'}};"
-                f"_pkg.CORP_GRP={{age:'',gender:'',income:'L4',education:'',industry:'IT',source:'',region:'中国大陆'}};"
-                f"_pkg.DORMANT={{age:'',gender:'',income:'',education:'',industry:'',source:'',region:''}};"
-                f"function applyPkg(){{var v=document.querySelector('[name=audience_package]').value;"
-                f"var p=_pkg[v]||_pkg.GENERIC; var lock=(v!=='CUSTOM' && v!=='GENERIC');"
+                f"var _PKG_MATCH={{}}; "
+                f"_PKG_MATCH.HNW_FAMILY={{label:'高净值家庭客',match:{{age:['35-44','45-54'],gender:['男'],income:['L4','L5'],education:['名校','MBA','QS100'],industry:['IT','金融','旅游','其他']}}}}; "
+                f"_PKG_MATCH.YOUNG_TREND={{label:'年轻潮流客',match:{{age:['18-24','25-34'],gender:['男','女'],income:['L1','L2'],education:['普通本科','其他'],source:['CSTS','爬虫','其他','手动输入']}}}}; "
+                f"_PKG_MATCH.PARENT_FAM={{label:'亲子家庭客',match:{{age:['25-34','35-44'],gender:['女'],income:['L3','L4'],education:['211','985','普通本科','其他'],industry:['教育','医疗','其他']}}}}; "
+                f"_PKG_MATCH.CORP_GRP={{label:'企业团购客',match:{{income:['L4','L5'],industry:['IT','金融','制造','零售','教育','医疗']}}}}; "
+                f"_PKG_MATCH.DORMANT={{label:'沉睡流失客',runtime_only:true}}; "
+                f"var _W={{age:0.20,gender:0.10,income:0.25,education:0.15,industry:0.15,source:0.10,region:0.05}}; "
+                f"function _computeMatch(){{"
+                f"  var fields=['age','gender','income','education','industry','source','region'];"
+                f"  var vals={{}};"
+                f"  fields.forEach(function(k){{var el=document.querySelector('[name=audience_'+k+']'); vals[k]=el?el.value:'';}});"
+                f"  var rows=[];"
+                f"  for(var code in _PKG_MATCH){{"
+                f"    var pkg=_PKG_MATCH[code];"
+                f"    if(pkg.runtime_only) continue;"
+                f"    var score=0,total=0,ev=[];"
+                f"    for(var i=0;i<fields.length;i++){{var f=fields[i]; total+=_W[f];"
+                f"      var v=vals[f], ml=pkg.match[f];"
+                f"      if(v && ml && ml.indexOf(v)>=0){{score+=_W[f]; ev.push(f+'='+v);}}}}"
+                f"    var pct=total>0?score/total:0;"
+                f"    rows.push({{code:code,label:pkg.label,score:pct,evidence:ev}});}}"
+                f"  rows.sort(function(a,b){{return b.score-a.score;}}); return rows;}}"
+                f"function _updateMatch(){{"
+                f"  var rows=_computeMatch();"
+                f"  var top=rows[0];"
+                f"  var box=document.getElementById('audience-match-result');"
+                f"  if(!top||top.score<0.6){{"
+                f"    box.innerHTML='<span class=\"b-warn\">无画像包匹配（最高分 '+(top?top.score.toFixed(2):'0.00')+' &lt; 0.60）</span> → 使用 <b>GENERIC 通用兜底</b>';"
+                f"    return;}}"
+                f"  var alts=rows.filter(function(x){{return x!==top && x.score>=0.6;}}).slice(0,2);"
+                f"  var ev=top.evidence.length>0?top.evidence.join(' / '):'（无具体字段命中）';"
+                f"  var altTxt=alts.length>0?'<div class=\"note\" style=\"margin-top:4px\">候选：'+alts.map(function(a){{return a.code+' ('+a.score.toFixed(2)+')';}}).join('、')+'</div>':'';"
+                f"  box.innerHTML='命中：<span class=\"b-ok\"><b>'+top.code+'</b></span> '+top.label+' — score <b>'+top.score.toFixed(2)+'</b>'"
+                f"    +'<div class=\"note\" style=\"margin-top:4px\">命中证据：'+ev+'</div>'+altTxt;}}"
                 f"['age','gender','income','education','industry','source','region'].forEach(function(k){{"
                 f"  var el=document.querySelector('[name=audience_'+k+']');"
-                f"  el.value=p[k]||''; el.disabled=lock;}});}}"
-                f"document.querySelector('[name=audience_package]').addEventListener('change',applyPkg);"
-                f"applyPkg();"
+                f"  if(el) el.addEventListener('change',_updateMatch);}});"
+                f"_updateMatch();"
                 f"</script>"
 
                 f"<script>{DERIVE_JS}</script>"
@@ -1327,6 +1352,7 @@ class Handler(BaseHTTPRequestHandler):
             locales = [locale_raw] if locale_raw else (d.get("locales") or ["zh_CN"])
             constraints = [ln.strip() for ln in
                            (form.get("constraints", "") or "").splitlines() if ln.strip()]
+            # 画像包由服务端按 profile 推断；表单不接收 audience_package
             goal_name = (form.get("goal_name", "") or "").strip()
             raw = {
                 "objective": (form.get("objective", "") or d.get("objective", "")).strip(),
@@ -1346,7 +1372,6 @@ class Handler(BaseHTTPRequestHandler):
                 "end_date": (form.get("end_date", "") or d.get("end_date", "")).strip(),
                 "channels": ["email"], "reserved_channels": ["sms"],
                 "goal_id": d.get("goal_id", ""),
-                "audience_package": (form.get("audience_package", "") or "GENERIC").strip(),
                 "audience_profile": {
                     k: (form.get("audience_" + k, "") or "").strip()
                     for k in ("age", "gender", "income", "education",
@@ -1365,6 +1390,7 @@ class Handler(BaseHTTPRequestHandler):
                 "strategy_source": (strategies[0].get("strategy_source", "default")
                                     if strategies else "default"),
                 "audience_package": goal.audience_package,
+                "audience_match": getattr(goal, "audience_match", {}),
                 "audience_profile": goal.audience_profile,
                 "is_revenue": goal.is_revenue,
             }

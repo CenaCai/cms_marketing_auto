@@ -87,19 +87,21 @@ check("Brief 含总体转化率字段", "name='overall_conv'" in bf)
 check("Brief 不再让运营填单campaign点击率(系统反推,只读控件已下架)",
       "name='click_rate_disp'" not in bf and "name='click_rate'" not in bf
       and "此处不可手填" in bf)
-check("Brief 含画像包下拉(默认 GENERIC 兜底)",
-      "name='audience_package'" in bf and "value='GENERIC' selected" in bf)
+check("Brief 不外显画像包(画像包由系统按 7 字段打分推断,不是 form input)",
+      "name='audience_package'" not in bf and "系统推断" in bf)
 check("Brief 含 7 个画像字段(年龄/性别/收入/教育/行业/来源/区域)",
       all(f"name='audience_{k}'" in bf for k in
           ("age", "gender", "income", "education", "industry", "source", "region")))
+check("Brief 含画像匹配实时显示区(系统推断结果)",
+      "id='audience-match-result'" in bf and "_updateMatch" in bf)
 check("Brief 含是否涉及营收(默认无营收)",
       "name='is_revenue'" in bf and "value='0' selected" in bf)
 check("Brief 预算字段默认隐藏(仅 is_revenue=1 才显示)",
       "id='budget_wrap'" in bf and "display:none" in bf.replace(" ", "").lower())
 check("Brief 字段命名『营销/活动名称』",
       "营销/活动名称" in bf)
-check("Brief 提示画像包决定内容侧重",
-      "决定内容侧重与频次" in bf)
+check("Brief 提示画像由系统按打分公式匹配",
+      "打分公式" in bf)
 check("Brief 含「用 WorkBuddy 生成策略」按钮", "gen-strategy-btn" in bf)
 check("Brief 展示策略生成说明(端点优先/降级)",
       ("已配置策略自动生成端点" in bf) or ("未配置自动生成端点" in bf))
@@ -128,10 +130,39 @@ check("策略预览含摘要标题", "策略摘要（只读" in pv)
 check("策略预览含 rationale/evidence", "理由：" in pv and "依据：" in pv)
 check("策略预览 generate 邮件显示[待生成]", "[待生成]" in pv)
 
+# ---------- infer_audience_package 单元测试（系统推断画像包） ----------
+import goal_intake as GI
+inf = GI.infer_audience_package
+m1 = inf({"age": "35-44", "gender": "男", "income": "L4", "education": "MBA", "industry": "IT"})
+check("infer HNW_FAMILY 命中(男/35-44/IT/L4/MBA)",
+      m1["code"] == "HNW_FAMILY" and m1["fallback"] is False
+      and m1["score"] >= 0.6
+      and "age=35-44" in m1["evidence"] and "industry=IT" in m1["evidence"],
+      f"got {m1}")
+m2 = inf({"age": "25-34", "gender": "女", "income": "L3", "education": "普通本科", "industry": "教育"})
+check("infer PARENT_FAM 命中(女/25-34/L3/教育/普通本科)",
+      m2["code"] == "PARENT_FAM" and m2["fallback"] is False
+      and m2["score"] >= 0.6,
+      f"got {m2}")
+m3 = inf({})  # 全空
+check("infer 全空 profile → GENERIC 兜底",
+      m3["code"] == "GENERIC" and m3["fallback"] is True,
+      f"got {m3}")
+m4 = inf({"age": "55+", "industry": "医疗"})  # 不命中任何具名包
+check("infer 不命中 → GENERIC 兜底(分数低)",
+      m4["code"] == "GENERIC" and m4["fallback"] is True
+      and m4["score"] < 0.6,
+      f"got {m4}")
+m6 = inf({"age": "25-34", "gender": "女", "income": "L4", "education": "普通本科", "industry": "教育"})
+# 命中包时 alternatives 字段始终是 list（设计上是互斥包，所以常为空，但字段必须存在供前端用）
+check("infer 命中时 alternatives 字段为 list(供前端/详情页展示候选)",
+      m6["code"] == "PARENT_FAM" and isinstance(m6.get("alternatives"), list),
+      f"got {m6}")
+
+
 # ---------- 路径 A：未提交 StrategySpec → 默认递进策略（按日期跨度派生 N）----------
 st, loc, _ = post("/brief",
     "objective=TEST+GOAL&locale=zh_CN&is_revenue=0&budget=0&"
-    "audience_package=HNW_FAMILY&"
     "audience_age=35-44&audience_gender=%E7%94%B7&audience_income=L4&"
     "audience_education=MBA&audience_industry=IT&audience_source=&audience_region=%E4%B8%AD%E5%9B%BD%E5%A4%A7%E9%99%86&"
     "start_date=2028-05-01&end_date=2028-07-09&"
@@ -153,6 +184,14 @@ check("Program 含派生计划摘要(系统反推点击率)", "派生计划摘�
 check("Program 告知合理性判定", "合理性判定" in ph)
 check("Program 含 Agent 优化说明", "Agent 优化说明" in ph)
 check("Program 反推点击率字段已落库", "click_rate" in program_of(gid)["plan"])
+# 画像包服务端推断：Path A 提交的是男/35-44/IT/L4/MBA 字段组合，应自动命中 HNW_FAMILY
+prog = program_of(gid)
+check("Program 画像包由服务端推断(非表单传)",
+      prog["goal"]["audience_package"] == "HNW_FAMILY"
+      and prog["goal"]["audience_match"].get("fallback") is False
+      and prog["goal"]["audience_match"]["score"] >= 0.6
+      and "age=35-44" in prog["goal"]["audience_match"]["evidence"],
+      f"got package={prog['goal']['audience_package']} match={prog['goal']['audience_match']}")
 
 c1 = f"{gid}_c1"
 st, _, body = post(f"/program/{gid}/campaign/{c1}/approve", "approver=alice")
@@ -328,7 +367,6 @@ print("DONE gid=", gid, " gid2=", gid2, " gid3=", gid3, " gid4=", gid4)
 # ---------- 路径 E：提交总体目标转化率 → 系统反推单campaign点击率 + 合理性 ----------
 st, loc, _ = post("/brief",
     "objective=CONV+GOAL&locale=zh_CN&is_revenue=0&budget=0&"
-    "audience_package=GENERIC&"
     "start_date=2028-05-01&end_date=2028-07-09&"
     "overall_conv=0.15")
 check("Conv Brief→302 Program", st == 302, f"loc={loc}")
@@ -348,7 +386,6 @@ check("Conv Program 展示 Agent 优化说明", "Agent 优化说明" in ph5)
 # ---------- 路径 F：高目标 + 短跨度 → 点击率超阈值，标记「需优化」 ----------
 st, loc, _ = post("/brief",
     "objective=HIGH+GOAL&locale=zh_CN&is_revenue=0&budget=0&"
-    "audience_package=GENERIC&"
     "start_date=2028-06-01&end_date=2028-06-30&"
     "overall_conv=0.50")
 check("HighConv Brief→302 Program", st == 302, f"loc={loc}")

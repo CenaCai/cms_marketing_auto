@@ -24,6 +24,106 @@ DEFAULT_CHANNELS = ["email"]
 DEFAULT_RESERVED_CHANNELS = ["sms"]
 
 
+# ===== 受众画像包（与专家库 references/audience-content-map.json 保持同步） =====
+# 5 具名包 + 1 兜底包（GENERIC）。DORMANT 由 runtime 规则命中，不参与打分。
+AUDIENCE_PACKAGES = {
+    "HNW_FAMILY": {
+        "label": "高净值家庭客",
+        "match": {
+            "age":       ["35-44", "45-54"],
+            "gender":    ["男"],
+            "income":    ["L4", "L5"],
+            "education": ["名校", "MBA", "QS100"],
+            "industry":  ["IT", "金融", "旅游", "其他"],
+        },
+    },
+    "YOUNG_TREND": {
+        "label": "年轻潮流客",
+        "match": {
+            "age":       ["18-24", "25-34"],
+            "gender":    ["男", "女"],
+            "income":    ["L1", "L2"],
+            "education": ["普通本科", "其他"],
+            "source":    ["CSTS", "爬虫", "其他", "手动输入"],
+        },
+    },
+    "PARENT_FAM": {
+        "label": "亲子家庭客",
+        "match": {
+            "age":       ["25-34", "35-44"],
+            "gender":    ["女"],
+            "income":    ["L3", "L4"],
+            "education": ["211", "985", "普通本科", "其他"],
+            "industry":  ["教育", "医疗", "其他"],
+        },
+    },
+    "CORP_GRP": {
+        "label": "企业团购客",
+        "match": {
+            "income":   ["L4", "L5"],
+            "industry": ["IT", "金融", "制造", "零售", "教育", "医疗"],
+        },
+    },
+    "DORMANT": {
+        "label": "沉睡流失客",
+        "runtime_only": True,
+    },
+}
+
+AUDIENCE_WEIGHTS = {
+    "age": 0.20, "gender": 0.10, "income": 0.25,
+    "education": 0.15, "industry": 0.15,
+    "source": 0.10, "region": 0.05,
+}
+AUDIENCE_THRESHOLD = 0.6  # 命中阈值（>= 算命中；< 则走 GENERIC 兜底）
+
+
+def infer_audience_package(profile) -> dict:
+    """按打分公式推断画像包。
+
+    score(pkg, contact) = Σ weight(field) × match(field) / Σ weight(field)
+      match(field) = 1 if contact.value ∈ pkg.match[field]，否则 0
+    阈值 AUDIENCE_THRESHOLD (0.6)。多包命中按分数降序。
+
+    Returns: dict with keys
+      code       str   "HNW_FAMILY" / "YOUNG_TREND" / "PARENT_FAM" / "CORP_GRP" / "GENERIC"
+      label      str   中文 label
+      score      float 命中分数（0~1）；GENERIC 时为最高非命中分
+      evidence   list  命中字段证据（形如 ["age=35-44","gender=男"]）
+      alternatives list 其它 ≥ 阈值的包（最多 2 个），用于详情页候选展示
+      fallback   bool  是否走 GENERIC 兜底
+    """
+    if not isinstance(profile, dict):
+        profile = {}
+    rows = []
+    for code, pkg in AUDIENCE_PACKAGES.items():
+        if pkg.get("runtime_only"):
+            continue
+        score, total, evidence = 0.0, 0.0, []
+        for field, weight in AUDIENCE_WEIGHTS.items():
+            total += weight
+            val = (profile.get(field) or "").strip()
+            match_list = pkg.get("match", {}).get(field) or []
+            if val and val in match_list:
+                score += weight
+                evidence.append(f"{field}={val}")
+        pct = (score / total) if total > 0 else 0.0
+        rows.append({
+            "code": code, "label": pkg.get("label", code),
+            "score": round(pct, 4), "evidence": evidence,
+        })
+    rows.sort(key=lambda x: x["score"], reverse=True)
+    top = rows[0] if rows else None
+    alts = [r for r in rows[1:] if r["score"] >= AUDIENCE_THRESHOLD][:2]
+    if not top or top["score"] < AUDIENCE_THRESHOLD:
+        return {
+            "code": "GENERIC", "label": "通用兜底",
+            "score": top["score"] if top else 0.0,
+            "evidence": [], "alternatives": alts, "fallback": True,
+        }
+    return {**top, "alternatives": alts, "fallback": False}
+
+
 @dataclass
 class GoalSpec:
     """结构化目标规格——Goal Intake 的产物。"""
@@ -42,8 +142,9 @@ class GoalSpec:
     end_date: str = ""
     frequency_cap: dict = field(default_factory=dict)    # 频次闸门参数
     guardrails: dict = field(default_factory=dict)       # 护栏参数（退订阈值等）
-    # 目标人群画像（来自 Brief 表单 ① 段；结构化字段，L1 专家按 audience-content-map 命中画像包）
-    audience_package: str = "GENERIC"               # 选定的画像包 code；CUSTOM 时由 L1 重算
+    # 目标人群画像（来自 Brief 表单 ① 段；结构化字段，画像包由 infer_audience_package 自动推断）
+    audience_package: str = "GENERIC"               # 推断的画像包 code（GENERIC 为兜底）
+    audience_match: dict = field(default_factory=dict)   # infer_audience_package 完整结果（含 score / evidence / alternatives / fallback）
     audience_profile: dict = field(default_factory=dict)  # {age, gender, income, education, industry, source, region}
     meta: dict = field(default_factory=dict)
 
@@ -147,9 +248,14 @@ def parse_brief(raw: dict) -> GoalSpec:
     })
 
     # 画像包与画像 profile：默认 GENERIC + 空 profile（运营未填时）
-    data.setdefault("audience_package", "GENERIC")
-    if not isinstance(data.get("audience_profile"), dict):
-        data["audience_profile"] = {}
+    profile = data.get("audience_profile") or {}
+    if not isinstance(profile, dict):
+        profile = {}
+    data["audience_profile"] = profile
+    # 画像包由服务端按 profile 推断（不信任表单的 audience_package，确保是 derived 而非 user input）
+    inferred = infer_audience_package(profile)
+    data["audience_package"] = inferred["code"]
+    data["audience_match"] = inferred
     # is_revenue 规整为 bool（表单可能传 "1"/"0"/"true"/"false"/True）
     rv = data.get("is_revenue")
     if isinstance(rv, str):
