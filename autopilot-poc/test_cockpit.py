@@ -144,8 +144,10 @@ check("Brief 不暴露频次闸门编辑", "频次闸门 1/24h" in bf and "name=
 check("Brief 含取消/返回列表按钮(显式href=/)",
       "取消并返回列表" in bf and "href='/'" in bf and "←" in bf)
 # ---------- 必填/非必填视觉区分 (issue 2026-09-07) ----------
-check("Brief 含必填项图例说明", "必填项" in bf and "缺一不可" in bf and "兜底" in bf)
-check("Brief objective 标 .req 必填星号", "class='req'" in bf and "营销目标" in bf)
+check("Brief 不再含必填/非必填图例说明(已移除)",
+      "必填项" not in bf and "缺一不可" not in bf)
+check("Brief objective 标 .req 必填星号",
+      ('class="req"' in bf or "class='req'" in bf) and "营销目标" in bf)
 check("Brief objective 有 HTML5 required 属性",
       "name='objective'" in bf and "required" in bf)
 check("Brief 非必填字段标 .opt 可选小标", "class=\"opt\"" in bf)

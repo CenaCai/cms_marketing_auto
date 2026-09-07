@@ -589,9 +589,6 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     region_opts = ["", "中国大陆", "港澳台", "海外"]
 
     operator = (f"<div class='card'><h3>① 你的目标与约束（运营填写）</h3>"
-                f"<p class='note'><span class='req'>*</span> <b>必填项</b> = 缺一不可（无合理兜底）；"
-                f"其余字段均有兜底，可留空。"
-                f"示例：<code>objective</code> 必填；<code>goal_name</code>/<code>overall_conv</code>/<code>audience_*</code> 均可空。</p>"
                 f"{fld('goal_name','营销/活动名称（留空则用 ID 值；<span class=\"opt\">可选</span>）',ex['goal_name'])}"
                 f"{fld('objective','<span class=\"req\">*</span> 营销目标（必填，业务描述，至少 4 字符，非占位词）',ex['objective'], req=True)}"
                 f"<div class='grid2'>"
