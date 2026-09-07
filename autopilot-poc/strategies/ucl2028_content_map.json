@@ -1,0 +1,315 @@
+{
+  "goal_id": "ucl2028",
+  "objective": "邀请目标联系人登记 2028 欧冠决赛（2028-05-27 单场决赛）Hospitality 优先购买意向；host 待定，故为意向登记而非售票。",
+  "locale": ["zh_CN", "en_US"],
+  "notes": {
+    "bilingual": "CN/EN 采用同一节点 + Mautic Dynamic Content 按 locale 渲染（零节点增长）。仅当渠道不支持动态内容（SMS/WA）才拆分支，且拆后立即合流。语言归一化四级：表单显式 > 首触 LP 语言 > 手机区号(+86 为 zh_CN) > Accept-Language，每次触点后重跑回填并记录 preferred_locale_source。",
+    "tag_governance": "所有 ucl2028_* 标签须经 tag-rule 校验通路写入，禁止直接写 user_tag。",
+    "global_tags": "ucl2028_registered（Page #24 表单提交触发，强意图，用于排除已登记者出 c3/c4 并应触发服务确认）；ucl2028_unsubscribed（退订表单提交，合规必需，须配 unsubscribeForm）；ucl2028_purchased（生产订单事件，开票后转服务序列/归档）。",
+    "compliance": "host 未定 + 2028 票务未开放 + 无真实库存字段：文案仅限「意向登记」「优先购买资格」；慕尼黑仅表述为「唯一候选（待 UEFA 约 2026-09 确认）」，不得写成已确认举办地；禁止任何票价/余票/库存数字；库存类表述只可模糊（如「席位有限」）；不得宣称已开票。",
+    "wave_structure": "c1 与 c2 共用 Email #104 同一内容（人群不同：种子验证 vs 全量扩量），有意共用 variant v1，不产生新 variant_id、不触发 plan_hash 重审。c3（到过 LP 未提交）与 c4（未到达 LP）为互斥人群，任何人最多命中其一。c5 为 host 确认后延迟触发。每人最多 3 触（c1 或 c2 + c3 或 c4 + c5），在 promo L1 硬顶 4 步内。",
+    "retired": "LASTCHANCE（原 W3' 冠军节换角度兜底）已撤稿，不出稿、不进 plan_hash；保留「5/25-28 四天冠军节」作为备用角度，如需可重新启用为独立 variant。",
+    "service_gap_resolved": "已登记确认不开 c6，改列为顶层 service_sequences（sid=svc_ucl2028_registered_confirm，已与 send_strategy.json 对齐），class=service、counts_toward_promo_cap=false、不受促销冻结约束。机制理由：c1-c5 的 judgment 规定「登记 → suppress_promo → 退出后续 promo」，若确认件做成 campaigns[] 里的 c6 会被自身抑制规则吞掉。依据：规格 §16.4（comm_freeze_promo_until / comm_freeze_marketing_until 拆分）、§11.2（转化后转服务序列）、reference 05（service：L1 硬顶不设限/疲劳度权重 0/不占 S 池，transactional 与 service 不受任何冻结约束）、reference 06（退所有促销 journey 转服务序列）、reference 02（已成交仅服务序列禁促销）、原则2。已由 team-lead 与 data-analyst 共同拍板。",
+    "file_boundary": "双文件分离（已与 data-analyst 确认）：本文件 ucl2028_content_map.json 只定义内容资产（email brief / content_variant / landing_page / tags）；波次、segment、触发、时序、抑制、promo 上限、静默窗归 ucl2028_send_strategy.json。本文件的 service_sequences 仅承载邮件内容 brief 与 variant，trigger/timing/suppression 一律以 send_strategy 为准；两文件通过 sid（svc_ucl2028_registered_confirm）与 content_variant.id（v_svc_confirm）对齐。两侧互不覆盖。",
+    "silent_window_flag": "已裁定（team-lead 已落库）：service 序列豁免 22:00-09:00 静默窗，但严格限定为「用户动作即时触发、≤5 分钟内发出」的服务确认件——本 CONFIRM 稿属此档。促销类 c1-c5 一律不豁免，仍 22:00-09:00 禁触。属护栏参数，本文件仅记录裁定、不设参数。",
+    "scope": "发送节奏、分群与判断逻辑由 growth-data-analyst（杜量）负责，本文件不重复定义；本文件只定义内容资产（复用/生成）、内容角度与标签触发。"
+  },
+  "campaigns": [
+    {
+      "cid": "ucl2028_c1",
+      "name": "高意向种子验证波：复用 #104 原邀约",
+      "rationale": "先用高意向种子人群验证 #104 主邀约的实际效果（打开/点击/登记），通过后再扩量，避免在未经验证的内容上直接全量投放。",
+      "evidence": "复用 Email #104 EM_UCL2028_INVITE（双语 CN+EN，CTA 指向 ucl2028-bridge）与 Page #24 LP_UCL2028_BRIDGE。已核实事实：2028-05-27 单场决赛；慕尼黑安联为 2028 唯一候选、UEFA 约 2026-09 中旬确认；配套 5/25-28 四天冠军节；2028 票务未开放、无真实库存字段。",
+      "email": {
+        "mode": "reuse",
+        "ref": "EM_UCL2028_INVITE",
+        "brief": {
+          "subject": "2028 欧冠决赛 Hospitality · 优先购买资格登记（慕尼黑为唯一候选）",
+          "subject_localized": {
+            "zh_CN": "2028 欧冠决赛 Hospitality · 优先购买资格登记（慕尼黑为唯一候选）",
+            "en_US": "UCL 2028 Final Hospitality - register for priority access (Munich the sole candidate)"
+          },
+          "angle": "权威 + 专属：UEFA 权威背书、慕尼黑唯一候选带来的确定性、登记即获优先资格（零风险动作）",
+          "cta": "ucl2028-bridge",
+          "locale": ["zh_CN", "en_US"],
+          "must_include": [
+            "赛事日期 2028-05-27",
+            "举办地待 UEFA 约 2026-09 确认、慕尼黑安联为唯一候选",
+            "明确为优先购买意向登记、非售票",
+            "退订链接"
+          ],
+          "must_avoid": [
+            "具体票价",
+            "具体余票或库存数字",
+            "宣称已开票",
+            "把慕尼黑写成已确认的最终举办地"
+          ]
+        }
+      },
+      "content_variant": {
+        "id": "v1_invite_authority",
+        "angle": "权威 + 专属：以 UEFA 与「唯一候选」的确定性开篇，把登记包装为零风险优先资格动作",
+        "headline": "2028 欧冠决赛 Hospitality · 优先购买资格登记",
+        "summary": "首屏第一句即交付确定性：2028-05-27 决赛，举办地待 UEFA 2026-09 确认、慕尼黑安联为唯一候选。单一 CTA 指向意向登记落地页。全篇不含票价与库存数字。"
+      },
+      "landing_page": {
+        "mode": "reuse",
+        "ref": "LP_UCL2028_BRIDGE",
+        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "note": "复用 Page #24（alias ucl2028-bridge）。表单分级：必填 L1 捕获=姓名+邮箱；选填 L2 资质=出发城市/出行人数/预算档位/是否关注冠军节（全选择题）；不收集 L3 实名（出票前才要）。首屏须见确定性锚 + 价值句 + 姓名邮箱一键提交，移动端首屏即按钮。页脚合规说明：本页为意向登记非购票、2028 票务未开放、席位以 UEFA 及官方公布为准。"
+      },
+      "tags_to_write": ["ucl2028_invited", "ucl2028_opened", "ucl2028_clicked"],
+      "tag_triggers": [
+        {"event": "进入种子验证 segment", "tag": "ucl2028_invited", "note": "入池标记"},
+        {"event": "email_open（#104）", "tag": "ucl2028_opened", "note": "打开记录；始终未到达 LP 者进入 c4（含本条无记录者）"},
+        {"event": "cta_click 或 page_hit(ucl2028-bridge)", "tag": "ucl2028_clicked", "note": "点击 CTA 或到达落地页；到达 LP 但未提交者进入 c3"}
+      ]
+    },
+    {
+      "cid": "ucl2028_c2",
+      "name": "全量扩量波：沿用 #104 同款内容（人群不同，内容不变）",
+      "rationale": "种子验证通过后扩至全量。仅人群变化、内容刻意不变，因此不产生新 variant、不触发 plan_hash 重审——这是有意复用，不是内容空缺。",
+      "evidence": "与 c1 共用 Email #104 EM_UCL2028_INVITE。人群由 data-analyst 侧 segment 定义（种子 vs 全量），内容层无需改动。",
+      "email": {
+        "mode": "reuse",
+        "ref": "EM_UCL2028_INVITE",
+        "brief": {
+          "subject": "2028 欧冠决赛 Hospitality · 优先购买资格登记（慕尼黑为唯一候选）",
+          "subject_localized": {
+            "zh_CN": "2028 欧冠决赛 Hospitality · 优先购买资格登记（慕尼黑为唯一候选）",
+            "en_US": "UCL 2028 Final Hospitality - register for priority access (Munich the sole candidate)"
+          },
+          "angle": "与 c1 完全相同（权威 + 专属）；本波仅扩人群，不换内容",
+          "cta": "ucl2028-bridge",
+          "locale": ["zh_CN", "en_US"],
+          "must_include": [
+            "赛事日期 2028-05-27",
+            "举办地待 UEFA 约 2026-09 确认、慕尼黑安联为唯一候选",
+            "明确为优先购买意向登记、非售票",
+            "退订链接"
+          ],
+          "must_avoid": [
+            "具体票价",
+            "具体余票或库存数字",
+            "宣称已开票",
+            "把慕尼黑写成已确认的最终举办地"
+          ]
+        }
+      },
+      "content_variant": {
+        "id": "v1_invite_authority",
+        "angle": "与 c1 共用同一 variant（权威 + 专属）：人群不同、内容不变，故不产生新 variant_id",
+        "headline": "2028 欧冠决赛 Hospitality · 优先购买资格登记",
+        "summary": "人群不同、内容不变，有意复用 v1，非缺失。内容身份以 content_variant.id（v1_invite_authority）为准，不以 headline 文本判重；本波不产生新 variant_id、不触发 plan_hash 重审。禁止将「headline 与上一波相同」判定为内容缺失或重复。"
+      },
+      "landing_page": {
+        "mode": "reuse",
+        "ref": "LP_UCL2028_BRIDGE",
+        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "note": "与 c1 同一落地页，字段不变。"
+      },
+      "tags_to_write": ["ucl2028_invited"],
+      "tag_triggers": [
+        {"event": "进入全量扩量 segment", "tag": "ucl2028_invited", "note": "入池标记；与 c1 共用 variant v1，不新增 variant_id"}
+      ]
+    },
+    {
+      "cid": "ucl2028_c3",
+      "name": "LP 到达未登记回收波：减摩擦与异议处理",
+      "rationale": "到过落地页却没提交的人已经用行动表达了兴趣，卡点在摩擦而非意愿（表单顾虑、担心是购票、不清楚只需两个字段）。再发一遍邀约无效，应当减摩擦并澄清异议。",
+      "evidence": "内容矩阵：到达但未转化应减摩擦与异议处理，而非重复邀约。表单分级：L1 仅需姓名+邮箱。与 c4 为互斥人群（到过 LP vs 未到达 LP）。",
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "就差一步：只需姓名和邮箱，30 秒完成意向登记",
+          "subject_localized": {
+            "zh_CN": "就差一步：只需姓名和邮箱，30 秒完成意向登记",
+            "en_US": "One step left: just name and email - 30 seconds to register your interest"
+          },
+          "angle": "减摩擦 + 异议处理：承认对方到过页面，把动作降到最低（只需姓名+邮箱），澄清非购票、不收费、host 未定所以当前只是登记意向",
+          "cta": "ucl2028-bridge",
+          "locale": ["zh_CN", "en_US"],
+          "must_include": [
+            "明确只需姓名+邮箱两个字段",
+            "说明非购票、不收费、无强制约束",
+            "host 待 UEFA 约 2026-09 确认，当前仅为意向登记",
+            "退订链接"
+          ],
+          "must_avoid": [
+            "重复 #104 的邀约话术",
+            "票价或库存数字",
+            "制造虚假紧迫感或虚假截止日",
+            "新增任何字段要求"
+          ]
+        }
+      },
+      "content_variant": {
+        "id": "v3_friction_relief",
+        "angle": "减摩擦 + 异议处理：把动作降到最低、澄清并非购票，消解提交前的顾虑",
+        "headline": "就差一步：只需姓名和邮箱，30 秒完成意向登记",
+        "summary": "面向到达 LP 但未提交的人群。不重复邀约，而是承认其到访、把表单降到两字段、澄清只是意向登记而非购票。与 c4 互斥人群。"
+      },
+      "landing_page": {
+        "mode": "reuse",
+        "ref": "LP_UCL2028_BRIDGE",
+        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "note": "复用 #24。本波沟通重点是强调表单仅需姓名+邮箱，页面本身不新增字段。"
+      },
+      "tags_to_write": ["ucl2028_lp_abandoned"],
+      "tag_triggers": [
+        {"event": "page_hit(ucl2028-bridge) 且无 ucl2028_registered", "tag": "ucl2028_lp_abandoned", "note": "到达 LP 未提交，进入减摩擦回收；与 c4（始终未到达 LP）人群互斥"}
+      ]
+    },
+    {
+      "cid": "ucl2028_c4",
+      "name": "未到达 LP 差异化复投波：REMIND（仅此一次）",
+      "rationale": "始终未到达 LP 的人群含两类障碍：零打开（根本没看到，需换主题行重新送达）与已打开但未点击/未访问 LP（看到了但不为所动，需把承诺门槛降到「30 秒占个位」）。同一 v4 变体对两类障碍各自成立，故合并为一波，仅投一次——加频次不是杠杆。",
+      "evidence": "内容矩阵：未到达 LP 可做一次差异化复投。原则4：加频次不是杠杆。与 c3 为互斥人群（未到达 LP vs 到过 LP）。已按 data-analyst 改判：c4 人群=始终未到达 LP（零打开 + 已打开但未点击/未访问 LP），对应分群 SEG_UCL2028_NOREACH。",
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "还没决定？先占个优先位",
+          "subject_localized": {
+            "zh_CN": "还没决定？先占个优先位",
+            "en_US": "still thinking? grab a priority spot"
+          },
+          "angle": "换主题行与角度的差异化复投：小写口语化、像运营手写的短邮件，只求一次点击，不重复 #104 权威铺垫",
+          "cta": "ucl2028-bridge",
+          "locale": ["zh_CN", "en_US"],
+          "must_include": [
+            "与 #104 明显不同的主题行",
+            "一句话说明这是补登记机会",
+            "真实运营署名",
+            "退订链接"
+          ],
+          "must_avoid": [
+            "重复 #104 的权威铺垫",
+            "票价或库存数字",
+            "虚假截止日",
+            "第二次复投（本波仅此一次）"
+          ]
+        }
+      },
+      "content_variant": {
+        "id": "v4_remind_human",
+        "angle": "降门槛：纯文本手写感 + 小写口语化标题，把登记说成「30 秒占个位」",
+        "headline": "还没决定？先占个优先位",
+        "summary": "面向始终未到达 LP 人群（零打开 + 已打开但未点击/未访问）的唯一一次差异化复投，同一 v4 变体覆盖两类障碍。与 c3 互斥（c3 到过 LP，c4 未到达），此后不再追加。"
+      },
+      "landing_page": {
+        "mode": "reuse",
+        "ref": "LP_UCL2028_BRIDGE",
+        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "note": "同一落地页，字段不变。"
+      },
+      "tags_to_write": ["ucl2028_reminded"],
+      "tag_triggers": [
+        {"event": "始终未到达 LP（无 page_hit(ucl2028-bridge) 记录：含零打开 + 已打开但未点击/未访问）到达复投时点", "tag": "ucl2028_reminded", "note": "标记已做唯一一次差异化复投；此后不再追加，避免超频次。已知边界：若零打开根因是送达问题（进垃圾箱/未送达）而非内容，换标题无效，由既有护栏兜底（打开率 <12% 即 P25 → 转人工查渠道健康），不靠文案解决"}
+      ]
+    },
+    {
+      "cid": "ucl2028_c5",
+      "name": "HOSTCONFIRMED：host 确认后延迟触发的确定性升级告知",
+      "rationale": "host 由「唯一候选」变为「已确认」是全案唯一的真实确定性升级节点，权威与稀缺可具体化，是天然的二次告知机会。未确认前不得启用。",
+      "evidence": "已核实事实：UEFA 执行委员会约 2026-09 中旬确认 2028 举办地，慕尼黑安联为唯一候选。",
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "慕尼黑已确认：2028 欧冠决赛 Hospitality 优先登记",
+          "subject_localized": {
+            "zh_CN": "慕尼黑已确认：2028 欧冠决赛 Hospitality 优先登记",
+            "en_US": "Munich confirmed: UCL 2028 Final Hospitality priority registration"
+          },
+          "angle": "确定性升级：把「唯一候选（待确认）」升级为「已确认慕尼黑」，权威落地、优先资格更具体",
+          "cta": "ucl2028-bridge",
+          "locale": ["zh_CN", "en_US"],
+          "must_include": [
+            "UEFA 已确认举办地（按实际公告表述）",
+            "慕尼黑安联 + 赛事日期 2028-05-27",
+            "若票务仍未开放须继续写明为优先购买意向登记",
+            "退订链接"
+          ],
+          "must_avoid": [
+            "在 UEFA 实际确认前启用",
+            "票价或库存数字",
+            "若已开票仍称票务未开放（须按实时状态改写）"
+          ]
+        }
+      },
+      "content_variant": {
+        "id": "v5_host_confirmed",
+        "angle": "确定性升级：host 落地后权威与稀缺具体化，从「待定」转为「已确认慕尼黑」的二次告知",
+        "headline": "慕尼黑已确认：2028 欧冠决赛 Hospitality 优先登记",
+        "summary": "延迟触发资产。host 经 UEFA 确认后启用，文案由「唯一候选」升级为「已确认慕尼黑」；仍不写票价与库存数字。未确认前不进生效集。"
+      },
+      "landing_page": {
+        "mode": "reuse",
+        "ref": "LP_UCL2028_BRIDGE",
+        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "note": "复用 #24；host 确认后仅需更新页内确定性锚文案，不新建页。"
+      },
+      "tags_to_write": ["ucl2028_host_confirmed"],
+      "tag_triggers": [
+        {"event": "host 确认事件（约 2026-09，以 UEFA 实际公告为准）", "tag": "ucl2028_host_confirmed", "note": "标记已进入确定性升级后的告知序列；触发前须人工核实 host 已确认"}
+      ]
+    }
+  ],
+  "service_sequences": [
+    {
+      "sid": "svc_ucl2028_registered_confirm",
+      "name": "已登记确认（服务序列）",
+      "trigger": "Page #24 (alias ucl2028-bridge) 表单提交",
+      "class": "service",
+      "counts_toward_promo_cap": false,
+      "exempt_from_promo_suppression": true,
+      "rationale": "登记成功后的确认属服务性触达，必须永不冻结；作用是锁定预期（举办地待 UEFA 约 2026-09 确认、开票前通知）并可顺带采集 L2 出行偏好。不促销、不催购，因此不应计入 promo 触达上限，也不应做成第 6 个 promo campaign 污染「每人最多 3 触」口径。",
+      "evidence": "规格 §16.4：冻结字段拆分为 comm_freeze_promo_until / comm_freeze_marketing_until，transactional/service 不受促销冻结约束；规格 §11.2：转化成功后退所有促销、转服务序列。原则2：交易性/服务性触达永不冻结。",
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "已收到你的 2028 欧冠决赛 Hospitality 意向",
+          "subject_localized": {
+            "zh_CN": "已收到你的 2028 欧冠决赛 Hospitality 意向",
+            "en_US": "Your UCL 2028 Final Hospitality interest is in - what's next"
+          },
+          "angle": "服务确认 + 下一步：确认已登记、给出时间预期（举办地待 UEFA 约 2026-09 确认、开票前通知）、可选补 L2 出行偏好",
+          "cta": "ucl2028-bridge",
+          "locale": ["zh_CN", "en_US"],
+          "must_include": [
+            "确认意向已登记",
+            "举办地待 UEFA 约 2026-09 确认、慕尼黑安联为唯一候选",
+            "开票前第一时间通知",
+            "可选补出行偏好（出发城市/人数/预算档）：仅内嵌链接、必须选填，不得阻断确认件发送",
+            "退订链接（服务件不豁免合规）"
+          ],
+          "must_avoid": [
+            "促销或催购话术",
+            "任何促销 CTA 或再次邀约（已登记者禁促销，硬红线）",
+            "为承载 L2 偏好单独再发一封促销邮件",
+            "具体票价",
+            "库存或余票数字",
+            "虚构开票时间"
+          ]
+        }
+      },
+      "content_variant": {
+        "id": "v_svc_confirm",
+        "angle": "服务确认：锁定预期（举办地待 UEFA 约 2026-09 确认 + 开票前通知），把关系从「邀约中」转为「已受理」",
+        "headline": "已收到你的 2028 欧冠决赛 Hospitality 意向",
+        "summary": "纯服务邮件，非 promo。确认登记成功、交代举办地确认与开票通知节奏、可选补 L2 出行偏好。不含票价与库存数字，慕尼黑仍只写「唯一候选（待确认）」。不计入 promo 触达上限、不受促销冻结约束。"
+      },
+      "landing_page": {
+        "mode": "reuse",
+        "ref": "LP_UCL2028_BRIDGE",
+        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "note": "确认件 CTA 指向同一 bridge 页（不改字段）。该链接仅用于查看/补充 L2 偏好（出发城市、出行人数、预算档位、冠军节关注），不得作为再次登记或促销 CTA 呈现——已登记用户已被 suppress_promo 抑制，写成「立即登记/再次登记」既自相矛盾，也违反服务件禁促销硬约束。"
+      },
+      "tags_to_write": ["ucl2028_registered"],
+      "timing": {"delay": "立即（delay_hours=0，与 send_strategy 对齐；时序与静默窗实际参数以 send_strategy 为准）"}
+    }
+  ]
+}
