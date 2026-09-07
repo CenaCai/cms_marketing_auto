@@ -118,6 +118,8 @@ check("Brief 不再让运营填 KPI/落页/波次数",
 check("Brief 含 Agent 自动决策面板", "Agent 自动决策" in bf)
 check("未提交策略时提示默认递进", "Agent 尚未产出策略" in bf)
 check("Brief 不暴露频次闸门编辑", "频次闸门 1/24h" in bf and "name='max_per_24h'" not in bf)
+check("Brief 含取消/返回列表按钮(显式href=/)",
+      "取消并返回列表" in bf and "href='/'" in bf and "←" in bf)
 
 # ---------- wave→campaign 实时校验（svctest 详情页） ----------
 svc = get("/program/ucl2028_svctest")

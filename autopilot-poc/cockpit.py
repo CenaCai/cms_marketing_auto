@@ -607,8 +607,12 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
              + _spec_preview_html(strategy_spec, spec_err, spec_meta)
              + _service_preview_html(service_spec)
              + "</div>")
-    return f"<h1>新建 Brief</h1><p class='sub'>方案 A 驾驶舱 · 独立 :8090 → Mautic :8080</p>" \
-           f"<form method='post' action='/brief'><div class='grid2'>{operator}{agent}</div></form>"
+    return (f"<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px'>"
+            f"<h1 style='margin:0'>新建 Brief</h1>"
+            f"<a class='btn sec' href='/' style='white-space:nowrap'>← 取消并返回列表</a>"
+            f"</div>"
+            f"<p class='sub'>方案 A 驾驶舱 · 独立 :8090 → Mautic :8080</p>" \
+           f"<form method='post' action='/brief'><div class='grid2'>{operator}{agent}</div></form>")
 
 
 def _spec_preview_html(strategy_spec: list, spec_err: str = "", spec_meta: dict = None) -> str:
