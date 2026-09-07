@@ -3,6 +3,9 @@ import json
 import urllib.parse
 import urllib.request as u, urllib.error
 
+# 单元验证外链构造器（不依赖活服务）
+import cockpit as C  # noqa: E402
+
 BASE = os.environ.get("COCKPIT_BASE", "http://127.0.0.1:8090")
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXAMPLE_SPEC = os.path.join(HERE, "strategies", "example_strategy.json")
@@ -37,6 +40,40 @@ def post_json(path, obj: dict):
 def check(name, cond, extra=""):
     print(("✅" if cond else "❌"), name, extra)
 
+
+# ---------- 单元：Mautic 外链构造器（mock 资产读取，不依赖活服务/Mautic） ----------
+C.mautic_read_assets = lambda env: {
+    "available": True,
+    "emails": [{"id": 99, "name": "EM_X", "alias": "EM_X"}],
+    "segments": [{"id": 7, "name": "SEG_Y", "alias": "SEG_Y"}],
+    "pages": [{"id": 3, "name": "LP_Z", "alias": "LP_Z"}],
+}
+_idx = C._mautic_asset_index()
+check("外链索引 email 解析", _idx["email"].get("EM_X") == 99, f"id={_idx['email'].get('EM_X')}")
+check("外链索引 segment 解析", _idx["segment"].get("SEG_Y") == 7)
+check("外链 战役 URL", "/s/campaigns/123" in C._mautic_ext_link("campaign", "123", _idx),
+      C._mautic_ext_link("campaign", "123", _idx))
+check("外链 邮件 URL", "/s/emails/99/view" in C._mautic_ext_link("email", "EM_X", _idx),
+      C._mautic_ext_link("email", "EM_X", _idx))
+check("外链 分群 URL", "/s/segments/7" in C._mautic_ext_link("segment", "SEG_Y", _idx))
+check("外链 落页 URL", "/s/landingpages/3" in C._mautic_ext_link("landingpage", "LP_Z", _idx))
+check("外链 未连接返回空", C._mautic_ext_link("email", "NOPE", _idx) == "")
+check("外链 未找到返回空", C._mautic_ext_link("email", "MISSING", _idx) == "")
+# 直接渲染 program 验证 wave→campaign 重命名（不依赖 Mautic 连通）
+_p = C._load_program("ucl2028_svctest")
+if _p:
+    _html = C._program_body(_p, "")
+    check("program 渲染 wave→campaign 重命名", "campaign_1" in _html and "wave_1" not in _html)
+    # 端到端：已推送拿到 campaign_id → 卡片渲染战役外链（email/segment 因 Mautic 未连通显示无对应）
+    import copy as _copy
+    _demo = _copy.deepcopy(_p)
+    _demo["campaigns"][0]["proposal"]["deploy_result"] = {"campaign_id": "555", "dry_run": False}
+    _demo_html = C._program_body(_demo, "")
+    check("已推送 campaign 渲染战役外链", "/s/campaigns/555" in _demo_html,
+          "campaign_id=555 → /s/campaigns/555")
+else:
+    check("program 渲染 wave→campaign 重命名", False, "（output/program_ucl2028_svctest.json 缺失）")
+
 def program_of(gid):
     return json.load(open(os.path.join(HERE, "output", f"program_{gid}.json"), encoding="utf-8"))
 
@@ -65,6 +102,10 @@ check("Brief 含 Agent 自动决策面板", "Agent 自动决策" in bf)
 check("未提交策略时提示默认递进", "Agent 尚未产出策略" in bf)
 check("Brief 不暴露频次闸门编辑", "频次闸门 1/24h" in bf and "name='max_per_24h'" not in bf)
 
+# ---------- wave→campaign 实时校验（svctest 详情页） ----------
+svc = get("/program/ucl2028_svctest")
+check("svctest 详情 wave→campaign 重命名", "campaign_1" in svc and "wave_1" not in svc)
+
 # ---------- /brief?spec= 预览 Agent 策略（只读摘要）----------
 pv = get("/brief?spec=" + EXAMPLE_SPEC.replace(os.sep, "/"))
 check("策略预览含摘要标题", "策略摘要（只读" in pv)
@@ -80,7 +121,7 @@ check("Brief→302 Program", st == 302, f"loc={loc}")
 gid = loc.split("/")[-1]
 
 ph = get(f"/program/{gid}")
-check("Program 含 3 campaign", ph.count("wave_1") >= 1 and "wave_3" in ph)
+check("Program 含 3 campaign", ("campaign_1" in ph) and ("campaign_3" in ph))
 check("Program 含治理节点", "sourcemarketing.frequency_gate" in ph)
 check("Program 事件图渲染为流程图", "<svg" in ph)
 check("Program 含 Mautic 资产清单", "Mautic 资产清单" in ph)

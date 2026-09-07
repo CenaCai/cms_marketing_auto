@@ -157,6 +157,7 @@ th{color:var(--muted);font-weight:600;font-size:12px}
 code{background:#eef0f3;padding:1px 6px;border-radius:6px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .pre{background:#0e1726;color:#cfe0f2;padding:13px;border-radius:10px;overflow:auto;font-size:12px}
 a{color:var(--brand);text-decoration:none} a:hover{text-decoration:underline}
+.ext{font-weight:600} .ext::after{content:" ↗";font-weight:400}
 .agent{background:var(--gov-soft);border:1px dashed #b7d99a;border-radius:12px;padding:16px}
 .agent h4{margin:0 0 10px;color:var(--gov);font-size:13px}
 .agent .row{display:flex;flex-wrap:wrap;gap:7px}
@@ -642,21 +643,18 @@ def _graph_svg(graph: list) -> str:
                    f"<text x='{x + W/2}' y='{y + 20}' text-anchor='middle' "
                    f"fill='{fill}' font-weight='600'>{_esc(_short(nd['type']))}</text>"
                    f"<text x='{x + W/2}' y='{y + 38}' text-anchor='middle' "
-                   f"fill='#1c2330' font-size='9'>{_esc(nd['id'])}</text></g>")
+                   f"fill='#1c2330' font-size='9'>{_esc(nd['id'].replace('wave_', 'campaign_') if isinstance(nd['id'], str) else nd['id'])}</text></g>")
     svg.append("</svg>")
     return "".join(svg)
 
 
-def _mautic_asset_table(program: dict) -> str:
-    """汇总 Program 内每个 campaign 引用/将新建的 Mautic 资产（新建 vs 调用已有）。"""
-    env = mautic_read_assets("local")
-    avail = env.get("available", False)
-    emails = {str(x.get("name")): x for x in env.get("emails", [])}
-    email_ids = {str(x.get("id")): x for x in env.get("emails", [])}
-    segs = {str(x.get("name")): x for x in env.get("segments", [])}
-    seg_ids = {str(x.get("id")): x for x in env.get("segments", [])}
-    pages = {str(x.get("name")): x for x in env.get("pages", [])}
-    page_alias = {str(x.get("alias")): x for x in env.get("pages", [])}
+def _mautic_asset_table(program: dict, idx: dict = None) -> str:
+    """汇总 Program 内每个 campaign 引用/将新建的 Mautic 资产（新建 vs 调用已有）。
+    若 idx 未传则自行读取一次 Mautic 资产索引；ref 在 Mautic 实存时渲染成可跳转详情页的外链。"""
+    if idx is None:
+        idx = _mautic_asset_index()
+    avail = idx["available"]
+    emails = idx["email"]; segs = idx["segment"]; pages = idx["page"]
 
     def _exists(ref: str, name_map: dict, id_map: dict) -> bool:
         if not ref:
@@ -673,13 +671,20 @@ def _mautic_asset_table(program: dict) -> str:
         if avail and ref not in ("（无）",):
             real = "✓" if _exists(ref,
                                   emails if kind == "email" else segs if kind == "分群" else pages,
-                                  email_ids if kind == "email" else seg_ids if kind == "分群" else page_alias) \
+                                  emails if kind == "email" else segs if kind == "分群" else pages) \
                 else "✗"
         elif avail:
             real = "—"
         else:
             real = "未连"
-        return (f"<tr><td>{kind}</td><td><code>{_esc(ref)}</code></td>"
+        # 可解析为 Mautic 实体 → ref 变成外链
+        ref_cell = f"<code>{_esc(ref)}</code>"
+        lk_kind = {"email": "email", "分群": "segment", "着陆页": "landingpage"}.get(kind)
+        if lk_kind and avail and ref not in ("（无）",):
+            lk = _mautic_ext_link(lk_kind, ref, idx)
+            if lk:
+                ref_cell = f"<code>{_esc(ref)}</code> {lk}"
+        return (f"<tr><td>{kind}</td><td>{ref_cell}</td>"
                 f"<td>{_esc(mode)}</td><td>{concl}</td><td>{real}</td></tr>")
 
     rows = ""
@@ -699,12 +704,70 @@ def _mautic_asset_table(program: dict) -> str:
                      "<td>新建</td><td>未连</td></tr>" if not avail else
                      "<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
                      "<td>新建</td><td>✗</td></tr>")
-    note = ("（未连接 Mautic 或缺少凭证：以下为基于策略规格的预期清单）" if not avail
-            else "（已连接 Mautic，✓=实存 / ✗=策略引用但 Mautic 中不存在）")
+    note = ("（未连接 Mautic 或缺少凭证：以下为基于策略规格的预期清单，无外链）" if not avail
+            else "（已连接 Mautic，✓=实存 / ✗=策略引用但 Mautic 中不存在；ref 可点击跳转详情页）")
     return (f"<div class='card'><h3>Mautic 资产清单（新建 vs 调用）</h3>"
             f"<p class='note'>{_esc(note)}</p>"
             f"<table><tr><th>类型</th><th>引用(ref)</th><th>模式</th>"
             f"<th>结论</th><th>实存</th></tr>{rows}</table></div>")
+
+
+# --------------------------- Mautic 外链（资产已在 :8080/s/ 生成 → 跳转详情页） ---------------------------
+_MAUTIC_ADMIN_ROUTES = {
+    "campaign": "/s/campaigns/{id}",
+    "email": "/s/emails/{id}/view",
+    "segment": "/s/segments/{id}",
+    "landingpage": "/s/landingpages/{id}",
+    "sms": "/s/sms/{id}/view",
+}
+
+def _mautic_base() -> str:
+    """Mautic 实例 base URL（来自 config.json 的 local.base_url）。"""
+    try:
+        return load_config("local").get("base_url", "http://localhost:8080").rstrip("/")
+    except Exception:  # noqa: BLE001
+        return "http://localhost:8080"
+
+def _mautic_asset_index() -> dict:
+    """读取 Mautic 已存在资产，构建 ref→id 索引（email/segment/landingpage）。
+    仅 available=True 时索引有意义；否则 available=False 且无外链。"""
+    env = mautic_read_assets("local")
+    avail = env.get("available", False)
+    def _idx(items, *keys):
+        m = {}
+        for it in items:
+            for k in keys:
+                v = it.get(k)
+                if v not in (None, ""):
+                    m[str(v)] = it.get("id")
+        return m
+    return {
+        "available": avail,
+        "email": _idx(env.get("emails", []), "name", "alias", "id"),
+        "segment": _idx(env.get("segments", []), "name", "alias", "id"),
+        "page": _idx(env.get("pages", []), "name", "alias", "id"),
+    }
+
+def _mautic_ext_link(kind: str, ref, idx: dict) -> str:
+    """返回 Mautic 详情页外链 <a>；不可解析（未连接/未找到/未知类型）返回空串。
+    kind: campaign | email | segment | landingpage。"""
+    base = _mautic_base()
+    routes = _MAUTIC_ADMIN_ROUTES
+    if kind == "campaign":
+        if not ref:
+            return ""
+        return (f"<a class='ext' href='{base}{routes['campaign'].format(id=ref)}' "
+                f"target='_blank' rel='noopener'>Mautic 战役详情</a>")
+    if kind in ("email", "segment", "landingpage"):
+        if not idx or not idx.get("available"):
+            return ""
+        key = "page" if kind == "landingpage" else kind
+        mid = idx.get(key, {}).get(str(ref) if ref else "")
+        if not mid:
+            return ""
+        return (f"<a class='ext' href='{base}{routes[kind].format(id=mid)}' "
+                f"target='_blank' rel='noopener'>详情</a>")
+    return ""
 
 
 def _program_body(program: dict, msg: str = "") -> str:
@@ -733,6 +796,7 @@ def _program_body(program: dict, msg: str = "") -> str:
     # campaign 流水线
     cards = ""
     campaigns = program["campaigns"]
+    idx = _mautic_asset_index()  # Mautic 资产 ref→id 索引（外链用；未连接则为空）
     for i, c in enumerate(campaigns):
         prop = c["proposal"]
         ap = prop.get("approval")
@@ -824,16 +888,38 @@ def _program_body(program: dict, msg: str = "") -> str:
         if c.get("result"):
             result_txt = (f"<span class='pill'>达成 {c['result'].get('conversion')} · "
                           f"退订 {c['result'].get('unsub')}</span>")
+        # Mautic 外链（资产已在 :8080/s/ 生成才给链接；campaign 需已推送拿到 id）
+        dr = c["proposal"].get("deploy_result") or {}
+        ext_bits = []
+        if dr.get("campaign_id") and not dr.get("dry_run"):
+            ext_bits.append(_mautic_ext_link("campaign", str(dr["campaign_id"]), idx))
+        _em_ref = c["strategy"].get("email_ref", "")
+        _seg_ref = c["strategy"].get("segment", "")
+        _lp_ref = c["strategy"].get("landing_page_ref", "")
+        _lp_url = c["strategy"].get("landing_page_url", "")
+        if _em_ref:
+            _lk = _mautic_ext_link("email", _em_ref, idx)
+            ext_bits.append(f"邮件 {_lk if _lk else '<span class=note>（Mautic 无对应，无外链）</span>'}")
+        if _seg_ref:
+            _lk = _mautic_ext_link("segment", _seg_ref, idx)
+            ext_bits.append(f"分群 {_lk if _lk else '<span class=note>（Mautic 无对应，无外链）</span>'}")
+        if _lp_ref or _lp_url:
+            _lk = _mautic_ext_link("landingpage", _lp_ref, idx) if _lp_ref else ""
+            if _lk:
+                ext_bits.append(f"落页 {_lk}")
+            elif _lp_url:
+                ext_bits.append(f"落页 <a class='ext' href='{_esc(_lp_url)}' target='_blank' rel='noopener'>详情</a>")
+        ext_html = ("<p class='pill'>Mautic 外链：" + " · ".join(ext_bits) + "</p>") if ext_bits else ""
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
-                  f"<strong>{_esc(c['wave_id'])} · <code>{_esc(c['cid'])}</code></strong>{st_badge}</div>"
+                  f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · <code>{_esc(c['cid'])}</code></strong>{st_badge}</div>"
                   f"<p style='margin:8px 0'>{_strategy_summary(c['strategy'])}</p>"
                   f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap_txt} {result_txt}</p>"
-                  f"{goals_txt}{fb_txt}"
+                  f"{goals_txt}{fb_txt}{ext_html}"
                   f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
                   f"{_graph_svg(prop['graph'])}</details>"
                   f"{defer_note}{qh_c}{approve_f}{push_f}{create_f}{defer_f}{goals_f}{feedback_f}{complete_f}</div>")
     # Mautic 资产清单（新建 vs 调用已有）—— 整 Program 汇总（#6）
-    cards += _mautic_asset_table(program)
+    cards += _mautic_asset_table(program, idx)
     # service 序列（与 promo 解耦，不占 promo 配额）
     svc = ""
     for s in program.get("service_sequences", []):
