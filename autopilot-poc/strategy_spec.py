@@ -284,10 +284,65 @@ def _is_deferred(c: dict, cid: str, deferred_cids=None) -> tuple:
     return False, ""
 
 
+# --------------------------- 静默窗（quiet_hours）确定性提取 ---------------------------
+# 约束文本里的「X:00~Y:00免打扰」是红线，必须由代码确定性解析，
+# 不能信任 LLM 在 StrategySpec 里手填的 quiet_hours（曾出现「20:00~00:00免打扰」被写成
+# 「20:00-09:00」——把午夜 00:00 误换成默认结束时间 09:00）。
+_QH_RANGE_RE = re.compile(r"(\d{1,2})\s*:\s*(\d{2})\s*[~\-－—]\s*(\d{1,2})\s*:\s*(\d{2})")
+_QH_KEYWORD_RE = re.compile(r"(免打扰|静默|不打[扰扰]|不推送|不能发|禁[发触])")
+
+
+def _norm_hhmm(h: str, m: str) -> str:
+    """把小时/分钟规整为 2 位；午夜保持 00:00（绝不回落到其它值）。"""
+    hh = int(h) % 24
+    mm = int(m) % 60
+    return f"{hh:02d}:{mm:02d}"
+
+
+def parse_quiet_hours(constraints) -> Optional[str]:
+    """
+    从约束/红线文本里确定性提取静默窗，返回 "HH:MM-HH:MM"（跨午夜用 '-' 连接，
+    开始>结束表示跨午夜）。解析不到返回 None（此时回落 LLM/默认）。
+
+    支持写法：
+      - 「20:00~00:00免打扰」「22:00-09:00 免打扰」「20:00—09:00静默」
+      - 「晚 20 点后不推送，次日 10 点再发」→ start=20:00 end=10:00（带「次日」才跨午夜）
+      - 「X 点后不能发」且未提次日 → start=X:00 end=00:00（默认到午夜）
+    """
+    if not constraints:
+        return None
+    texts = constraints if isinstance(constraints, (list, tuple)) else [constraints]
+    blob = " ； ".join(str(t) for t in texts)
+    if not blob.strip():
+        return None
+
+    # 1) 直接的 HH:MM~HH:MM / HH:MM-HH:MM 区间：贴近静默窗关键词的优先采信
+    for m in _QH_RANGE_RE.finditer(blob):
+        seg = blob[max(0, m.start() - 8): m.end() + 8]
+        if _QH_KEYWORD_RE.search(seg):
+            return (f"{_norm_hhmm(m.group(1), m.group(2))}"
+                    f"-{_norm_hhmm(m.group(3), m.group(4))}")
+    # 纯时间区间（如用户只写「20:00~00:00」未带关键词）也接受
+    m = _QH_RANGE_RE.search(blob)
+    if m:
+        return (f"{_norm_hhmm(m.group(1), m.group(2))}"
+                f"-{_norm_hhmm(m.group(3), m.group(4))}")
+
+    # 2) 自然语言：「X 点后不(能)发/不推送」(+ 次日/第二天/明早 Y 点)
+    after = re.search(r"(\d{1,2})(?::(\d{2}))?\s*点?\s*[后以后]\s*(不[能]*发|不推送|免打扰|静默)", blob)
+    if after:
+        start = _norm_hhmm(after.group(1), after.group(2) or "00")
+        nxt = re.search(r"(次日|第二天|隔天|明天|明早)\s*(\d{1,2})\s*点?", blob)
+        end = _norm_hhmm(nxt.group(2), "00") if nxt else "00:00"
+        return f"{start}-{end}"
+    return None
+
+
 def normalize_campaign(c: dict, idx: int, goal_id: str = "",
                        default_segment: str = "",
                        default_locales: Optional[list] = None,
-                       deferred_cids: Optional[list] = None) -> dict:
+                       deferred_cids: Optional[list] = None,
+                       quiet_hours_override: Optional[str] = None) -> dict:
     """把 StrategySpec 里的一个 campaign 归一化成 strategy dict（供 compile/adaptive 直接吃）。"""
     c = _as_dict(c)
     cid = str(c.get("cid") or f"{goal_id or 'goal'}_c{idx + 1}")
@@ -329,6 +384,10 @@ def normalize_campaign(c: dict, idx: int, goal_id: str = "",
     sc["delay_hours"] = _num(sc.get("delay_hours"), DEFAULT_SEND_CONDITIONS["delay_hours"])
     sc["max_per_24h"] = _num(sc.get("max_per_24h"), DEFAULT_SEND_CONDITIONS["max_per_24h"])
     sc["max_per_7d"] = _num(sc.get("max_per_7d"), DEFAULT_SEND_CONDITIONS["max_per_7d"])
+    # 静默窗红线：约束文本显式给出免打扰窗口且本波非豁免时，强制覆盖 LLM 手填值
+    # （防止「20:00~00:00免打扰」被 LLM 误写成「20:00-09:00」——午夜 00:00 被换成 09:00）
+    if quiet_hours_override and not sc.get("quiet_hours_exempt"):
+        sc["quiet_hours"] = quiet_hours_override
 
     tags, tag_warnings = validate_tags(c.get("tags_to_write"))
     if not tags:
@@ -394,7 +453,7 @@ def normalize_campaign(c: dict, idx: int, goal_id: str = "",
     }
 
 
-def strategies_from_spec(spec: dict, goal=None) -> list:
+def strategies_from_spec(spec: dict, goal=None, constraints=None) -> list:
     """StrategySpec dict → promo campaign 的 strategy dict 列表（service_sequences 不算 campaign）。"""
     spec = _as_dict(spec)
     default_segment = getattr(goal, "audience_segment", "") or ""
@@ -402,11 +461,17 @@ def strategies_from_spec(spec: dict, goal=None) -> list:
     default_locales = _as_list(spec.get("locale"))
     campaigns = _as_list(spec.get("campaigns"))
     deferred_cids = _as_list(spec.get("deferred_campaigns"))
+    # 红线静默窗：约束文本优先于 LLM 手填（防止午夜被误写成 09:00）；
+    # 约束未显式给出时回落 LLM/默认。
+    if constraints is None and goal is not None:
+        constraints = (getattr(goal, "meta", None) or {}).get("constraints") or []
+    qh = parse_quiet_hours(constraints)
     return [
         normalize_campaign(c, i, goal_id=goal_id,
                            default_segment=default_segment,
                            default_locales=default_locales,
-                           deferred_cids=deferred_cids)
+                           deferred_cids=deferred_cids,
+                           quiet_hours_override=qh)
         for i, c in enumerate(campaigns)
     ]
 

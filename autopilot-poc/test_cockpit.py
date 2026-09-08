@@ -58,6 +58,25 @@ check("外链 邮件 URL", "/s/emails/99/view" in C._mautic_ext_link("email", "E
 check("外链 分群 URL", "/s/segments/7" in C._mautic_ext_link("segment", "SEG_Y", _idx))
 check("外链 落页 URL", "/s/landingpages/3" in C._mautic_ext_link("landingpage", "LP_Z", _idx))
 check("外链 未连接返回空", C._mautic_ext_link("email", "NOPE", _idx) == "")
+
+# ---------- 单元：约束红线 → quiet_hours 确定性解析（防 LLM 把午夜写成 09:00） ----------
+from strategy_spec import (parse_quiet_hours, normalize_campaign, strategies_from_spec)  # noqa: E402
+check("parse_quiet_hours 跨午夜保留 00:00", parse_quiet_hours(["20:00~00:00免打扰"]) == "20:00-00:00")
+check("parse_quiet_hours 默认示例", parse_quiet_hours(["22:00-09:00 免打扰"]) == "22:00-09:00")
+check("parse_quiet_hours 自然语言次日", parse_quiet_hours(["晚 20 点后不推送，次日 10 点再发"]) == "20:00-10:00")
+check("parse_quiet_hours 无约束→None", parse_quiet_hours(["每周≤3封"]) is None)
+# 红线必须覆盖 LLM 手填的 quiet_hours
+_nc = normalize_campaign({"cid": "c1", "send_conditions": {"quiet_hours": "20:00-09:00"}},
+                         0, quiet_hours_override="20:00-00:00")
+check("红线覆盖 LLM 手填 quiet_hours", _nc["send_conditions"]["quiet_hours"] == "20:00-00:00",
+      _nc["send_conditions"]["quiet_hours"])
+# strategies_from_spec 自动从 goal.meta.constraints 派生红线
+class _G:
+    meta = {"constraints": ["20:00~00:00免打扰"]}
+_ss = strategies_from_spec({"campaigns": [{"cid": "c1", "send_conditions": {"quiet_hours": "20:00-09:00"}}]},
+                           _G())
+check("strategies_from_spec 自动派生红线", _ss[0]["send_conditions"]["quiet_hours"] == "20:00-00:00",
+      _ss[0]["send_conditions"]["quiet_hours"])
 check("外链 未找到返回空", C._mautic_ext_link("email", "MISSING", _idx) == "")
 # 直接渲染 program 验证 wave→campaign 重命名（不依赖 Mautic 连通）
 _p = C._load_program("ucl2028_svctest")

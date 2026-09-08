@@ -934,6 +934,8 @@ def build_strategy_prompt(brief: dict) -> str:
         "4. 分群必须按意图天然互斥（seed / broad / no-reach / host-confirm 等），不要共用同一 segment。\n"
         "5. 如需「用户动作即时触发」的确认件（非促销），放进 service_sequences 并设 quiet_hours_exempt=true + send_within_minutes<=5。\n"
         "6. 严格遵守约束/红线（免打扰、抑制名单、退订熔断 0.3% 等）。\n"
+        "   若约束含「X:00~Y:00免打扰」，quiet_hours 必须**原样**填 \"X:00-Y:00\"（跨午夜用 '-' 连接）；"
+        "午夜一律写 \"00:00\"，禁止换成示例里的 \"09:00\"（曾出现 20:00~00:00 被误写成 20:00-09:00）。\n"
         "7. 只输出 JSON。\n"
     )
     return tpl.format(name=name, goal_id=goal_id, objective=objective,
@@ -1891,10 +1893,15 @@ def _program_body(program: dict, msg: str = "") -> str:
         dr = c["proposal"].get("deploy_result") or {}
         # campaign 名字：未生成（无 Mautic id）→ 内部 cid；已生成 → Mautic 实时名字（可点跳详情页，改名后同步）
         mcid = dr.get("campaign_id") if not dr.get("dry_run") else None
+        # 优先用结构化中文名（活动名-波次意图-票种），已部署则用 Mautic 实时名做链接文本
+        semantic_name = (prop.get("campaign") or {}).get("name") or ""
         if mcid:
-            _mname = _mautic_campaign_name(mcid) or f"campaign #{mcid}"
+            _mname = _mautic_campaign_name(mcid) or semantic_name or f"campaign #{mcid}"
+            label = _mname or semantic_name
             cname_html = (f"<a class='ext' href='{_mautic_base()}/s/campaigns/{_esc(str(mcid))}' "
-                          f"target='_blank' rel='noopener' title='Mautic campaign #{_esc(str(mcid))}'>{_esc(_mname)}</a>")
+                          f"target='_blank' rel='noopener' title='Mautic campaign #{_esc(str(mcid))} · 内部 cid={_esc(c['cid'])}'>{_esc(label)}</a>")
+        elif semantic_name:
+            cname_html = f"<span title='内部 cid={_esc(c['cid'])}'>{_esc(semantic_name)}</span> <code style='opacity:.5;font-size:11px'>{_esc(c['cid'])}</code>"
         else:
             cname_html = f"<code>{_esc(c['cid'])}</code>"
         ext_bits = []
