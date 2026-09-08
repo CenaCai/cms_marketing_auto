@@ -1,0 +1,44 @@
+{
+  "goal_id": "ucl2028_example",
+  "objective": "UCL 2028 门票预售：向目标球迷分群推送官方票务邮件，CTA 调起着陆页承接购票转化",
+  "kpi": { "metric": "conversion", "target": 0.15 },
+  "window": { "start": "2028-05-01", "end": "2028-07-09" },
+  "locale": ["zh_CN", "en_US"],
+  "budget": 0,
+  "campaigns": [
+    {
+      "cid": "ucl2028_c1",
+      "name": "首波·高意向老球迷（复用存量票务邮件）",
+      "rationale": "历史购票/浏览记录最热的一批人，决策成本低，先用已验证的官方票务邮件主文案打底，最快拿到转化基线。",
+      "evidence": "近 12 个月赛事邮件点击率最高的分群为 SEG_UCL2028_HIGH_INTENT；EM_UCL2028_TICKET_V1 上一季开信率/点击率均为组内最优。",
+      "segment": { "mode": "reuse", "ref": "SEG_UCL2028_HIGH_INTENT", "note": "Mautic 已存在的静态分群，直接复用" },
+      "email": {
+        "mode": "reuse",
+        "ref": "EM_UCL2028_TICKET_V1",
+        "brief": { "subject": "UCL 2028 官方票务开售：你的优先购票通道已开启", "angle": "稀缺+优先资格", "cta": "立即锁定座位", "locale": ["zh_CN"] }
+      },
+      "landing_page": { "mode": "reuse", "ref": "LP_UCL2028_TICKET_ZH", "note": "复用现有中文票务页" },
+      "content_variant": { "id": "v1", "angle": "稀缺+优先资格", "headline": "你的优先购票通道已开启", "summary": "强调老球迷专享优先购，倒计时制造稀缺感。" },
+      "send_conditions": { "delay_hours": 0, "max_per_24h": 1, "max_per_7d": 2, "quiet_hours": "22:00-09:00" },
+      "tags_to_write": ["ucl2028_wave1", "high_intent"],
+      "success_criteria": { "metric": "landingpage_hit_rate", "threshold": ">=0.12" }
+    },
+    {
+      "cid": "ucl2028_c2",
+      "name": "次波·沉睡观望人群（新生成唤醒邮件）",
+      "rationale": "首波覆盖不到、90 天未互动的观望人群，需要不同角度（赛事确定性+不购票的损失感），现有资产无合适文案，需新生成一封唤醒邮件后再发。",
+      "evidence": "SEG_UCL2028_DORMANT_90D 近 3 封邮件零点击；现有邮件库无针对该分群的唤醒版本。",
+      "segment": { "mode": "propose", "ref": "SEG_UCL2028_DORMANT_90D", "note": "需要在 Mautic 新建：90 天未互动 且 在首波分群之外" },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": { "subject": "别错过：UCL 2028 门票还剩最后一批", "angle": "损失厌恶+赛程确定性", "cta": "查看剩余席位", "locale": ["zh_CN", "en_US"] }
+      },
+      "landing_page": { "mode": "reuse", "ref": "LP_UCL2028_TICKET_EN", "note": "复用现有英文票务页（双语兜底）" },
+      "content_variant": { "id": "v2", "angle": "损失厌恶+赛程确定性", "headline": "最后一批门票，赛程已确认", "summary": "用确认赛程 + 剩余席位稀缺，唤醒沉睡用户。" },
+      "send_conditions": { "delay_hours": 72, "max_per_24h": 1, "max_per_7d": 3, "quiet_hours": "22:00-09:00" },
+      "tags_to_write": ["ucl2028_wave2", "dormant_reengage"],
+      "success_criteria": { "metric": "landingpage_hit_rate", "threshold": ">=0.06" }
+    }
+  ]
+}

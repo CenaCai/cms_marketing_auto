@@ -1,0 +1,7 @@
+# 运行时生成的 program/提案 JSON（测试产物）
+output/
+# Python 缓存
+__pycache__/
+*.pyc
+# 真实 Mautic 凭证（勿提交；复制 config.example.json 为 config.json 后填）
+config.json

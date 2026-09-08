@@ -8,5 +8,12 @@
     "base_url": "https://your-mautic.example.com",
     "client_id": "",
     "client_secret": ""
+  },
+  "deepseek": {
+    "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "tracking_id": "your-tracking-id",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "timeout": 30
   }
 }

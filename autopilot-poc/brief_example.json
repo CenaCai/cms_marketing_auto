@@ -1,0 +1,14 @@
+{
+  "objective": "UEFA EURO 2028 门票预售：向目标球迷分群推送官方票务邮件，邮件内 CTA 调起着陆页承接购票转化",
+  "kpi": { "type": "conversion_rate", "target": 0.15 },
+  "audience_segment": "SEG_EUROCUP_TARGET",
+  "locale": "zh_CN",
+  "channels": ["email"],
+  "reserved_channels": ["sms"],
+  "landing_page_url": "http://localhost:8080/s/eurocup-2028-lp",
+  "budget": 0,
+  "start_date": "2028-05-01",
+  "end_date": "2028-07-09",
+  "frequency_cap": { "max_per_24h": 1, "max_per_7d": 3 },
+  "guardrails": { "unsubscribe_burn_threshold": 0.003, "honor_suppression": true }
+}
