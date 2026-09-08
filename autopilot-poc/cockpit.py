@@ -11,6 +11,9 @@ Campaign Cockpit — 活动驾驶舱（独立部署 :8090）
   GET  /program/<id>            Program 流水线（各 campaign 状态/策略/审批/推送/完成回写）
   POST /program/<id>/campaign/<cid>/approve   单 campaign 审批门
   POST /program/<id>/campaign/<cid>/push      单 campaign 推送（plan_hash 校验）
+  POST /program/<id>/campaign/<cid>/feedback  单 campaign 人工回填执行结果（Plan 3 手动保存）
+  GET  /program/<id>/campaign/<cid>/feedback?autofill=1&date=YYYY-MM-DD   从 Mautic 拉数据预填表单（Plan 2 一键预填）
+  POST /program/<id>/auto-feedback?date=YYYY-MM-DD   自动汇总某 program 的所有 campaign 昨日/指定日 Mautic 真实数（Plan 1 每日定时任务入口）
   POST /program/<id>/complete                   标记某 campaign 完成 → 自适应改写下游
   GET  /proposal/<id>           遗留单 campaign 提案（run_poc 产出的）
   POST /proposal/<id>/approve|/push            遗留单 campaign 审批/推送
@@ -33,7 +36,8 @@ from plan_compiler import compile, dump_proposal
 from approval_gate import (bind_and_approve, verify_push, is_valid,
                            ApprovalDecision)
 from mautic_client import (push, load_config, mautic_read_assets,
-                           mautic_read_campaigns, mautic_get_campaign)
+                           mautic_read_campaigns, mautic_get_campaign,
+                           auto_feedback_for_campaign)
 from adaptive import (build_program, evaluate_and_replan, default_strategies,
                       DEFAULT_N_CAMPAIGNS, derive_plan, _split_windows,
                       ASSUMED_LP_CONV)
@@ -67,6 +71,11 @@ def _esc(s) -> str:
 
 def _program_path(gid: str) -> str:
     return os.path.join(OUT_DIR, f"program_{gid}.json")
+
+
+def _yesterday_str() -> str:
+    import datetime as _dt
+    return (_dt.date.today() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def _load_program(gid: str):
@@ -1256,20 +1265,87 @@ def _program_body(program: dict, msg: str = "") -> str:
         goals_txt = (f"<p class='pill'>转化目标 <strong>{_esc(c.get('conv_target','—'))}</strong> · "
                      f"退订上限 <strong>{_esc(c.get('unsub_cap', 0.003))}</strong> · "
                      f"执行窗口 {_esc(c.get('exec_start',''))} ~ {_esc(c.get('exec_end',''))}</p>")
-        # 执行结果回填（#8，人工喂养，不自动推进）
+        # 执行结果回填（Plan 2 一键预填 + Plan 3 手动保存）
+        autofill = c.get("_autofill") or {}
+        prev_fb = c.get("feedback") or {}
+        # 优先用 _autofill（新拉的），其次用 feedback（上次保存的）
+        sent_v = autofill.get("sent", prev_fb.get("sent", ""))
+        opened_v = autofill.get("opened", prev_fb.get("opened", ""))
+        converted_v = autofill.get("converted", prev_fb.get("converted", ""))
+        unsub_v = autofill.get("unsub", prev_fb.get("unsub", ""))
+        # Plan 2 按钮：GET 到 autofill 路由拉最新数据
+        autofill_btn = (
+            f"<form method='get' action='/program/{gid}/campaign/{c['cid']}/feedback' "
+            f"style='display:inline-block;margin-right:6px'>"
+            f"<input type='hidden' name='autofill' value='1'>"
+            f"<input type='hidden' name='date' value='{_esc(autofill.get('date', _yesterday_str()))}'>"
+            f"<button class='btn sm' type='submit' title='从 Mautic Stats API 拉 { _esc(autofill.get('date', '昨日'))} 真实数预填表单'>📊 从 Mautic 拉{_esc(autofill.get('date', '昨日'))}数据预填</button>"
+            f"</form>"
+        )
+        # Plan 3 表单（POST 手动保存，预填值已注入）
         feedback_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/feedback' "
                       f"style='margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:center'>"
-                      f"<input name='sent' placeholder='发送数' style='width:84px;display:inline-block'>"
-                      f"<input name='opened' placeholder='打开数' style='width:84px;display:inline-block'>"
-                      f"<input name='converted' placeholder='转化数' style='width:84px;display:inline-block'>"
-                      f"<input name='unsub' placeholder='退订数' style='width:84px;display:inline-block'>"
-                      f"<button class='btn sm ghost' type='submit'>回填执行结果</button></form>")
-        fb = c.get("feedback") or {}
+                      f"<input name='sent' placeholder='发送数' value='{_esc(sent_v)}' style='width:84px;display:inline-block'>"
+                      f"<input name='opened' placeholder='打开数' value='{_esc(opened_v)}' style='width:84px;display:inline-block'>"
+                      f"<input name='converted' placeholder='转化数' value='{_esc(converted_v)}' style='width:84px;display:inline-block'>"
+                      f"<input name='unsub' placeholder='退订数' value='{_esc(unsub_v)}' style='width:84px;display:inline-block'>"
+                      f"<button class='btn sm ghost' type='submit'>💾 保存</button>"
+                      f"<span class='pill'>三档：①每日 06:00 自动 ②单击本按钮预填 ③手动改后保存</span>"
+                      f"</form>")
         fb_txt = ""
-        if fb:
-            fb_txt = (f"<span class='pill'>回填：发送 {fb.get('sent')} · 打开 {fb.get('opened')} · "
-                      f"转化 {fb.get('converted')}（达成率 {fb.get('conv_rate')}） · "
-                      f"退订 {fb.get('unsub')}（退订率 {fb.get('unsub_rate')}）</span>")
+        if prev_fb:
+            src = "（人工保存）"
+            if autofill.get("date"):
+                src = f"（上次预填 @ {_esc(autofill['date'])}，下方表单已注入）"
+            fb_txt = (f"<span class='pill'>回填{src}：发送 {prev_fb.get('sent')} · 打开 {prev_fb.get('opened')} · "
+                      f"转化 {prev_fb.get('converted')}（达成率 {prev_fb.get('conv_rate')}） · "
+                      f"退订 {prev_fb.get('unsub')}（退订率 {prev_fb.get('unsub_rate')}）</span>")
+        # 把 autofill 按钮插在表单上方（Plan 2 入口）+ 表单本身（Plan 3 入口）
+        feedback_f = autofill_btn + feedback_f
+        # 每日战报（feedback_auto，方案1 自动回填存储）+ 一键载入方案优化（Plan 1→优化预判）
+        fa = c.get("feedback_auto") or {}
+        fa_latest = max(fa.keys()) if fa else None
+        fa_html = ""
+        optimize_btn = ""
+        if fa:
+            fd = fa[fa_latest]
+            optimize_btn = (
+                f"<form method='get' action='/program/{gid}/campaign/{c['cid']}/optimize' "
+                f"style='display:inline-block;margin:6px 6px 0 0'>"
+                f"<input type='hidden' name='date' value='{_esc(fa_latest)}'>"
+                f"<button class='btn sm sec' type='submit' "
+                f"title='载入 {_esc(fa_latest)} 自动回填数据做方案优化预判'>"
+                f"📈 从自动回填载入方案优化（{_esc(fa_latest)}）</button></form>")
+            fa_html = (f"<span class='pill'>自动回填 {_esc(fa_latest)}：发送 {fd.get('sent',0)} · "
+                       f"打开 {fd.get('opened',0)} · 点击 {fd.get('clicked',0)} · "
+                       f"转化 {fd.get('converted',0)}（达成率 {fd.get('conv_rate',0):.2%}） · "
+                       f"退订 {fd.get('unsub',0)}（{fd.get('unsub_rate',0):.2%}）"
+                       f"{(' · ' + _esc('；'.join(fd.get('_errors',[]))) if fd.get('_errors') else '')}</span>")
+            if len(fa) > 1:
+                hist = "".join(
+                    f"<tr><td>{_esc(d)}</td><td>{fa[d].get('sent',0)}</td><td>{fa[d].get('opened',0)}</td>"
+                    f"<td>{fa[d].get('clicked',0)}</td><td>{fa[d].get('converted',0)}</td>"
+                    f"<td>{fa[d].get('unsub',0)}</td><td>{fa[d].get('conv_rate',0):.2%}</td>"
+                    f"<td>{fa[d].get('unsub_rate',0):.2%}</td></tr>"
+                    for d in sorted(fa.keys(), reverse=True))
+                fa_html += (f"<details style='margin-top:4px'><summary class='pill'>历史（{len(fa)} 天）</summary>"
+                            f"<table class='kv'><tr><th>日期</th><th>发送</th><th>打开</th><th>点击</th>"
+                            f"<th>转化</th><th>退订</th><th>达成率</th><th>退订率</th></tr>{hist}</table></details>")
+        # 方案优化预览（_optimize_preview，只读预判；「采纳并应用」才真正回写下游）
+        opt_preview = c.get("_optimize_preview") or {}
+        opt_html = ""
+        if opt_preview:
+            if opt_preview.get("verdict") == "无需优化":
+                opt_html = (f"<div class='note' style='margin-top:6px;color:var(--ok);font-weight:600'>"
+                            f"✅ 无需优化：{_esc(opt_preview.get('detail',''))}</div>")
+            else:
+                opt_html = (f"<div class='note' style='margin-top:6px;color:var(--warn);font-weight:600'>"
+                            f"⚠️ 建议优化：{_esc(opt_preview.get('detail',''))}</div>"
+                            f"<form method='post' action='/program/{gid}/complete' style='margin-top:6px'>"
+                            f"<input type='hidden' name='cid' value='{_esc(c['cid'])}'>"
+                            f"<input type='hidden' name='conversion' value='{_esc(opt_preview.get('conv',0))}'>"
+                            f"<input type='hidden' name='unsub' value='{_esc(opt_preview.get('unsub',0))}'>"
+                            f"<button class='btn sm' type='submit'>采纳并应用（回写下游）</button></form>")
         complete_f = (f"<form method='post' action='/program/{gid}/complete' style='margin-top:8px'>"
                       f"<input type='hidden' name='cid' value='{_esc(c['cid'])}'>"
                       f"<input name='conversion' placeholder='达成率0~1（留空用回填）' style='width:150px;display:inline-block'>"
@@ -1314,7 +1390,8 @@ def _program_body(program: dict, msg: str = "") -> str:
                   f"{goals_txt}{fb_txt}{ext_html}"
                   f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
                   f"{_graph_svg(prop['graph'])}</details>"
-                  f"{defer_note}{qh_c}{approve_f}{push_f}{create_f}{defer_f}{goals_f}{feedback_f}{complete_f}</div>")
+                  f"{defer_note}{qh_c}{approve_f}{push_f}{create_f}{defer_f}{goals_f}{feedback_f}"
+                  f"{optimize_btn}{fa_html}{opt_html}{complete_f}</div>")
     # Mautic 资产清单（新建 vs 调用已有）—— 整 Program 汇总（#6）
     cards += _mautic_asset_table(program, idx)
     # service 序列（与 promo 解耦，不占 promo 配额）
@@ -1377,6 +1454,33 @@ def _program_body(program: dict, msg: str = "") -> str:
                      f"{_esc('未设置（R 未给）' if e.get('target_unset') else e.get('ratio'))} · "
                      f"结果 {_esc(e['result'])}</p><ul>{lines}</ul>")
         clog += "</div>"
+    # 每日战报（feedback_auto 汇总，方案1 自动回填）—— Program 级卡片
+    report_rows = []
+    for _c0 in program.get("campaigns", []):
+        _fa0 = _c0.get("feedback_auto") or {}
+        if not _fa0:
+            continue
+        _d0 = max(_fa0.keys())
+        _fd0 = _fa0[_d0]
+        report_rows.append(
+            f"<tr><td><code>{_esc(_c0['cid'])}</code></td><td>{_esc(_d0)}</td>"
+            f"<td>{_fd0.get('sent', 0)}</td><td>{_fd0.get('opened', 0)}</td>"
+            f"<td>{_fd0.get('clicked', 0)}</td><td>{_fd0.get('converted', 0)}</td>"
+            f"<td>{_fd0.get('unsub', 0)}</td><td>{_fd0.get('conv_rate', 0):.2%}</td>"
+            f"<td>{_fd0.get('unsub_rate', 0):.2%}</td></tr>")
+    if report_rows:
+        report_html = ("<div class='card'><h3>📊 每日战报（feedback_auto · 各 campaign 最新一日）</h3>"
+                       "<p class='note'>来源：daily 脚本 <code>python auto_feedback.py</code> 或手动 "
+                       "<code>POST /program/&lt;id&gt;/auto-feedback?date=</code> 写入。点各 campaign 卡片上的"
+                       "「📈 从自动回填载入方案优化」做优化预判。</p>"
+                       "<table class='kv'><tr><th>campaign</th><th>日期</th><th>发送</th><th>打开</th>"
+                       "<th>点击</th><th>转化</th><th>退订</th><th>达成率</th><th>退订率</th></tr>"
+                       + "".join(report_rows) + "</table></div>")
+    else:
+        report_html = ("<div class='card'><h3>📊 每日战报（feedback_auto）</h3>"
+                       "<p class='note'>暂无自动回填数据。先跑 <code>python auto_feedback.py</code>"
+                       "（或 <code>POST /program/&lt;id&gt;/auto-feedback?date=</code>），"
+                       "次日数据即在此汇总，并可在各 campaign 卡片一键载入方案优化。</p></div>")
     # 运营约束 / 策略来源
     cons = (program.get("constraints")
             or (goal.get("meta") or {}).get("constraints") or [])
@@ -1406,7 +1510,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                    f"{(' + ' + str(program.get('n_service_sequences', 0)) + ' 条服务序列') if program.get('n_service_sequences') else ''}"
                    f" · 策略来源 {src_html}</p>")
     return (f"{msg}{header_html}"
-            f"{plan_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{clog}")
+            f"{plan_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}")
 
 
 def _proposal_body(d: dict, msg: str = "") -> str:
@@ -1528,6 +1632,19 @@ class Handler(BaseHTTPRequestHandler):
                     }
             return self._send(200, _page("新建 Brief", _brief_form(strategies, err, meta, services, prefill)))
         if path.startswith("/program/"):
+            # /program/<gid>/campaign/<cid>/feedback?autofill=1&date=YYYY-MM-DD  ← 拉 Mautic 最新数据预填表单
+            parts = [x for x in path.split("/") if x]
+            if (len(parts) == 5 and parts[2] == "campaign" and parts[4] == "feedback"):
+                q = dict(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query))
+                if q.get("autofill"):
+                    gid = parts[1]; cid = parts[3]
+                    date_str = (q.get("date") or [_yesterday_str()])[0]
+                    return self._handle_campaign_feedback_autofill(gid, cid, date_str)
+            if (len(parts) == 5 and parts[2] == "campaign" and parts[4] == "optimize"):
+                q = dict(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query))
+                gid = parts[1]; cid = parts[3]
+                date_str = (q.get("date") or [None])[0]
+                return self._handle_campaign_optimize(gid, cid, date_str)
             gid = path[len("/program/"):]
             p = _load_program(gid)
             if not p:
@@ -1575,6 +1692,11 @@ class Handler(BaseHTTPRequestHandler):
         if path.endswith("/create") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
             return self._handle_campaign_create(gid, cid)
+        if path.endswith("/auto-feedback"):
+            gid = path.split("/")[2] if path.startswith("/program/") else ""
+            qs = dict(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query))
+            date_str = (qs.get("date") or [_yesterday_str()])[0]
+            return self._handle_program_auto_feedback(gid, date_str)
         if path.endswith("/feedback") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
             return self._handle_campaign_feedback(gid, cid, jsbody)
@@ -1977,6 +2099,213 @@ class Handler(BaseHTTPRequestHandler):
         note = "dry-run" if result.get("dry_run") else result.get("env")
         msg = (f"<div class='card'><p class='b-ok'>{_esc(cid)} 已创建并推送到 Mautic（{_esc(note)}），"
                f"状态：执行中。{_esc('（未填凭证，仅 dry-run）' if result.get('dry_run') else '')}</p></div>")
+        self._send(200, _page("Program", _program_body(p, msg)))
+
+    def _handle_program_auto_feedback(self, gid, date_str):
+        """手动触发某 program 的 auto-feedback：拉取 Mautic 真实数写入 feedback_auto[date_str]。"""
+        import datetime as _dt
+        p = _load_program(gid)
+        if not p:
+            return self._send(404, _page("未找到", "<p>Program 不存在</p>"))
+        # 简单校验 date 格式
+        try:
+            _dt.date.fromisoformat(date_str)
+        except Exception:  # noqa: BLE001
+            return self._send(400, _page("参数错",
+                f"<p class='b-bad'>date 参数格式错（应为 YYYY-MM-DD）：{_esc(date_str)}</p>"))
+
+        rows = []
+        updated = 0
+        skipped = 0
+        for c in p.get("campaigns", []):
+            dr = (c.get("proposal") or {}).get("deploy_result") or {}
+            mcid = dr.get("campaign_id") if not dr.get("dry_run") else None
+            if not mcid:
+                skipped += 1
+                rows.append((c.get("cid", "?"), mcid, None, "跳过：无 Mautic campaign id（dry-run / 未部署）"))
+                continue
+            try:
+                stats = auto_feedback_for_campaign(mcid, date_str)
+            except Exception as e:  # noqa: BLE001
+                stats = {"_errors": [str(e)]}
+            fb_auto = c.setdefault("feedback_auto", {})
+            fb_auto[date_str] = {
+                "sent": stats.get("sent", 0),
+                "opened": stats.get("opened", 0),
+                "clicked": stats.get("clicked", 0),
+                "converted": stats.get("converted", 0),
+                "unsub": stats.get("unsub", 0),
+                "conv_rate": stats.get("conv_rate", 0.0),
+                "unsub_rate": stats.get("unsub_rate", 0.0),
+                "_evidence": stats.get("_evidence", []),
+                "_errors": stats.get("_errors", []),
+            }
+            c["feedback_auto_updated_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+            updated += 1
+            rows.append((
+                c.get("cid", "?"),
+                mcid,
+                f"sent={fb_auto[date_str]['sent']} "
+                f"opened={fb_auto[date_str]['opened']} "
+                f"clicked={fb_auto[date_str]['clicked']} "
+                f"converted={fb_auto[date_str]['converted']} "
+                f"unsub={fb_auto[date_str]['unsub']} "
+                f"conv={fb_auto[date_str]['conv_rate']:.2%}",
+                ("; ".join(stats.get("_errors", [])) or "ok"),
+            ))
+        _save_program(p)
+
+        # 渲染结果表
+        body = [
+            f"<div class='card'><p class='b-ok'>Program <code>{_esc(gid)}</code> · date={_esc(date_str)} · "
+            f"updated={updated} · skipped={skipped}</p>",
+            "<table class='kv'><tr><th>cid</th><th>Mautic id</th><th>统计</th><th>备注</th></tr>"
+        ]
+        for cid, mcid, stat, note in rows:
+            body.append(
+                f"<tr><td><code>{_esc(cid)}</code></td>"
+                f"<td>{_esc(mcid) if mcid else '—'}</td>"
+                f"<td>{_esc(stat) if stat else '—'}</td>"
+                f"<td>{_esc(note)}</td></tr>"
+            )
+        body.append("</table></div>")
+        msg = "".join(body)
+        self._send(200, _page("Auto-Feedback", _program_body(p, msg)))
+
+    def _handle_campaign_feedback_autofill(self, gid, cid, date_str):
+        """Plan 2：拉 Mautic 最新数据预填表单（Plan 2 = 单击按钮一键预填）。
+
+        进入方式：单击 campaign 卡片上「从 Mautic 拉最新数据预填」按钮。
+        行为：调 auto_feedback_for_campaign(mcid, date) → 把 sent/opened/converted/unsub
+              作为 input.value 注入到回填表单；运营可微调后再点「保存」落库。
+        """
+        import datetime as _dt
+        p = _load_program(gid)
+        if not p:
+            return self._send(404, _page("未找到", "<p>Program 不存在</p>"))
+        c = next((x for x in p["campaigns"] if x["cid"] == cid), None)
+        if not c:
+            return self._send(404, _page("未找到", "<p>campaign 不存在</p>"))
+        try:
+            _dt.date.fromisoformat(date_str)
+        except Exception:  # noqa: BLE001
+            return self._send(400, _page("参数错",
+                f"<p class='b-bad'>date 参数格式错（应为 YYYY-MM-DD）：{_esc(date_str)}</p>"))
+
+        dr = (c.get("proposal") or {}).get("deploy_result") or {}
+        mcid = dr.get("campaign_id") if not dr.get("dry_run") else None
+        if not mcid:
+            msg = (f"<div class='card'><p class='b-bad'>无法预填：{_esc(cid)} 没有 Mautic campaign id "
+                   f"（dry-run / 未部署）。先把此 campaign 审批 + 推送到 Mautic，再来拉数据。</p></div>")
+            return self._send(200, _page("Program", _program_body(p, msg)))
+
+        try:
+            stats = auto_feedback_for_campaign(mcid, date_str)
+        except Exception as e:  # noqa: BLE001
+            stats = {"sent": 0, "opened": 0, "clicked": 0, "converted": 0, "unsub": 0,
+                     "conv_rate": 0.0, "unsub_rate": 0.0, "_errors": [str(e)]}
+
+        # 把预填数据塞到 campaign 上下文字段（_autofill），让 _program_body 渲染时优先用这个
+        c["_autofill"] = {
+            "date": date_str,
+            "sent": stats.get("sent", 0),
+            "opened": stats.get("opened", 0),
+            "converted": stats.get("converted", 0),
+            "unsub": stats.get("unsub", 0),
+            "clicked": stats.get("clicked", 0),
+            "conv_rate": stats.get("conv_rate", 0.0),
+            "unsub_rate": stats.get("unsub_rate", 0.0),
+            "_evidence": stats.get("_evidence", []),
+            "_errors": stats.get("_errors", []),
+        }
+        # 顶部 banner
+        ev_lines = stats.get("_evidence", []) or []
+        err_lines = stats.get("_errors", []) or []
+        rows = [
+            f"<div class='card'><h3>📊 Mautic 预填 · {_esc(cid)} · date={_esc(date_str)}</h3>",
+            "<p class='note'>来源：Mautic :8080 自动抓取；以下数据已注入表单，运营可微调后保存（不保存 = 丢弃本次预填）。</p>",
+            "<table class='kv'>",
+            f"<tr><th>sent</th><td>{stats.get('sent', 0)}</td><th>opened</th><td>{stats.get('opened', 0)}</td></tr>",
+            f"<tr><th>clicked</th><td>{stats.get('clicked', 0)}</td><th>converted</th><td>{stats.get('converted', 0)}</td></tr>",
+            f"<tr><th>unsub</th><td>{stats.get('unsub', 0)}</td><th>conv_rate</th><td>{stats.get('conv_rate', 0.0):.2%}</td></tr>",
+            "</table>",
+        ]
+        if ev_lines:
+            rows.append("<details><summary class='pill'>_evidence（数据来源链）</summary><pre class='pre'>"
+                        + "\n".join(_esc(x) for x in ev_lines) + "</pre></details>")
+        if err_lines:
+            rows.append("<details open><summary class='pill b-bad'>_errors</summary><pre class='pre'>"
+                        + "\n".join(_esc(x) for x in err_lines) + "</pre></details>")
+        rows.append("</div>")
+        msg = "".join(rows)
+        self._send(200, _page("Program", _program_body(p, msg)))
+
+    def _handle_campaign_optimize(self, gid, cid, date_str):
+        """Plan 1→优化预判：从 feedback_auto[date] 载入，预判是否需要方案优化（只读，不改 program）。
+
+        进入：点 campaign 卡片「📈 从自动回填载入方案优化」按钮。
+        行为：取 feedback_auto[date]（date 缺省=最新一日）→ 算达成率/退订率 → 与 KPI 目标比对 →
+              判定 无需优化 / 需优化，预览存 c['_optimize_preview'] 渲染在卡片上。
+              「采纳并应用」按钮 POST /complete（带 conv/unsub）才真正回写下游。
+        """
+        p = _load_program(gid)
+        if not p:
+            return self._send(404, _page("未找到", "<p>Program 不存在</p>"))
+        c = next((x for x in p["campaigns"] if x["cid"] == cid), None)
+        if not c:
+            return self._send(404, _page("未找到", "<p>campaign 不存在</p>"))
+        fa = c.get("feedback_auto") or {}
+        if date_str:
+            fd = fa.get(date_str)
+        else:
+            date_str = max(fa.keys()) if fa else None
+            fd = fa.get(date_str) if date_str else None
+        if not fd:
+            _dtxt = _esc(date_str or "—")
+            msg = (f"<div class='card'><p class='b-warn'>campaign {_esc(cid)} 暂无 feedback_auto 自动回填数据"
+                   f"（date={_dtxt}）。请先跑 <code>python auto_feedback.py</code>"
+                   f" 或点「📊 从 Mautic 拉数据预填」后保存。</p></div>")
+            return self._send(200, _page("Program", _program_body(p, msg)))
+        conv = float(fd.get("conv_rate", 0) or 0)
+        unsub = float(fd.get("unsub_rate", 0) or 0)
+        # 目标：campaign conv_target > goal KPI target > None
+        cmp_target = c.get("conv_target")
+        try:
+            cmp_target = float(cmp_target)
+        except (TypeError, ValueError):
+            cmp_target = None
+        if not cmp_target or cmp_target <= 0:
+            _kpi = (p.get("goal") or {}).get("kpi") or {}
+            _gt = _kpi.get("target")
+            if _kpi.get("target_unset") or _gt in (None, 0, 0.0):
+                cmp_target = None
+            else:
+                try:
+                    cmp_target = float(_gt)
+                except (TypeError, ValueError):
+                    cmp_target = None
+        target_unset = cmp_target is None
+        ratio = (round(conv / cmp_target, 3) if cmp_target else None)
+        # 判定（与 evaluate_and_replan 同阈值，但只读预览）
+        if target_unset:
+            verdict, detail = "无需优化", "KPI 目标未设置（R 未给）：仅做基线观测，不触发改写。"
+        elif unsub > 0.003:
+            verdict, detail = "需优化", f"退订率 {unsub:.2%} 超熔断 0.3%：建议 降频 + 加 suppression tag（收窄）。"
+        elif ratio >= 1.0:
+            verdict, detail = "无需优化", (f"达成率 {conv:.2%} ≥ 目标 {cmp_target:.2%}，"
+                                          f"退订率 {unsub:.2%} 安全：保持策略，无需调整（可略降本）。")
+        elif ratio >= 0.5:
+            verdict, detail = "需优化", (f"达成率 {conv:.2%} < 目标 {cmp_target:.2%}（{ratio:.2f}×）："
+                                        f"建议 提频 + 换内容变体 + urgency tag。")
+        else:
+            verdict, detail = "需优化", (f"达成率 {conv:.2%} 仅 {ratio:.2f}× 目标："
+                                        f"建议 大幅提频 + 扩分组(broaden/reengage) + 换内容。")
+        c["_optimize_preview"] = {
+            "date": date_str, "conv": conv, "unsub": unsub,
+            "target": cmp_target, "ratio": ratio, "verdict": verdict, "detail": detail,
+        }
+        _save_program(p)
+        msg = (f"<div class='card'><p class='b-ok'>已载入 {_esc(cid)} 自动回填 {_esc(date_str)} 做优化预判。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
     def _handle_campaign_feedback(self, gid, cid, form):
