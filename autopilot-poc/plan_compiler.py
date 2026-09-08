@@ -188,6 +188,7 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     content_variant = strategy.get("content_variant", 0)
     delay_hours = (strategy.get("send_conditions", {}) or {}).get("delay_hours", 24)
     tags = strategy.get("tags_to_write", [])
+    discount = strategy.get("discount")   # 策略折扣（是否发、发多少比例）——内容本体，来自意图识别
 
     graph: list = []
     graph = _inject_governance(graph, goal, strategy, campaign_id)
@@ -205,6 +206,11 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     # 邮件资产：优先取 Agent 策略的 email.ref（reuse=资产 ID；generate=占位 + brief）
     email_ref = strategy.get("email_ref") or f"EM_{campaign_id}_PLACEHOLDER"
     subject = strategy.get("subject") or f"{goal.objective}（变体 v{content_variant}）"
+    # 折扣反映进邮件主题（策略内容本体：发什么比例折扣）
+    if isinstance(discount, dict) and discount.get("enabled") and discount.get("pct") \
+            and "OFF" not in subject:
+        subject = f"{subject}（{int(discount['pct'])}% OFF）"
+        strategy["subject"] = subject   # 写回策略 dict，保证下游展示/重编译一致
     graph.append(_node(
         "n_email_main", "email.send",
         {
@@ -217,6 +223,7 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             "content_variant_spec": strategy.get("content_variant_spec") or None,
             "content_constraints": strategy.get("content_constraints") or None,
             "subject": subject,
+            "discount": discount,   # 折扣策略随邮件节点落库（审批人可见）
             "landing_page_ref": strategy.get("landing_page_ref", ""),
             "tags_to_write": list(tags),
             "cta": {
@@ -353,6 +360,7 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             "content_variant": content_variant,
             "content_variant_spec": strategy.get("content_variant_spec") or None,
             "landing_page_ref": strategy.get("landing_page_ref", ""),
+            "discount": discount,
             "tags_to_write": list(tags),
             "success_criteria": strategy.get("success_criteria") or None,
             "intent": intent,

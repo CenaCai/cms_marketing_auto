@@ -44,6 +44,8 @@ import os
 import re
 from typing import Optional
 
+from topology import journey_for_intent  # 拓扑模板：intent → 旅程骨架（仅形状，不含内容）
+
 # 发送条件安全缺省（Agent 少写字段时回落，不会崩）
 DEFAULT_SEND_CONDITIONS = {"delay_hours": 0, "max_per_24h": 1, "max_per_7d": 3}
 
@@ -375,6 +377,11 @@ def normalize_campaign(c: dict, idx: int, goal_id: str = "",
         "evidence": c.get("evidence", "") or "",
         "success_criteria": _as_dict(c.get("success_criteria")) or None,
         "locales": locales,
+        # 折扣（策略本体：是否发折扣、发什么比例——来自意图识别，非硬编码）
+        # 复制一份，避免 evaluate_and_replan 改写时污染源 StrategySpec
+        "discount": (dict(_as_dict(c.get("discount"))) if _as_dict(c.get("discount")) else None),
+        # 旅程拓扑键（promo/service），仅形状；内容由本 dict 其余字段决定
+        "journey": journey_for_intent(c.get("intent") or "promo"),
         # 进入/退出/转人工判定（Agent 写的运营规则，只读展示）
         "judgment": c.get("judgment", "") or "",
         # deferred：外部事件触发的波次，不得到期自动发送，需运营启用
@@ -474,6 +481,8 @@ def normalize_service_sequence(s: dict, idx: int = 0, goal_id: str = "") -> dict
         "send_conditions": sc,
         "tags_to_write": tags,
         "tag_warnings": tag_warnings,
+        "discount": (dict(_as_dict(s.get("discount"))) if _as_dict(s.get("discount")) else None),
+        "journey": "service",
         "trigger": trig or {"mode": "event", "delay_hours": 0},
         "timing": timing or None,
         "exemptions": exemptions,

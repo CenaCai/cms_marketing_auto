@@ -48,6 +48,10 @@ RC_MAX = 0.50
 PORT = 8090
 HOST = "127.0.0.1"
 
+# 多选表单字段（提交时同名多值，后端按 list 解析）
+MULTI_FORM_FIELDS = {"audience_age", "audience_education", "audience_industry",
+                     "audience_source", "audience_region", "locale"}
+
 # --------------------------- 6 态状态机 ---------------------------
 # 状态 → (中文标签, 配色 class)
 STATUS = {
@@ -327,7 +331,7 @@ function derive(){
     target=Math.round(oc/n*10000)/10000;
     reasonable=(click_rate<=RC_MAX)&&(n<=MAXN);
     optNote = reasonable
-      ? '默认递进策略派生；Agent 可按 StrategySpec 进一步优化频次 / 内容 / 受众'
+      ? '未提交 StrategySpec 时按「基础路径拓扑」派生单 campaign；Agent 可按 StrategySpec 决定 #campaigns / 频次 / 内容 / 折扣'
       : '单 campaign 点击率超阈值：Agent 将按策略压缩节奏 / 提升单波内容转化以满足总体目标';
   } else {
     n=maxBySpan;
@@ -379,9 +383,15 @@ STRATEGY_GEN_JS = """
 (function(){
 function gatherBrief(){
   var get=function(n){var el=document.querySelector('[name='+n+']');return el?(el.value||'').trim():'';};
+  var getMulti=function(n){var el=document.querySelector('[name='+n+']');
+    if(el && el.multiple){return Array.from(el.selectedOptions).map(function(o){return o.value;}).filter(function(v){return v!=='';});}
+    return el?(el.value||'').trim():'';};
+  var fields=['age','gender','income','education','industry','source','region'];
+  var profile={};
+  fields.forEach(function(k){profile[k]=getMulti('audience_'+k);});
   return {goal_name:get('goal_name'),objective:get('objective'),start_date:get('start_date'),
     end_date:get('end_date'),overall_conv:get('overall_conv'),budget:get('budget'),
-    locale:get('locale'),constraints:get('constraints')};
+    locale:getMulti('locale'),constraints:get('constraints'),audience_profile:profile};
 }
 function setStatus(msg, ok){
   var el=document.getElementById('gen-strategy-status');
@@ -517,7 +527,7 @@ def load_deepseek_config() -> dict:
     }
 
 
-# 「营销目标 → AI 意图识别」按钮逻辑（DeepSeek）：读取目标文本，回填日期/性别/约束/策略 JSON。
+# 「营销目标 → AI 意图识别」按钮逻辑（DeepSeek）：读取目标文本，回填简称/日期/年龄/性别/收入/渠道来源等字段。
 AI_PARSE_JS = """
 (function(){
 function setStatus(msg, ok){
@@ -557,9 +567,20 @@ function doParse(){
     .then(function(res){
       var j=res.j||{};
       if(res.ok && j.ok){
+        setVal('goal_name', j.goal_name);
         setVal('start_date', j.start_date);
         setVal('end_date', j.end_date);
+        setVal('overall_conv', j.overall_conv);
+        setVal('is_revenue', j.is_revenue);
+        setVal('budget', j.budget);
+        setVal('locale', j.locale);
+        setVal('audience_age', j.audience_age);
         setVal('audience_gender', j.audience_gender);
+        setVal('audience_income', j.audience_income);
+        setVal('audience_source', j.audience_source);
+        setVal('audience_education', j.audience_education);
+        setVal('audience_industry', j.audience_industry);
+        setVal('audience_region', j.audience_region);
         setVal('constraints', j.constraints);
         setVal('strategy_spec', j.strategy_spec);
         setStatus('✅ 已识别并回填：'+(j.filled||[]).join('、')||'无可回填字段', true);
@@ -582,24 +603,46 @@ def build_strategy_prompt(brief: dict) -> str:
     oc_json = oc if oc else "0.0"
     cons = (brief.get("constraints") or "").strip().replace("\n", "；").replace("\r", "")
     name = (brief.get("goal_name") or "").strip() or "(未命名，请用 goal_id 或一句话概括)"
-    locale = (brief.get("locale") or "zh_CN").strip() or "zh_CN"
+    # locale 可能是多选 list
+    _loc = brief.get("locale")
+    if isinstance(_loc, (list, tuple)):
+        _loc = ",".join(str(x) for x in _loc if str(x)) or "zh_CN"
+    locale = (str(_loc) or "zh_CN").strip() or "zh_CN"
     lang_label = "中文" if locale == "zh_CN" else "英文" if locale == "en_US" else locale
     budget = (brief.get("budget") or "").strip() or "0"
     is_revenue = (brief.get("is_revenue") or "0").strip() in ("1", "true", "yes", "on")
     objective = (brief.get("objective") or "").strip() or "(未填写)"
     start_date = (brief.get("start_date") or "").strip() or "(未填写)"
     end_date = (brief.get("end_date") or "").strip() or "(未填写)"
-    # 受众画像（可能空）
+    # 受众画像（可能多值 list）
     aud_pkg = (brief.get("audience_package") or "GENERIC").strip() or "GENERIC"
+    # 多画像 codes（_handle_generate_strategy 注入的 infer 结果）
+    aud_pkgs = brief.get("audience_packages") or []
+    if isinstance(aud_pkgs, str):
+        aud_pkgs = [x.strip() for x in aud_pkgs.split(",") if x.strip()]
     aud_prof = brief.get("audience_profile") or {}
     aud_lines = []
     for k, lbl in [("age", "年龄段"), ("gender", "性别"), ("income", "月收入档"),
                    ("education", "教育经历"), ("industry", "行业"),
                    ("source", "首选来源"), ("region", "国家/地区")]:
-        v = (aud_prof.get(k) or "").strip()
+        v = aud_prof.get(k)
+        if isinstance(v, (list, tuple)):
+            v = ",".join(str(x) for x in v if str(x))
+        else:
+            v = (v or "").strip()
         if v:
             aud_lines.append(f"{lbl}={v}")
     aud_block = ("；".join(aud_lines) if aud_lines else "（运营未填，由 Agent 自行按画像包默认值推断）")
+    # 多画像提示（策略取最大值）
+    multi_pkg_txt = ""
+    if len(aud_pkgs) > 1:
+        multi_pkg_txt = (
+            f"\n5. ⚠ 本 Brief 命中多个画像包：{', '.join(aud_pkgs)}。"
+            "策略必须取各画像包 strategy 的**最大值**："
+            "频次 max_per_24h / max_per_7d 取最大、触达时段取并集（最早开始~最晚结束）、"
+            "内容 levers / CTA 取并集（各画像包 levers 全部覆盖）、文案融合多画像调性；"
+            "不允许只用最高分画像覆盖其余画像。\n"
+        )
     tpl = (
         "你是营销 Agent 的 L1 策略合成角色。请基于以下 Brief 生成一份 StrategySpec JSON"
         "（严格 JSON，不要解释文字、不要 markdown 代码块包裹，只输出可被 json.loads 解析的对象），"
@@ -618,7 +661,7 @@ def build_strategy_prompt(brief: dict) -> str:
         "【画像包与内容侧重】\n"
         "1. 选画像包（GENERIC / HNW_FAMILY / YOUNG_TREND / PARENT_FAM / CORP_GRP / DORMANT）必须先在专家库查表（references/audience-content-map.json），按打分公式 score = Σ weight×match / Σ weight（阈值 0.6）匹配接触人字段。命中 ≥2 个时按分数降序列候选交运营选。\n"
         "2. 命中画像包后，频次 max_per_24h/max_per_7d、静默窗、触达时段、文案调性、画面调性、CTA 模板**必须**沿用该包 strategy；不允许凭感觉改写。\n"
-        "3. 命中 0 个（且不为 GENERIC）：用 GENERIC 兜底。\n\n"
+        "3. 命中 0 个（且不为 GENERIC）：用 GENERIC 兜底。{multi_pkg}\n"
         "【输出要求】\n"
         "1. 顶层：goal_id（slug）、objective、kpi（{{\"metric\":\"conversion\",\"target\":{oc_json}}}）、"
         "locale（[\"{locale}\"]）、audience_package（{aud_pkg}）、audience_profile（按目标人群特点字段填入）、"
@@ -640,7 +683,8 @@ def build_strategy_prompt(brief: dict) -> str:
     return tpl.format(name=name, objective=objective, start_date=start_date, end_date=end_date,
                       oc=oc, lang_label=lang_label, locale=locale, budget=budget,
                       is_revenue=str(is_revenue).lower(), cons=cons,
-                      aud_pkg=aud_pkg, aud_block=aud_block, oc_json=oc_json)
+                      aud_pkg=aud_pkg, aud_block=aud_block, oc_json=oc_json,
+                      multi_pkg=multi_pkg_txt)
 
 
 def _extract_strategy_spec(raw: str):
@@ -697,10 +741,12 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
         f"<input name='{k}' type='{t}' value='{_esc(v)}' placeholder='{_esc(ph)}'"
         f"{' required' if req else ''}>"
     )
-    sel = lambda k, lbl, v, opts: (
-        f"<label>{lbl}</label><select name='{k}'>" +
-        "".join(f"<option value='{_esc(o)}' {'selected' if o == v else ''}>{_esc(o)}</option>" for o in opts) +
-        "</select>")
+    def _sel(k, lbl, v, opts, multiple=False):
+        vals = list(v) if isinstance(v, (list, tuple, set)) else ([v] if v not in (None, "") else [])
+        attr = " multiple" if multiple else ""
+        return (f"<label>{lbl}</label><select name='{k}'{attr}>" +
+                "".join(f"<option value='{_esc(o)}' {'selected' if o in vals else ''}>{_esc(o)}</option>" for o in opts) +
+                "</select>")
     age_buckets = ["", "18-24", "25-34", "35-44", "45-54", "55+"]
     gender_opts = ["", "男", "女", "未知"]
     income_opts = ["", "L1", "L2", "L3", "L4", "L5"]
@@ -711,10 +757,11 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
 
     operator = (f"<div class='card'><h3>① 你的目标与约束（运营填写）</h3>"
                 f"{fld('goal_name','营销/活动 内部简称（留空则用 ID 值；<span class=\"opt\">可选</span>）',ex['goal_name'])}"
-                f"{fld('objective','<span class=\"req\">*</span> 营销目标（必填，业务描述，至少 4 字符，非占位词）',ex['objective'], req=True)}"
+                f"<label><span class='req'>*</span> 营销目标（必填，业务描述，至少 4 字符，非占位词）</label>"
+                f"<textarea name='objective' rows='3' required>{_esc(ex['objective'])}</textarea>"
                 f"<button id='ai-parse-btn' class='btn sec' type='button' style='margin-top:8px'>✨ AI 识别意图（DeepSeek）</button>"
                 f"<div id='ai-parse-status' class='note'></div>"
-                f"<p class='note'>{('已配置 DeepSeek：点击将调用模型识别日期/性别/约束/策略并自动回填上方字段。' if _deepseek_on else '未配置 DeepSeek：请在 config.json [deepseek].api_key 填入 key，或设置环境变量 DEEPSEEK_API_KEY。')}</p>"
+                f"<p class='note'>{('已配置 DeepSeek：点击将识别简称/日期/年龄/性别/收入/渠道来源等字段并自动回填上方表单。' if _deepseek_on else '未配置 DeepSeek：请在 config.json [deepseek].api_key 填入 key，或设置环境变量 DEEPSEEK_API_KEY。')}</p>"
                 f"<div class='grid2'>"
                 f"{fld('start_date','开始日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['start_date'])}"
                 f"{fld('end_date','结束日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['end_date'])}</div>"
@@ -727,15 +774,18 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<h4 style='margin:6px 0'>目标人群特点</h4>"
                 f"<p class='note'>填入受众字段后，系统按打分公式自动匹配画像包（家庭 / 年轻人 / 父母辈 / 公司客户 / 沉默客户激活）；无匹配则用 GENERIC 兜底。</p>"
                 f"<div class='grid2'>"
-                f"{sel('audience_age','年龄段',ex['audience_age'],age_buckets)}"
-                f"{sel('audience_gender','性别',ex['audience_gender'],gender_opts)}</div>"
+                f"{_sel('audience_age','年龄段（多选）',ex['audience_age'],age_buckets,multiple=True)}"
+                f"{_sel('audience_gender','性别',ex['audience_gender'],gender_opts)}</div>"
                 f"<div class='grid2'>"
-                f"{sel('audience_income','月收入档*RMB（<3k=L1, 3-8k=L2, 8-20k=L3, 20-50k=L4, >50k=L5）',ex['audience_income'],income_opts)}"
-                f"{sel('audience_education','教育经历',ex['audience_education'],edu_opts)}</div>"
+                f"{_sel('audience_income','月收入档*RMB（<3k=L1, 3-8k=L2, 8-20k=L3, 20-50k=L4, >50k=L5）',ex['audience_income'],income_opts)}"
+                f"{_sel('audience_education','教育经历（多选）',ex['audience_education'],edu_opts,multiple=True)}</div>"
                 f"<div class='grid2'>"
-                f"{sel('audience_industry','行业',ex['audience_industry'],ind_opts)}"
-                f"{sel('audience_source','首选来源（channel tag）',ex['audience_source'],src_opts)}</div>"
-                f"{sel('audience_region','国家/地区',ex['audience_region'],region_opts)}"
+                f"{_sel('audience_industry','行业（多选）',ex['audience_industry'],ind_opts,multiple=True)}"
+                f"{_sel('audience_source','首选来源（多选）',ex['audience_source'],src_opts,multiple=True)}</div>"
+                f"<div class='grid2'>"
+                f"{_sel('audience_region','国家/地区（多选）',ex['audience_region'],region_opts,multiple=True)}"
+                f"{_sel('locale','语言/地区（多选）',ex.get('locale','zh_CN'),['zh_CN','en_US'],multiple=True)}"
+                f"</div>"
                 # --- 画像匹配实时显示（系统推断，不可改） ---
                 f"<div id='audience-match' style='margin-top:10px;padding:10px;background:#f0f7e8;border-radius:6px'>"
                 f"<div style='font-weight:600;color:var(--gov);margin-bottom:4px'>画像匹配（系统推断）</div>"
@@ -754,11 +804,6 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"</div></div>"
                 f"<p class='note'>无营收走 T2 人工审批（门槛最低）；涉营收走 T4 高级审批人（更严格）。</p>"
 
-                f"<div class='grid2'>"
-                f"<label>语言/地区</label>"
-                f"<select name='locale'>"
-                f"<option value='zh_CN' selected>中文</option>"
-                f"<option value='en_US'>英文</option></select></div>"
                 f"<label>约束（红线 / 免打扰 / 合规要求，一行一条）</label>"
                 f"<textarea name='constraints' placeholder='例：22:00-09:00 免打扰&#10;不得对已购票用户重复触达'></textarea>"
                 f"<label>策略规格（Agent 产出，可选）</label>"
@@ -789,30 +834,41 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"function _computeMatch(){{"
                 f"  var fields=['age','gender','income','education','industry','source','region'];"
                 f"  var vals={{}};"
-                f"  fields.forEach(function(k){{var el=document.querySelector('[name=audience_'+k+']'); vals[k]=el?el.value:'';}});"
+                f"  fields.forEach(function(k){{var el=document.querySelector('[name=audience_'+k+']');"
+                f"    if(el && el.multiple){{"
+                f"      vals[k]=Array.from(el.selectedOptions).map(function(o){{return o.value;}}).filter(function(v){{return v!=='';}});"
+                f"    }}else{{vals[k]=el?el.value:'';}}}});"
                 f"  var rows=[];"
                 f"  for(var code in _PKG_MATCH){{"
                 f"    var pkg=_PKG_MATCH[code];"
                 f"    if(pkg.runtime_only) continue;"
                 f"    var score=0,total=0,ev=[];"
-                f"    for(var i=0;i<fields.length;i++){{var f=fields[i]; total+=_W[f];"
-                f"      var v=vals[f], ml=pkg.match[f];"
-                f"      if(v && ml && ml.indexOf(v)>=0){{score+=_W[f]; ev.push(f+'='+v);}}}}"
+                f"    for(var i=0;i<fields.length;i++){{var f=fields[i];"
+                f"      var ml=pkg.match[f];"
+                f"      if(!ml) continue;  // 画像包未定义该字段 → 不计入分母"
+                f"      total+=_W[f];"
+                f"      var v=vals[f];"
+                f"      var hit=false;"
+                f"      if(Array.isArray(v)){{hit=v.some(function(x){{return ml.indexOf(x)>=0;}});}}"
+                f"      else{{hit=!!(v && ml.indexOf(v)>=0);}}"
+                f"      if(hit){{score+=_W[f]; ev.push(f+'='+(Array.isArray(v)?v.join(','):v));}}}}"
                 f"    var pct=total>0?score/total:0;"
                 f"    rows.push({{code:code,label:pkg.label,score:pct,evidence:ev}});}}"
                 f"  rows.sort(function(a,b){{return b.score-a.score;}}); return rows;}}"
                 f"function _updateMatch(){{"
                 f"  var rows=_computeMatch();"
-                f"  var top=rows[0];"
+                f"  var matched=rows.filter(function(x){{return x.score>=0.6;}});"
                 f"  var box=document.getElementById('audience-match-result');"
-                f"  if(!top||top.score<0.6){{"
+                f"  if(matched.length===0){{"
+                f"    var top=rows[0];"
                 f"    box.innerHTML='<span class=\"b-warn\">无画像包匹配（最高分 '+(top?top.score.toFixed(2):'0.00')+' &lt; 0.60）</span> → 使用 <b>GENERIC 通用兜底</b>';"
                 f"    return;}}"
-                f"  var alts=rows.filter(function(x){{return x!==top && x.score>=0.6;}}).slice(0,2);"
+                f"  var top=matched[0];"
+                f"  var badges=matched.map(function(m){{return '<span class=\"b-ok\"><b>'+m.code+'</b></span> '+m.label+' — '+m.score.toFixed(2);}}).join('；');"
                 f"  var ev=top.evidence.length>0?top.evidence.join(' / '):'（无具体字段命中）';"
-                f"  var altTxt=alts.length>0?'<div class=\"note\" style=\"margin-top:4px\">候选：'+alts.map(function(a){{return a.code+' ('+a.score.toFixed(2)+')';}}).join('、')+'</div>':'';"
-                f"  box.innerHTML='命中：<span class=\"b-ok\"><b>'+top.code+'</b></span> '+top.label+' — score <b>'+top.score.toFixed(2)+'</b>'"
-                f"    +'<div class=\"note\" style=\"margin-top:4px\">命中证据：'+ev+'</div>'+altTxt;}}"
+                f"  var multiTxt=matched.length>1?'<div class=\"note\" style=\"margin-top:4px\">⚠ 命中多个画像包 → 策略取各画像策略的<b>最大值</b>（频次取最宽、内容 levers 取并集、CTA 取最强）。</div>':'';"
+                f"  box.innerHTML='命中 '+matched.length+' 个画像包：'+badges"
+                f"    +'<div class=\"note\" style=\"margin-top:4px\">命中证据：'+ev+'</div>'+multiTxt;}}"
                 f"['age','gender','income','education','industry','source','region'].forEach(function(k){{"
                 f"  var el=document.querySelector('[name=audience_'+k+']');"
                 f"  if(el) el.addEventListener('change',_updateMatch);}});"
@@ -1669,7 +1725,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001
                 jsbody = {}
         else:
-            jsbody = {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
+            _qs = urllib.parse.parse_qs(raw)
+            jsbody = {}
+            for _k, _v in _qs.items():
+                # 多选字段保留 list（年龄/教育/行业/来源/国家/语言），其余取首值
+                if _k in MULTI_FORM_FIELDS:
+                    jsbody[_k] = _v
+                else:
+                    jsbody[_k] = _v[0]
 
         if path == "/brief":
             return self._handle_brief(jsbody)
@@ -1783,13 +1846,21 @@ class Handler(BaseHTTPRequestHandler):
                     "optimization_note": opt_note}
 
             # ---- L0：运营只填目标与约束，其余由 Agent 策略补 ----
-            locale_raw = (form.get("locale", "") or d.get("locale", "zh_CN") or "zh_CN").strip()
-            # 表单 locale 为单选下拉（中文/英文），直接取单值
-            locales = [locale_raw] if locale_raw else (d.get("locales") or ["zh_CN"])
+            locale_val = form.get("locale")
+            if isinstance(locale_val, list) and locale_val:
+                locales = [str(x).strip() for x in locale_val if str(x).strip()]
+            elif locale_val:
+                locales = [str(locale_val).strip()]
+            else:
+                locales = d.get("locales") or ["zh_CN"]
+            if not locales:
+                locales = ["zh_CN"]
             constraints = [ln.strip() for ln in
                            (form.get("constraints", "") or "").splitlines() if ln.strip()]
             # 画像包由服务端按 profile 推断；表单不接收 audience_package
             goal_name = (form.get("goal_name", "") or "").strip()
+            # 多值字段（age/education/industry/source/region）直接透传 list；单值字段 strip
+            _multi_aud = {"age", "education", "industry", "source", "region"}
             raw = {
                 "objective": (form.get("objective", "") or d.get("objective", "")).strip(),
                 # 分群由 Agent 策略决定；表单不再收集，取首波分群兜底，保证 L0 校验不破
@@ -1809,7 +1880,8 @@ class Handler(BaseHTTPRequestHandler):
                 "channels": ["email"], "reserved_channels": ["sms"],
                 "goal_id": d.get("goal_id", ""),
                 "audience_profile": {
-                    k: (form.get("audience_" + k, "") or "").strip()
+                    k: (form.get("audience_" + k) if k in _multi_aud
+                        else (form.get("audience_" + k, "") or "").strip())
                     for k in ("age", "gender", "income", "education",
                               "industry", "source", "region")
                 },
@@ -1854,6 +1926,13 @@ class Handler(BaseHTTPRequestHandler):
         返回 JSON：{"ok":true,"strategy_spec":<json字符串>,...}
                   或 {"ok":false,"fallback":true,"prompt":<str>,"error":<可选>}。
         """
+        # 服务端按 audience_profile 推断（多值 → 多画像），注入 brief 供提示词「取最大值」
+        from goal_intake import infer_audience_package
+        brief = dict(brief)
+        inferred = infer_audience_package(brief.get("audience_profile") or {})
+        brief["audience_package"] = inferred.get("code", "GENERIC")
+        brief["audience_packages"] = inferred.get("codes", [])
+        brief["audience_match"] = inferred
         prompt = build_strategy_prompt(brief)
         try:
             sg = load_strategy_gen_config()
@@ -1897,13 +1976,49 @@ class Handler(BaseHTTPRequestHandler):
         system_prompt = (
             "你是一个营销 Brief 意图识别器。阅读运营用自然语言写下的「营销目标」描述，"
             "抽取其中隐含的结构化字段，输出严格 JSON（只输出 JSON，不要解释、不要 markdown 代码块）。\n\n"
-            "字段定义：\n"
+            "字段定义（键名必须精确）：\n"
+            "- goal_name: 字符串。活动/营销的内部简称。从描述提炼一句短名称，"
+            "去掉纯时间词（如「2027 年」）。例：「元旦跨年拼盘演唱会」→「元旦跨年拼盘演唱会」；"
+            "「2028 欧冠决赛登记」→「欧冠决赛登记」。未提及则 \"\"。\n"
             "- start_date: 字符串 \"YYYY-MM-DD\"。仅当描述明确给出活动开始日期时填写，否则 \"\"。\n"
             "- end_date: 字符串 \"YYYY-MM-DD\"。计算规则：若给出「为期 N 个月/天/周」且已知开始日，"
             "end_date = 覆盖时段的最后一天（含）。例：起 2027-01-01、为期两个月 → 2027-02-28（2027 非闰年，2 月 28 天）；"
             "起 2028-01-01、为期两个月 → 2028-02-29（闰年）。跨年正确进位（如起 2027-11-15 为期 3 个月 → 2028-02-15）。"
             "若仅直接给出结束日也填。否则 \"\"。\n"
+            "- audience_age: 枚举字符串，必须取其一：\"\" / \"18-24\" / \"25-34\" / \"35-44\" / \"45-54\" / \"55+\"。"
+            "把年龄描述映射到「最贴近」的一档（单选）：\n"
+            "  · 「40 岁以下」「35 岁及以下」→ \"25-34\"（若强调「20 出头」「年轻」则 \"18-24\"）；\n"
+            "  · 「18-30」→ \"25-34\"；「30-40」→ \"35-44\"；「40-50」→ \"45-54\"；\n"
+            "  · 「50 岁以上」「60 岁以上」→ \"55+\"；「40-50」→ \"45-54\"；\n"
+            "  · 「中年」「35 岁以上」→ \"35-44\"。未提及年龄则 \"\"。\n"
             "- audience_gender: 枚举 \"\" / \"男\" / \"女\" / \"未知\"。仅当描述指明性别时填写。\n"
+            "- audience_income: 枚举字符串，必须取其一：\"\" / \"L1\" / \"L2\" / \"L3\" / \"L4\" / \"L5\"。"
+            "档位含义：L1=<3k，L2=3k~8k，L3=8k~20k，L4=20k~50k，L5=>50k（单位人民币/月）。"
+            "把收入描述映射到「最贴近起点」的一档（单选）：\n"
+            "  · 「5 千以上」「5k 以上」「月入 5 千」→ \"L2\"（起点 5k 落在 3k~8k 档）；\n"
+            "  · 「1 万以上」→ \"L3\"；「2 万以上」「月入 2 万」→ \"L4\"；「5 万以上」「10 万以上」→ \"L5\"；\n"
+            "  · 「3 千以下」→ \"L1\"。未提及收入则 \"\"。\n"
+            "- audience_source: 枚举字符串，必须取其一：\"\" / \"CTL\" / \"CSTS\" / \"SPORT\" / \"爬虫\" / \"其他\" / \"手动输入\"。"
+            "渠道/来源映射（大小写不敏感，统一转大写）：\n"
+            "  · 「csts」「CSTS 渠道」「csts渠道」→ \"CSTS\"；\n"
+            "  · 「携程」「ctl」→ \"CTL\"；「sport」「体育」→ \"SPORT\"；「爬虫」→ \"爬虫\"。\n"
+            "  未提及来源则 \"\"。\n"
+            "- audience_education: 枚举 \"\" / \"名校\" / \"MBA\" / \"211\" / \"985\" / \"QS100\" / \"普通本科\" / \"其他\"。未提及则 \"\"。\n"
+            "- audience_industry: 枚举 \"\" / \"IT\" / \"制造\" / \"金融\" / \"旅游\" / \"教育\" / \"医疗\" / \"零售\" / \"其他\"。未提及则 \"\"。\n"
+            "- audience_region: 枚举 \"\" / \"中国大陆\" / \"港澳台\" / \"海外\"。未提及则 \"\"。\n"
+            "- overall_conv: 字符串，表示「项目预期转化率×跳转率」，0~1 的小数（最多 4 位小数）。"
+            "仅当描述明确提到「转化率」「跳转率」「最终转化」「预期转化」等并给出百分比或小数时填写。"
+            "例：「转化率 15%」→ \"0.15\"；「预期 0.2」→ \"0.2\"；「跳转率 20%、转化率 50%」→ 相乘 \"0.1\"。"
+            "未提及则 \"\"。\n"
+            "- is_revenue: 枚举 \"\" / \"0\" / \"1\"。判断该活动是否涉及营收/付费目标（影响审批门槛）。\n"
+            "  · 提及「售票/付费/营收/购买/销售/客单价/订单/成交」→ \"1\"；\n"
+            "  · 提及「意向登记/品牌曝光/报名/预约/拉新/领券/免费」且无付费意图 → \"0\"；\n"
+            "  · 无法判断 → \"\"。\n"
+            "- budget: 字符串。预算金额，统一转成「元」为单位的整数数字字符串（不带千分位、不带货币符号）。"
+            "例：「预算 5 万」→ \"50000\"；「10万元」→ \"100000\"；「预算 5000 元」→ \"5000\"。未提及则 \"\"。\n"
+            "- locale: 枚举 \"\" / \"zh_CN\" / \"en_US\"。\n"
+            "  · 提及「英文」「English」「英文版」「面向海外英文用户」→ \"en_US\"；\n"
+            "  · 其余情况（中文/未提及）→ \"\"（页面默认中文）。\n"
             "- constraints: 字符串（多条件用换行 \\n 分隔）。把「X 点后不能发/次日 Y 点再发」「免打扰」"
             "「退订」「抑制名单」「不得重复触达」等约束写成 \"<X>:00~<Y>:00免打扰\"（跨午夜，开始>结束）。"
             "例：「晚上 20 点后不能发，第二天 10 点再发」→ \"20:00~10:00免打扰\"。无则 \"\"。\n"
@@ -1912,7 +2027,8 @@ class Handler(BaseHTTPRequestHandler):
             "顶层含 goal_id/objective/kpi/locale/audience_package/audience_profile/campaigns，"
             "每个 campaign 含 cid/name/content_brief/segment/send_conditions/tags_to_write/email_mode 等"
             "（schema 同 Mautic 活动编译约定），格式化为带缩进的 JSON 字符串；否则 \"\"。\n\n"
-            "只输出 JSON 对象，键必须如上。不要编造未提及的信息：未提及的字段留空字符串。"
+            "只输出 JSON 对象，键必须如上。不要编造未提及的信息：未提及的字段留空字符串；"
+            "枚举字段必须输出枚举列表内的精确值（否则前端会因选项不匹配而丢弃）。"
         )
         payload = {
             "model": cfg["model"],
@@ -1943,7 +2059,18 @@ class Handler(BaseHTTPRequestHandler):
             parsed = json.loads(content) if content else {}
         except Exception as e:  # noqa: BLE001
             return self._send_json({"ok": False, "error": f"DeepSeek 返回解析失败：{e}；原文：{raw[:500]}"})
-        fields = ("start_date", "end_date", "audience_gender", "constraints", "strategy_spec")
+        fields = ("goal_name", "start_date", "end_date", "overall_conv", "is_revenue",
+                  "budget", "locale", "audience_age", "audience_gender",
+                  "audience_income", "audience_source", "audience_education",
+                  "audience_industry", "audience_region", "constraints", "strategy_spec")
+        # 中文标签（前端 filled 提示用）
+        field_label = {
+            "goal_name": "活动简称", "start_date": "开始日期", "end_date": "结束日期",
+            "overall_conv": "转化率", "is_revenue": "是否营收", "budget": "预算", "locale": "语言",
+            "audience_age": "年龄", "audience_gender": "性别", "audience_income": "收入",
+            "audience_source": "渠道来源", "audience_education": "教育", "audience_industry": "行业",
+            "audience_region": "地区", "constraints": "约束", "strategy_spec": "策略",
+        }
         out = {}
         filled = []
         for f in fields:
@@ -1954,7 +2081,7 @@ class Handler(BaseHTTPRequestHandler):
                 v = "" if v in (None, False) else str(v)
             out[f] = v
             if v:
-                filled.append(f)
+                filled.append(field_label.get(f, f))
         return self._send_json({"ok": True, **out, "filled": filled})
 
     def _handle_campaign_approve(self, gid, cid, form):
@@ -2366,8 +2493,17 @@ class Handler(BaseHTTPRequestHandler):
         ratio_txt = ("未设置（KPI 目标 R 未给，不做达成率改写）" if out.get("target_unset")
                      else str(out["ratio"]))
         done_lbl = STATUS.get(p and next((x["status"] for x in p["campaigns"] if x["cid"] == cid), ""), ("", ""))[0]
+        # 分支维度（第 3 轴）：新增折扣挽回分支 / 剪掉挂起兜底分支
+        branch_lines = []
+        for nb in out.get("new_campaigns", []):
+            branch_lines.append(f"➕ 新增修正分支 <b>{_esc(nb['cid'])}</b>（折扣挽回，覆盖未转化联系人）")
+        for pr in out.get("pruned_campaigns", []):
+            branch_lines.append(f"✂️ 剪掉挂起分支 <b>{_esc(pr['cid'])}</b>（已达标，不再需要）")
+        branch_txt = ("<br>" + "<br>".join(branch_lines)) if branch_lines else ""
+        verdict_lbl = out.get("verdict")
         msg = (f"<div class='card'><p class='b-ok'>上游 {_esc(cid)} 完成（{_esc(done_lbl)}），"
-               f"达成率 {_esc(ratio_txt)} → 下游改写：{_esc(changed)}</p></div>")
+               f"判定 <b>{_esc(verdict_lbl or '—')}</b>，达成率 {_esc(ratio_txt)}<br>"
+               f"下游改写：{_esc(changed)}{branch_txt}</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
     def _handle_legacy_approve(self, gid, form):
