@@ -121,8 +121,8 @@ check("Brief 含是否涉及营收(默认无营收)",
       "name='is_revenue'" in bf and "value='0' selected" in bf)
 check("Brief 预算字段默认隐藏(仅 is_revenue=1 才显示)",
       "id='budget_wrap'" in bf and "display:none" in bf.replace(" ", "").lower())
-check("Brief 字段命名『营销/活动名称』",
-      "营销/活动名称" in bf)
+check("Brief 字段命名『营销/活动 内部简称』",
+      "营销/活动 内部简称" in bf)
 check("Brief 提示画像由系统按打分公式匹配",
       "打分公式" in bf)
 check("Brief 含「用 WorkBuddy 生成策略」按钮", "gen-strategy-btn" in bf)

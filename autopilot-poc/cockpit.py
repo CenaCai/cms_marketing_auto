@@ -589,7 +589,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     region_opts = ["", "中国大陆", "港澳台", "海外"]
 
     operator = (f"<div class='card'><h3>① 你的目标与约束（运营填写）</h3>"
-                f"{fld('goal_name','营销/活动名称（留空则用 ID 值；<span class=\"opt\">可选</span>）',ex['goal_name'])}"
+                f"{fld('goal_name','营销/活动 内部简称（留空则用 ID 值；<span class=\"opt\">可选</span>）',ex['goal_name'])}"
                 f"{fld('objective','<span class=\"req\">*</span> 营销目标（必填，业务描述，至少 4 字符，非占位词）',ex['objective'], req=True)}"
                 f"<div class='grid2'>"
                 f"{fld('start_date','开始日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['start_date'])}"
