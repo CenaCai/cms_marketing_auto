@@ -468,4 +468,55 @@ check("无端点时降级 fallback=True", gj.get("fallback") is True, f"{gj.get(
 check("降级返回自包含提示词", "StrategySpec" in gj.get("prompt", ""))
 check("提示词含 Brief 目标", "2028 欧冠决赛邀请" in gj.get("prompt", ""))
 
+# ---------- 路径 H：PoC graph → Mautic 7 events + canvasSettings 转换器（Option A） ----------
+import plan_compiler as pc
+from goal_intake import parse_brief
+
+def _compile_mautic(objective, intent, **kw):
+    spec = parse_brief({"objective": objective, "audience_segment": "SEG_X",
+                        "landing_page_url": "http://localhost:8080/s/lp", "locale": "zh"})
+    strat = {"cid": "T_" + intent, "wave_id": "wave_1", "variant_id": "v0", "intent": intent,
+             "email_ref": 1, "segment_id": 7, "send_conditions": {"delay_hours": 24},
+             "tags_to_write": ["TAG_A"], **kw}
+    return pc.compile(spec, strat)
+
+# PROMO 路径
+promo = _compile_mautic("promo conv", "promo")
+pev = promo["mautic_events"]
+pcs = promo["mautic_canvas"]
+pids = {n["id"] for n in pcs["nodes"]}
+check("Mautic events 非空", len(pev) > 0, f"n={len(pev)}")
+check("canvasSettings.nodes 与 events 数量一致", len(pcs["nodes"]) == len(pev))
+check("每个 event 用 newN 临时 id", all(e["id"].startswith("new") for e in pev))
+check("event type 均为 Mautic 注册类型",
+      all(e["type"] in {"email.send", "email.click", "lead.changetags", "lead.dnc",
+                        "lead.field_value"} for e in pev))
+check("promo 含 email.send（主+兜底≥2）", sum(1 for e in pev if e["type"] == "email.send") >= 2)
+check("promo 含 email.click 决策", any(e["type"] == "email.click" for e in pev))
+check("promo 含 lead.changetags 打标签", any(e["type"] == "lead.changetags" for e in pev))
+check("promo 决策 yes/no 锚点都存在",
+      any(c["anchors"]["source"] == "yes" for c in pcs["connections"])
+      and any(c["anchors"]["source"] == "no" for c in pcs["connections"]))
+check("wait 计时并入 email.click（trigger=interval）",
+      any(e["type"] == "email.click" and e.get("triggerMode") == "interval" for e in pev))
+check("连线端点均为真实节点（lists 为 source 例外）",
+      all((c["sourceId"] == "lists" or c["sourceId"] in pids) and c["targetId"] in pids
+          for c in pcs["connections"]))
+check("汇聚节点（tag+log）按 yes/no 分支复制",
+      sum(1 for e in pev if e["type"] == "lead.changetags") >= 2)
+check("提供 lists 作为 lead source", promo.get("mautic_lists") == [{"id": 7}])
+check("api_calls 第一步写入 events+canvasSettings（不再 importEventGraph）",
+      "events" in promo["api_calls"][0]["body"]
+      and "canvasSettings" in promo["api_calls"][0]["body"]
+      and "importEventGraph" not in str(promo["api_calls"]))
+
+# SERVICE 路径（单路径，无分支）
+svc = _compile_mautic("svc conv", "service", trigger={"mode": "event", "event": "form.submit"})
+sev = svc["mautic_events"]
+scs = svc["mautic_canvas"]
+check("service 链为线性（无 yes/no 锚点）",
+      not any(c["anchors"]["source"] in ("yes", "no") for c in scs["connections"]))
+check("service 含 email.send", any(e["type"] == "email.send" for e in sev))
+check("service 不含 email.click 决策", not any(e["type"] == "email.click" for e in sev))
+
 print("DONE2 gid5=", gid5, " gid6=", gid6)

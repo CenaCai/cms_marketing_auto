@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Optional
 
 from goal_intake import GoalSpec
@@ -363,38 +364,258 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
         },
         "approval": None,
         "deployed": False,
-        "api_calls": _build_api_calls(campaign_id, plan_hash, graph),
     }
+
+    # ---- Mautic 7 期望的 payload：events + canvasSettings（分开发，含 parent/child 连线）----
+    # 这样经 campaign API 写入后，canvas 会出现连线、campaign_events.parent 会被正确设置，
+    # 流程才能真正按 parent/child 链执行（旧版只发 importEventGraph+graph，Mautic 7 忽略连线）。
+    mautic = to_mautic_events(graph, strategy)
+    proposal["mautic_events"] = mautic["events"]
+    proposal["mautic_canvas"] = mautic["canvasSettings"]
+    proposal["mautic_lists"] = mautic.get("lists")
+    proposal["api_calls"] = _build_api_calls(campaign_id, plan_hash, graph, mautic)
     return proposal
 
 
-def _build_api_calls(campaign_id: str, plan_hash: str, graph: list) -> list:
+# =====================================================================
+# PoC 事件图 → Mautic 7 events + canvasSettings 转换器
+# =====================================================================
+# Mautic 7 CampaignApiController::preSaveEntity 要求：
+#   1) POST/PUT 必须带非空 events；
+#   2) 必须带 lists 或 forms 作为 lead source；
+#   3) 连线由 canvasSettings.connections（sourceId/targetId/anchors.source）驱动，
+#      CampaignModel::setEvents() 据此设置 campaign_events.parent，从而建立执行链。
+#
+# PoC 的治理/观测节点（frequency_gate / anchor_arbitration / guardrail / log_channel_send /
+# observer.click / page.hit / decision.segment 等）在 Mautic 没有原生等价物，统一映射为：
+#   - 真实可执行的事件（email.send / email.click 决策 / lead.changetags）；
+#   - 或「无害透传」条件 lead.field_value（校验 email 非空，不改动联系人数据），
+#     以保证链路连通且 Mautic 校验通过。
+# 纯透传节点（wait 计时、observer.click 观测）不单独建事件，而是并入下一个真实事件：
+#   wait 的 duration 成为下一事件的 triggerInterval；observer.click 并入 email.click 决策。
+_MAUTIC_TYPE = {
+    "email.send": "email.send",
+    "tag.write": "lead.changetags",
+    "guardrail": "lead.dnc",                       # 退订/抑制校验：Mautic 原生条件
+    "frequency_gate": "lead.field_value",          # 无原生事件 → 无害透传
+    "anchor_arbitration": "lead.field_value",      # 无原生事件 → 无害透传
+    "log_channel_send": "lead.field_value",        # 无原生事件 → 无害透传
+    "page.hit": "lead.field_value",                # 归因观测 → 无害透传
+    "decision.segment": "lead.field_value",        # 进入分群门 → 无害透传（真实分群走 lists source）
+    "decision.event_trigger": "lead.field_value",  # 事件触发入口 → 无害透传
+    "decision.clicked": "email.click",             # 点击分支 → 成为 email.click 决策
+    "observer.click": None,                         # 并入 email.click 决策
+    "wait": None,                                   # 计时并入下一事件 triggerInterval
+    "sms.send.reserved": None,                      # 预留/禁用 → 跳过
+}
+
+
+def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
+    """
+    把 PoC 事件图编译成 Mautic 7 期望的 payload：
+      {
+        "events":        [ {id:newN, type, name, properties, triggerMode, ...}, ... ],
+        "canvasSettings": { "nodes": [...], "connections": [ {sourceId,targetId,anchors} ] },
+        "lists":         [ {id: <segment_id>} ] | None
+      }
+    分支（decision.clicked 的 if_true/if_false）映射为 email.click 决策的 yes/no 锚点；
+    汇聚节点（如 n_tag 同时被 yes/no 两路到达）会按父实例复制，确保每条路径都能触发。
+    """
+    strategy = strategy or {}
+    nodes = {n["id"]: n for n in graph}
+
+    def mtype(n):
+        return _MAUTIC_TYPE.get(n.get("type"))
+
+    def resolve(start_id):
+        """沿 next/if_true/if_false 穿过透传节点，返回第一个真实事件节点 id 与累计等待小时数。"""
+        cid = start_id
+        interval = 0
+        seen = set()
+        while cid and cid not in seen:
+            seen.add(cid)
+            n = nodes.get(cid)
+            if n is None:
+                return (None, interval)
+            if mtype(n) is not None:
+                return (cid, interval)
+            if n.get("type") == "wait":
+                dur = (n.get("params") or {}).get("duration", "")
+                m = re.match(r"(\d+)\s*h", str(dur))
+                if m:
+                    interval = int(m.group(1))
+            cid = n.get("next")
+        return (None, interval)
+
+    def successors(n):
+        out = []
+        p = n.get("params") or {}
+        if "if_true" in p or "if_false" in p:
+            if p.get("if_true"):
+                rt, iv = resolve(p["if_true"])
+                if rt:
+                    out.append((rt, "yes", iv))
+            if p.get("if_false"):
+                rt, iv = resolve(p["if_false"])
+                if rt:
+                    out.append((rt, "no", iv))
+        elif n.get("next"):
+            rt, iv = resolve(n.get("next"))
+            if rt:
+                out.append((rt, None, iv))
+        return out
+
+    main_email_ref = strategy.get("email_ref") or "0"
+
+    def _email_id(ref):
+        try:
+            return int(str(ref))
+        except Exception:
+            return 0
+
+    def _props(n, t):
+        p = n.get("params") or {}
+        if t == "email.send":
+            return {
+                "email": _email_id(p.get("email_ref", main_email_ref)),
+                "email_type": "transactional",
+                "attempts": 3,
+                "priority": 2,
+            }
+        if t == "lead.changetags":
+            return {"add_tags": list(p.get("tags") or []), "remove_tags": []}
+        if t == "lead.dnc":
+            return {"channels": ["email"], "reason": None}
+        if t == "email.click":
+            return {"email": _email_id(main_email_ref), "urls": {"list": []}}
+        # 无害透传（lead.field_value）：校验 email 非空，不改动联系人数据
+        return {"field": "email", "operator": "!empty", "value": ""}
+
+    def _name(n, t):
+        p = n.get("params") or {}
+        if t == "email.send":
+            return f"发送邮件：{p.get('subject') or n['id']}"
+        if t == "lead.changetags":
+            return f"打标签：{p.get('tags') or []}"
+        if t == "lead.dnc":
+            return "护栏：退订/抑制校验"
+        if t == "email.click":
+            return "决策：是否点击"
+        return f"{n.get('type')}（治理/观测）"
+
+    events: list = []
+    canvas_nodes: list = []
+    connections: list = []
+    instances: dict = {}        # (node_id, parent_sig) -> temp_id
+    order = [0]
+
+    def emit(node_id, parent_temp_id, anchor, interval, lane):
+        key = (node_id, parent_temp_id)
+        if key in instances:
+            return instances[key]
+        n = nodes[node_id]
+        t = mtype(n)
+        order[0] += 1
+        tid = f"new{order[0]}"
+        instances[key] = tid
+        ev = {
+            "id": tid,
+            "type": t,
+            "name": _name(n, t),
+            "properties": _props(n, t),
+            "triggerMode": "immediate",
+        }
+        if interval and interval > 0:
+            ev["triggerMode"] = "interval"
+            ev["triggerInterval"] = interval
+            ev["triggerUnit"] = "H"
+        events.append(ev)
+        canvas_nodes.append({
+            "id": tid,
+            "position": {"x": order[0] * 200, "y": lane * 160 + 40},
+            "type": t,
+            "name": ev["name"],
+        })
+        if parent_temp_id is not None:
+            connections.append({
+                "sourceId": parent_temp_id,
+                "targetId": tid,
+                "anchors": {"source": anchor, "target": "endpointConnection"},
+            })
+        for (succ, sa, iv) in successors(n):
+            child_lane = lane
+            if sa == "yes":
+                child_lane = 0
+            elif sa == "no":
+                child_lane = 2
+            emit(succ, tid, sa, iv, child_lane)
+        return tid
+
+    # 入度（仅统计从真实节点出发的边），用于识别根节点
+    indeg = {nid: 0 for nid in nodes}
+    for nid, n in nodes.items():
+        if mtype(n) is None:
+            continue
+        for (succ, _, _) in successors(n):
+            indeg[succ] = indeg.get(succ, 0) + 1
+    for nid in nodes:
+        if mtype(nodes[nid]) is not None and indeg.get(nid, 0) == 0:
+            emit(nid, None, None, 0, 1)
+
+    lists = None
+    seg_id = strategy.get("segment_id")
+    if seg_id:
+        try:
+            lists = [{"id": int(seg_id)}]
+        except Exception:
+            lists = None
+
+    # 若提供了 segment source，把 lists 连到根事件（anchors.source='leadsource' 让 setEvents 跳过）
+    if lists:
+        target_ids = {c["targetId"] for c in connections}
+        for cn in canvas_nodes:
+            if cn["id"] not in target_ids:
+                connections.append({
+                    "sourceId": "lists",
+                    "targetId": cn["id"],
+                    "anchors": {"source": "leadsource", "target": "endpointConnection"},
+                })
+
+    return {
+        "events": events,
+        "canvasSettings": {"nodes": canvas_nodes, "connections": connections},
+        "lists": lists,
+    }
+
+
+def _build_api_calls(campaign_id: str, plan_hash: str, graph: list, mautic: Optional[dict] = None) -> list:
     """
     给出「若推送到 {base_url}/s/ 会发出的 Mautic API 调用」。
-    注意（合并规格附录 B/C）：
+    注意（合并规格附录 B/C + Mautic 7 实测）：
       - 更新类路由走 /api/v2
-      - 事件图不可经普通 API 改，须走 applyAction
-      - 频次/锚点/护栏/记账节点由执行引擎在运行时消费，不依赖 LLM 记忆
+      - Mautic 7 的 campaign 创建/编辑 API 直接在 body 里接收 events + canvasSettings，
+        并在 CampaignModel::setEvents() 里据此建立 parent/child 连线；
+        importEventGraph / applyAction 在 Mautic 7 不适用（会被忽略，导致无连线）。
+      - 频次/锚点/护栏/记账节点由执行引擎在运行时消费，不依赖 LLM 记忆。
     """
+    mautic = mautic or {}
+    events = mautic.get("events", [])
+    canvas = mautic.get("canvasSettings", {})
+    lists = mautic.get("lists")
+    create_body = {
+        "name": campaign_id,
+        "isPublished": False,          # 默认下线，避免误触生产
+        "events": events,
+        "canvasSettings": canvas,
+    }
+    if lists:
+        create_body["lists"] = lists
     return [
         {
             "method": "POST",
             "path": "/s/api/v2/campaigns/new",
-            "body": {
-                "name": campaign_id,
-                "isPublished": False,          # 默认下线，避免误触生产
-            },
-            "desc": "创建 campaign（默认 is_published=0）",
-        },
-        {
-            "method": "POST",
-            "path": f"/s/api/v2/campaigns/<id>/applyAction",
-            "body": {
-                "action": "importEventGraph",
-                "plan_hash": plan_hash,
-                "graph": graph,
-            },
-            "desc": "经 applyAction 写入事件图（唯一可写路径）",
+            "body": create_body,
+            "desc": "创建 campaign 并写入事件图（events + canvasSettings，含 parent/child 连线）",
         },
         {
             "method": "POST",

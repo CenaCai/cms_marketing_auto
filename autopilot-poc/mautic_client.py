@@ -7,10 +7,9 @@ Mautic Client — 把提案推送到 {base_url}/s/（经 REST API）
 - 默认 dry-run：未填凭证时只回调用清单，不真正发请求
 - 仅用标准库 urllib（零依赖）
 
-调用顺序：
-  1) POST /s/api/v2/campaigns/new       创建（isPublished=False）
-  2) POST /s/api/v2/campaigns/<id>/applyAction  写入事件图（plan_hash + graph）
-  3) POST /s/api/v2/campaigns/<id>/edit 审批后上线（仅 approved=True 时）
+    调用顺序：
+  1) POST /s/api/v2/campaigns/new       创建（isPublished=False）+ events + canvasSettings + lists
+  2) POST /s/api/v2/campaigns/<id>/edit 审批后上线（仅 approved=True 时）
 """
 from __future__ import annotations
 
@@ -127,26 +126,25 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
     cid = proposal["campaign"]["goal_id"]
     steps = []
 
-    # 1) 创建 campaign（默认下线）
-    r1 = _post(base, "/s/api/v2/campaigns/new",
-               {"name": cid, "isPublished": False}, auth)
-    steps.append({"step": "create_campaign", **r1})
+    # 1) 创建 campaign（默认下线），同时带上 Mautic 7 期望的 events + canvasSettings（+ lists）
+    #    —— 事件图连线（parent/child）由 canvasSettings.connections 在 setEvents() 里建立。
+    create_body = {"name": cid, "isPublished": False}
+    if proposal.get("mautic_events"):
+        create_body["events"] = proposal["mautic_events"]
+    if proposal.get("mautic_canvas"):
+        create_body["canvasSettings"] = proposal["mautic_canvas"]
+    if proposal.get("mautic_lists"):
+        create_body["lists"] = proposal["mautic_lists"]
+    r1 = _post(base, "/s/api/v2/campaigns/new", create_body, auth)
+    steps.append({"step": "create_campaign_with_events", **r1})
     new_id = None
     if isinstance(r1["body"], dict):
         new_id = (r1["body"].get("campaign") or {}).get("id")
 
-    # 2) applyAction 写事件图
-    if new_id:
-        r2 = _post(base, f"/s/api/v2/campaigns/{new_id}/applyAction",
-                   {"action": "importEventGraph",
-                    "plan_hash": proposal["plan_hash"],
-                    "graph": proposal["graph"]}, auth)
-        steps.append({"step": "applyAction_event_graph", **r2})
-
-        # 3) 审批通过后上线
-        if approved:
-            r3 = _post(base, f"/s/api/v2/campaigns/{new_id}/edit",
-                       {"isPublished": True}, auth)
-            steps.append({"step": "publish", **r3})
+    # 2) 审批通过后上线
+    if new_id and approved:
+        r3 = _post(base, f"/s/api/v2/campaigns/{new_id}/edit",
+                   {"isPublished": True}, auth)
+        steps.append({"step": "publish", **r3})
 
     return {"dry_run": False, "env": env, "campaign_id": new_id, "steps": steps}
