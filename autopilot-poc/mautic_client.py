@@ -180,6 +180,192 @@ def _get(base_url: str, path: str, token: str, timeout: int = 15):
         return None
 
 
+def _patch(base_url: str, path: str, body: dict, token: str, timeout: int = 15) -> dict:
+    """PATCH JSON，带 Bearer token。Mautic 7 的 campaign publish 必须用 PATCH（非 POST/PUT）。"""
+    url = f"{base_url}{path}"
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="PATCH")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            return {"url": url, "status": resp.status, "body": _safe_json(raw)}
+    except urllib.error.HTTPError as e:
+        return {"url": url, "status": e.code, "body": _safe_json(e.read().decode("utf-8", "replace"))}
+    except Exception as e:  # noqa: BLE001
+        return {"url": url, "status": 0, "body": f"网络/连接错误: {e}"}
+
+
+def _aliasify(name: str) -> str:
+    """把任意中文/特殊字符名转成 Mautic 兼容的 alias（小写字母数字+下划线，长度 ≤50）。"""
+    import re as _re
+    s = _re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
+    return (s or "asset")[:50]
+
+
+def _find_by_name(items: list, name: str):
+    """从 [{id,name,alias}, ...] 列表里按 name（精确）或 alias（精确）找资产。"""
+    if not name or not items:
+        return None
+    alias = _aliasify(name)
+    for it in items:
+        if isinstance(it, dict) and it.get("id"):
+            if it.get("name") == name:
+                return it
+            if it.get("alias") == alias or it.get("alias") == name:
+                return it
+    return None
+
+
+def ensure_segment(name: str, env: str = "local", timeout: int = 15) -> dict:
+    """按 name 找 segment；找不到就 POST 新建；返回 {"id","name","alias","created":bool}。
+    失败/无凭证返回 {"id": None, "error": "..."}。"""
+    if not name:
+        return {"id": None, "error": "name 为空"}
+    try:
+        cfg = load_config(env)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"load_config: {e}"}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {"id": None, "error": "未配置 OAuth client_id/secret"}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"token 获取失败: {e}"}
+
+    # 1) 查现有：先按 name 搜索
+    res = _get(base, f"/api/segments?search={urllib.parse.quote(name)}&limit=10", token, timeout)
+    if isinstance(res, dict):
+        bucket = res.get("lists") or {}
+        items = (list(bucket.values()) if isinstance(bucket, dict) else bucket) if bucket else []
+        existing = _find_by_name(items if isinstance(items, list) else [], name)
+        if existing:
+            return {"id": int(existing["id"]), "name": existing.get("name"), "alias": existing.get("alias"), "created": False}
+
+    # 2) 新建（草稿下线）
+    alias = _aliasify(name)
+    body = {"name": name, "alias": alias, "isPublished": False, "isGlobal": False, "filters": []}
+    r = _post(base, "/api/segments/new", body, token, timeout=timeout)
+    if r["status"] in (200, 201):
+        seg = (r["body"] or {}).get("list") or {}
+        new_id = seg.get("id")
+        if new_id:
+            return {"id": int(new_id), "name": name, "alias": alias, "created": True}
+    return {"id": None, "error": f"POST /api/segments/new HTTP {r['status']}: {_format_err(r['body'])}"}
+
+
+def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int = None, email_type: str = "transactional", timeout: int = 15) -> dict:
+    """按 name 找 email；找不到就 POST 新建（草稿）；返回 {"id","subject","created":bool,"error"?}。
+    subject 仅在新建时使用（已有 email 不会覆盖其内容）。
+    email_type: 默认 "transactional"（campaign events 用的就是 transactional，无需挂 list）；
+                "list" 时 Mautic 要求 lists，但 segment id 通常不被接受（"所选的选项无效"）。
+    """
+    if not name:
+        return {"id": None, "error": "name 为空"}
+    try:
+        cfg = load_config(env)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"load_config: {e}"}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {"id": None, "error": "未配置 OAuth client_id/secret"}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"token 获取失败: {e}"}
+
+    res = _get(base, f"/api/emails?search={urllib.parse.quote(name)}&limit=10", token, timeout)
+    if isinstance(res, dict):
+        bucket = res.get("emails") or {}
+        items = (list(bucket.values()) if isinstance(bucket, dict) else bucket) if bucket else []
+        existing = _find_by_name(items if isinstance(items, list) else [], name)
+        if existing:
+            return {"id": int(existing["id"]), "name": existing.get("name"), "created": False}
+
+    alias = _aliasify(name)
+    body = {
+        "name": name,
+        "alias": alias,
+        "subject": subject or name,
+        "isPublished": False,
+        "emailType": email_type,
+        "customHtml": f"<p>{subject or name}</p>",
+    }
+    # 只有 list 类型才需要 lists 字段；transactional 不需要
+    if email_type == "list" and list_id:
+        body["lists"] = [{"id": int(list_id)}]
+    r = _post(base, "/api/emails/new", body, token, timeout=timeout)
+    if r["status"] in (200, 201):
+        em = (r["body"] or {}).get("email") or {}
+        new_id = em.get("id")
+        if new_id:
+            return {"id": int(new_id), "name": name, "created": True}
+    return {"id": None, "error": f"POST /api/emails/new HTTP {r['status']}: {_format_err(r['body'])}"}
+
+
+def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: int = 15) -> dict:
+    """按 name 找 landing page；找不到就 POST 新建（草稿）；返回 {"id","created":bool,"error"?}。
+    若给了 url 用 redirect（meta-refresh 兜底），否则占位 HTML。"""
+    if not name:
+        return {"id": None, "error": "name 为空"}
+    try:
+        cfg = load_config(env)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"load_config: {e}"}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {"id": None, "error": "未配置 OAuth client_id/secret"}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"token 获取失败: {e}"}
+
+    res = _get(base, f"/api/pages?search={urllib.parse.quote(name)}&limit=10", token, timeout)
+    if isinstance(res, dict):
+        bucket = res.get("pages") or []
+        items = bucket if isinstance(bucket, list) else (list(bucket.values()) if isinstance(bucket, dict) else [])
+        existing = _find_by_name(items, name)
+        if existing:
+            return {"id": int(existing["id"]), "name": existing.get("name"), "created": False}
+
+    alias = _aliasify(name)
+    html = f'<html><body><p>{name}</p>{"<meta http-equiv=\"refresh\" content=\"0;url=" + url + "\">" if url else ""}</body></html>'
+    body = {"name": name, "alias": alias, "isPublished": False, "customHtml": html, "title": name}
+    r = _post(base, "/api/pages/new", body, token, timeout=timeout)
+    if r["status"] in (200, 201):
+        pg = (r["body"] or {}).get("page") or {}
+        new_id = pg.get("id")
+        if new_id:
+            return {"id": int(new_id), "name": name, "created": True}
+    return {"id": None, "error": f"POST /api/pages/new HTTP {r['status']}: {_format_err(r['body'])}"}
+
+
+def _format_err(body) -> str:
+    """把 Mautic 错误响应体（dict / str）压成一行。"""
+    if isinstance(body, dict):
+        errs = body.get("errors") or []
+        if isinstance(errs, list) and errs:
+            parts = []
+            for e in errs[:3]:
+                if isinstance(e, dict):
+                    parts.append(str(e.get("message") or e.get("detail") or e))
+                else:
+                    parts.append(str(e))
+            return "；".join(parts)
+        if body.get("message"):
+            return str(body["message"])
+        return json.dumps(body, ensure_ascii=False)[:300]
+    if isinstance(body, str):
+        return body[:300]
+    return str(body)[:300]
+
+
 def mautic_read_assets(env: str = "local") -> dict:
     """
     读取 Mautic 已存在的资产（email / segment / landingpage），供驾驶舱判断
@@ -313,6 +499,11 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
     """
     推送提案到 Mautic。返回结构化结果（含每步状态）。
     凭证缺失/无效 → dry-run，仅回调用清单。
+
+    新增「依赖资产确保存在」步骤：先看 proposal.mautic_lists / events 里是否引用了
+    未在 Mautic 真实存在的 segment / email / landing page，若有就按 name 自动新建
+    （草稿下线），把真实 ID 写回 events.properties.email 与 lists[].id。
+    这样 plan 阶段不需要预先知道 ID，PoC 端到端即可一键推送。
     """
     cfg = load_config(env)
     base = cfg["base_url"]
@@ -322,19 +513,106 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         return {
             "dry_run": True,
             "note": "config.json 未填 client_id/client_secret，仅生成调用清单（未触碰 Mautic）",
-            "calls": proposal["api_calls"],
+            "calls": proposal.get("api_calls") or [],
         }
 
     try:
         token = _get_token(base, client_id, client_secret)
     except Exception as e:  # noqa: BLE001
-        return {"dry_run": True, "note": f"凭证无效/无法获取 token: {e}", "calls": proposal["api_calls"]}
+        return {"dry_run": True, "note": f"凭证无效/无法获取 token: {e}", "calls": proposal.get("api_calls") or []}
 
     goal_cid = proposal["campaign"]["goal_id"]
     steps = []
 
+    # ===== 0) 依赖资产 ensure：Mautic 7 campaign 必须有 contact source（segment），否则 400；
+    #     events[].properties.email 也必须是真实 email id（0 占位会执行失败）；
+    #     email 创建也必须挂到 list（否则 400），所以先建 segment、把 segment id 传给 ensure_email。
+    ensure_log = []
+    seg_id = None
+    # 0.1 segment（lists）：proposal.mautic_lists 为空时，按 strategy_ref.segment_ref 自动建
+    if not proposal.get("mautic_lists"):
+        seg_name = ((proposal.get("strategy_ref") or {}).get("segment_ref")
+                    or proposal.get("campaign", {}).get("audience_segment") or "")
+        if seg_name:
+            rseg = ensure_segment(seg_name, env=env)
+            ensure_log.append({"asset": "segment", "name": seg_name, **rseg})
+            if rseg.get("id"):
+                seg_id = rseg["id"]
+                proposal["mautic_lists"] = [{"id": seg_id}]
+            else:
+                return {
+                    "dry_run": False, "env": env, "campaign_id": None,
+                    "steps": steps,
+                    "ensure_log": ensure_log,
+                    "error": f"无法创建/解析 segment '{seg_name}'：{rseg.get('error','?')}",
+                }
+    else:
+        # mautic_lists 已有 → 取第一个 id 作为 email 落点
+        try:
+            seg_id = int((proposal["mautic_lists"][0] or {}).get("id"))
+        except (TypeError, ValueError, IndexError):
+            seg_id = None
+
+    # 0.2 email（events[].properties.email == 0 时按 strategy_ref.email_ref 自动建）
+    str_ref = proposal.get("strategy_ref") or {}
+    main_email_name = str_ref.get("email_ref") or ""
+    followup_email_name = str_ref.get("email_followup_ref") or ""
+    # 已解析 email id 缓存（避免同一 email 被 ensure 多次）
+    email_id_cache: dict = {}
+
+    def _resolve_email_id(name: str, subject: str):
+        if not name:
+            return None
+        if name in email_id_cache:
+            return email_id_cache[name]
+        rem = ensure_email(name, subject=subject, env=env, list_id=seg_id)
+        ensure_log.append({"asset": "email", "name": name, **rem})
+        email_id_cache[name] = rem.get("id")
+        return rem.get("id")
+
+    if isinstance(proposal.get("mautic_events"), list):
+        for ev in proposal["mautic_events"]:
+            props = ev.get("properties") or {}
+            if ev.get("type") == "email.send" and (props.get("email") in (0, None, "")):
+                # 主邮件 vs 兜底邮件：用 subject 含「提醒」判定走 followup_ref，否则走 main
+                subject = (ev.get("name") or "").replace("发送邮件：", "")
+                if followup_email_name and ("提醒" in subject or "followup" in subject.lower()):
+                    name = followup_email_name
+                else:
+                    name = main_email_name
+                eid = _resolve_email_id(name, subject)
+                if eid:
+                    props["email"] = eid
+            ev["properties"] = props
+
+    # 0.3 关键：plan 阶段若 strategy.segment_id 缺失 → mautic_canvas.connections 没有
+    #     「lists → 根事件」连线，导致 Mautic 报「orphan events」无法发布。
+    #     这里补一条从 lists source 连到第一个无父节点的根事件。
+    canvas = proposal.get("mautic_canvas") or {}
+    conns = canvas.get("connections") or []
+    nodes = canvas.get("nodes") or []
+    if proposal.get("mautic_lists") and nodes:
+        target_ids = {c.get("targetId") for c in conns if isinstance(c, dict)}
+        source_ids = {c.get("sourceId") for c in conns if isinstance(c, dict)}
+        # 找「无父节点的事件 id」= 根事件
+        events = proposal.get("mautic_events") or []
+        ev_by_id = {e.get("id"): e for e in events if isinstance(e, dict) and e.get("id")}
+        root_id = None
+        for ev in events:
+            if isinstance(ev, dict) and not ev.get("parent") and ev.get("id"):
+                root_id = ev["id"]
+                break
+        # 如果 root_id 还没有作为某条 connection 的 targetId，就补一条 lists→root
+        if root_id and root_id not in target_ids:
+            conns.append({
+                "sourceId": "lists",
+                "targetId": root_id,
+                "anchors": {"source": "leadsource", "target": "top"},
+            })
+        canvas["connections"] = conns
+        proposal["mautic_canvas"] = canvas
+
     # 1) 创建 campaign（默认下线），同时带上 Mautic 7 期望的 events + canvasSettings（+ lists）
-    #    —— 事件图连线（parent/child）由 canvasSettings.connections 在 setEvents() 里建立。
     create_body = {"name": goal_cid, "isPublished": False}
     if proposal.get("mautic_events"):
         create_body["events"] = proposal["mautic_events"]
@@ -350,11 +628,18 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
 
     # 2) 审批通过后上线
     if new_id and approved:
-        r3 = _post(base, f"/api/campaigns/{new_id}/edit",
-                   {"isPublished": True}, token)
-        steps.append({"step": "publish", **r3})
+        # Mautic 7：发布用 PATCH /api/campaigns/{id}/edit（POST/404，PUT/500，PATCH 才能正确处理）
+        try:
+            r3 = _patch(base, f"/api/campaigns/{new_id}/edit",
+                        {"isPublished": True}, token)
+            steps.append({"step": "publish", **r3})
+        except Exception as e:  # noqa: BLE001
+            steps.append({"step": "publish", "status": 0, "body": f"网络/连接错误: {e}"})
 
-    return {"dry_run": False, "env": env, "campaign_id": new_id, "steps": steps}
+    return {
+        "dry_run": False, "env": env, "campaign_id": new_id,
+        "steps": steps, "ensure_log": ensure_log,
+    }
 
 
 # ---------------------- 每日自动取数（email_stats 等） ----------------------
