@@ -419,7 +419,7 @@ function setStatus(msg, ok){
 function escapeHtml(s){
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-function genCacheKey(obj){ return 'brief_genstrat_' + (obj||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+function genCacheKey(obj){ return 'brief_genstrat_' + (obj||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
 function genCacheGet(key){ try{ var v=sessionStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){ return null; } }
 function genCacheSet(key,val){ try{ sessionStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
 function doGen(force){
@@ -681,7 +681,7 @@ function setVal(name, val){
   if(el.dispatchEvent){ el.dispatchEvent(new Event('change', {bubbles:true})); }
   if(el.dispatchEvent){ el.dispatchEvent(new Event('input', {bubbles:true})); }
 }
-function aiCacheKey(obj){ return 'brief_aiparse_' + (obj||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+function aiCacheKey(obj){ return 'brief_aiparse_' + (obj||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
 function aiCacheGet(key){ try{ var v=sessionStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){ return null; } }
 function aiCacheSet(key,val){ try{ sessionStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
 function fillParse(j){
