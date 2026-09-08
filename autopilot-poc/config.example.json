@@ -1,0 +1,12 @@
+{
+  "local": {
+    "base_url": "http://localhost:8080",
+    "client_id": "",
+    "client_secret": ""
+  },
+  "prod": {
+    "base_url": "https://your-mautic.example.com",
+    "client_id": "",
+    "client_secret": ""
+  }
+}
