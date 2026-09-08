@@ -1362,6 +1362,46 @@ def _audience_plan_html() -> str:
     return head + rows
 
 
+def _build_replan_prompt(program: dict, gid: str, cid: str) -> str:
+    """组装「下一阶段策略」自包含提示词：目标 + 已完成 campaign 结果 + 下游当前策略，供 WorkBuddy 生成 StrategySpec。"""
+    goal = program.get("goal") or {}
+    kpi = goal.get("kpi") or {}
+    target = kpi.get("target")
+    target_txt = target if target not in (None, 0, 0.0) else "未设置（运营尚未给 R）"
+    done = next((c for c in program["campaigns"] if c["cid"] == cid), None)
+    lines = []
+    lines.append("你是营销 Agent 的 L1 策略合成器。下面给出一个 Program 的执行结果，请产出「下一阶段策略」的 StrategySpec JSON。")
+    lines.append("")
+    lines.append("## 目标")
+    lines.append(f"- goal_id: {gid}")
+    lines.append(f"- objective: {goal.get('objective', '')}")
+    lines.append(f"- KPI 转化目标 R: {target_txt}")
+    if done:
+        res = done.get("result") or done.get("feedback") or {}
+        lines.append("")
+        lines.append(f"## 刚完成的 campaign：{cid}（状态 {done.get('status', '')}）")
+        lines.append(f"- 达成率: {res.get('conversion')} · 退订率: {res.get('unsub')}")
+        lines.append(f"- 当前策略摘要: {_strategy_summary(done['strategy'])}")
+    lines.append("")
+    lines.append("## 仍待推进的下游 campaign（请按这些 cid 重写 strategy；可新增折扣挽回分支，cid 形如 {gid}_reengage_<原cid>）")
+    any_down = False
+    for c in program["campaigns"]:
+        if c["cid"] == cid:
+            continue
+        if c["status"] not in ("unreviewed", "reviewed", "pending"):
+            continue
+        any_down = True
+        lines.append(f"- {c['cid']}（状态 {c['status']}）: {_strategy_summary(c['strategy'])}")
+    if not any_down:
+        lines.append("（无待推进下游，可仅输出挽回/兜底分支或返回空 campaigns）")
+    lines.append("")
+    lines.append("## 输出要求")
+    lines.append("只输出可被 json.loads 解析的 StrategySpec 对象（不要解释文字、不要 markdown 代码块）。")
+    lines.append("campaigns 数组中：已存在的下游 cid 必须保持相同 cid（重写其 strategy）；你可新增挽回分支 campaign（cid 形如 {gid}_reengage_<原cid>）。")
+    lines.append("每个 campaign 字段遵循 StrategySpec schema：segment / email(ref+mode+brief) / content_variant / send_conditions / discount / tags_to_write / rationale。")
+    return "\n".join(lines)
+
+
 def _strategy_summary(s: dict) -> str:
     """Program 页每 campaign 的策略摘要：理由/依据/分群/邮件/变体/发送条件/tag。"""
     s = s or {}
@@ -1591,6 +1631,60 @@ def _mautic_campaign_name(campaign_id) -> str:
     return nm
 
 
+def _check_push_result(result: dict):
+    """真实判定 push() 返回是否成功。
+    - dry_run=True → 算成功（无凭证时正常降级）
+    - campaign_id 非空 → 真创建了
+    - 失败：steps 里第一步非 2xx，提取 Mautic 的 errors[] 给出可读原因
+    返回 (ok: bool, err: str)。"""
+    if not isinstance(result, dict):
+        return (False, "push() 返回结构异常")
+    if result.get("dry_run"):
+        return (True, "")  # dry-run 不是失败，只是没真改 Mautic
+    if result.get("campaign_id"):
+        # 即便 campaign_id 存在，仍校验每步 status（publish 步骤也可能 4xx）
+        for step in (result.get("steps") or []):
+            try:
+                st = int(step.get("status") or 0)
+            except (TypeError, ValueError):
+                st = 0
+            if 200 <= st < 300:
+                continue
+            return (False, f"{step.get('step','?')} HTTP {st}：{_format_mautic_err(step.get('body'))}")
+        return (True, "")
+    # campaign_id=None → 必失败
+    for step in (result.get("steps") or []):
+        try:
+            st = int(step.get("status") or 0)
+        except (TypeError, ValueError):
+            st = 0
+        if st and not (200 <= st < 300):
+            return (False, f"{step.get('step','?')} HTTP {st}：{_format_mautic_err(step.get('body'))}")
+    return (False, "Mautic 未返回 campaign_id（响应为空或解析失败）")
+
+
+def _format_mautic_err(body) -> str:
+    """把 Mautic 错误响应体（dict / str）压成一行可读字符串。"""
+    if isinstance(body, dict):
+        errs = body.get("errors") or []
+        if isinstance(errs, list) and errs:
+            parts = []
+            for e in errs[:3]:  # 最多 3 条
+                if isinstance(e, dict):
+                    msg = e.get("message") or e.get("detail") or json.dumps(e, ensure_ascii=False)
+                    parts.append(str(msg))
+                else:
+                    parts.append(str(e))
+            return "；".join(parts)
+        # 兜底：直接拿 detail / message
+        if body.get("message"):
+            return str(body["message"])
+        return json.dumps(body, ensure_ascii=False)[:300]
+    if isinstance(body, str):
+        return body[:300]
+    return str(body)[:300]
+
+
 def _program_body(program: dict, msg: str = "") -> str:
     gid = program["goal_id"]
     goal = program["goal"]
@@ -1635,13 +1729,14 @@ def _program_body(program: dict, msg: str = "") -> str:
                     f"（限定 ≤{sc_c.get('send_within_minutes') or 0}min 内发出）；审批人可驳回。</p>")
             ack_c = ("<label style='margin:6px 0 2px'><input type='checkbox' name='ack_quiet_exempt' "
                      "style='width:auto;display:inline-block'> 我已确认豁免静默窗</label>")
-        approve_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/approve' "
-                     f"style='margin:8px 0'>"
-                     f"<input name='approver' placeholder='审批人(真人)' style='width:160px;display:inline-block'>"
-                     f"{ack_c}<button class='btn sm' type='submit'>审批通过</button></form>")
-        push_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/push' style='display:inline'>"
-                  f"<button class='btn sm sec' type='submit'>推送</button></form>" if ap else
-                  "<span class='pill'>需先审批</span>")
+        if ap and ap.get("status") == "APPROVED":
+            approve_f = ""
+        else:
+            approve_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/approve' "
+                         f"style='margin:8px 0'>"
+                         f"<input name='approver' placeholder='审批人(真人)' style='width:160px;display:inline-block'>"
+                         f"{ack_c}<button class='btn sm' type='submit'>审批通过</button></form>")
+        push_f = ""  # 合并到下方 create_f（"创建并推送到 Mautic"），避免与"推送"按钮重复造成混淆
         # 新阶段创建按钮（#8）：已审批且（首波 / 上一波已完成并回填结果）才可点
         create_f = ""
         if ap and st not in ("executing", "approved_idle", "done_met", "done_below"):
@@ -1772,6 +1867,22 @@ def _program_body(program: dict, msg: str = "") -> str:
                       f"<input name='conversion' placeholder='达成率0~1（留空用回填）' style='width:150px;display:inline-block'>"
                       f"<input name='unsub' placeholder='退订率0~1' style='width:120px;display:inline-block'>"
                       f"<button class='btn sm ghost' type='submit'>标记完成并回写达成 → 改写下游</button></form>")
+        # L1 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成下一阶段策略，贴回后确认应用
+        replan_ui = (
+            f"<div style='margin-top:10px;border-top:1px dashed var(--line);padding-top:8px'>"
+            f"<p class='note'>L1 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成下一阶段策略，贴回后确认应用。</p>"
+            f"<button type='button' class='btn sm sec' "
+            f"onclick=\"copyReplanPrompt('{_esc(gid)}','{_esc(c['cid'])}')\">"
+            f"📋 复制信息（去 WorkBuddy 生成）</button>"
+            f"<span id='replan-status-{_esc(c['cid'])}' class='pill'></span>"
+            f"<form method='post' action='/program/{_esc(gid)}/confirm-strategy' style='margin-top:8px'>"
+            f"<input type='hidden' name='cid' value='{_esc(c['cid'])}'>"
+            f"<input name='conversion' placeholder='达成率0~1（可选）' style='width:150px;display:inline-block'>"
+            f"<input name='unsub' placeholder='退订率0~1' style='width:120px;display:inline-block'>"
+            f"<textarea name='strategy_spec' placeholder='粘贴 WorkBuddy 返回的策略 JSON（StrategySpec）' "
+            f"style='width:100%;height:84px;margin-top:6px;display:block'></textarea>"
+            f"<button class='btn sm' type='submit'>确认下阶段策略（应用 L1）</button></form></div>"
+        )
         result_txt = ""
         if c.get("result"):
             result_txt = (f"<span class='pill'>达成 {c['result'].get('conversion')} · "
@@ -1812,7 +1923,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                   f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
                   f"{_graph_svg(prop['graph'])}</details>"
                   f"{defer_note}{qh_c}{approve_f}{push_f}{create_f}{defer_f}{goals_f}{feedback_f}"
-                  f"{optimize_btn}{fa_html}{opt_html}{complete_f}</div>")
+                  f"{optimize_btn}{fa_html}{opt_html}{complete_f}{replan_ui}</div>")
     # Mautic 资产清单（新建 vs 调用已有）—— 整 Program 汇总（#6）
     cards += _mautic_asset_table(program, idx)
     # service 序列（与 promo 解耦，不占 promo 配额）
@@ -1867,11 +1978,21 @@ def _program_body(program: dict, msg: str = "") -> str:
     if program.get("changelog"):
         clog = "<div class='card'><h3>自适应变更记录</h3>"
         for e in program["changelog"]:
+            chs = e.get("changes") or []
             lines = "".join(
                 f"<li><code>{_esc(ch['cid'])}</code>：{'；'.join(ch['notes'])} "
                 f"<span class='pill'>→ plan_hash {_esc(ch['plan_hash'][:12])}</span></li>"
-                for ch in e["changes"])
-            clog += (f"<p><strong>上游 {_esc(e['completed_cid'])} 完成</strong> · 达成率 "
+                for ch in chs)
+            if e.get("source") == "l1_workbuddy":
+                extra = []
+                if e.get("applied"):
+                    extra.append(f"改写下游：{_esc('；'.join(e['applied']))}")
+                if e.get("added"):
+                    extra.append(f"新增分支：{_esc('；'.join(e['added']))}")
+                lines = "".join(f"<li>{x}</li>" for x in extra) or "<li>（仅标记完成，无下游改写）</li>"
+            clog += (f"<p><strong>上游 {_esc(e['completed_cid'])} 完成</strong>"
+                     + (" <span class='badge b-gov'>L1 策略</span>" if e.get("source") == "l1_workbuddy" else "")
+                     + f" · 达成率 "
                      f"{_esc('未设置（R 未给）' if e.get('target_unset') else e.get('ratio'))} · "
                      f"结果 {_esc(e['result'])}</p><ul>{lines}</ul>")
         clog += "</div>"
@@ -1930,8 +2051,42 @@ def _program_body(program: dict, msg: str = "") -> str:
                    f" · {program['n_campaigns']} 个 campaign"
                    f"{(' + ' + str(program.get('n_service_sequences', 0)) + ' 条服务序列') if program.get('n_service_sequences') else ''}"
                    f" · 策略来源 {src_html}</p>")
+    # 全局按钮点击反馈：点击提交按钮后立即禁用 + 改文案为「处理中…」，防止重复点击 / 反映已点
+    click_guard_js = (
+        "<script>(function(){"
+        "document.querySelectorAll('form').forEach(function(f){"
+        "f.addEventListener('submit', function(){"
+        "var btns=f.querySelectorAll('button[type=submit]');"
+        "btns.forEach(function(b){"
+        "b.disabled=true;"
+        "if(!b.dataset.origText){b.dataset.origText=b.innerText;}"
+        "b.innerText='处理中…';"
+        "b.style.opacity='0.65';"
+        "});"
+        "});"
+        "});"
+        "})();</script>"
+    )
+    replan_js = (
+        "<script>(function(){"
+        "window.copyReplanPrompt=function(gid,cid){"
+        "var el=document.getElementById('replan-status-'+cid);"
+        "function setStatus(m,ok){if(el){el.textContent=m;el.className='pill '+(ok?'b-ok':'b-warn');}}"
+        "function showManual(p){if(!el)return;el.innerHTML='';el.appendChild(document.createTextNode('请复制并在 WorkBuddy 发给小腾：'));var ta=document.createElement('textarea');ta.readOnly=true;ta.style.width='100%';ta.style.height='120px';ta.value=p;el.appendChild(ta);}"
+        "setStatus('正在生成复制信息...',false);"
+        "fetch('/program/'+gid+'/campaign/'+cid+'/replan-prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})"
+        ".then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})"
+        ".then(function(res){var j=res.j||{};"
+        "if(res.ok&&j.ok&&j.prompt){var p=j.prompt||'';"
+        "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(p).then(function(){setStatus('已复制：请在 WorkBuddy 粘贴给小腾生成下一阶段策略，再把返回的 JSON 贴回下方文本框',true);},function(){showManual(p);});}"
+        "else{showManual(p);}"
+        "}else{setStatus('生成失败：'+(j.error||'未知错误'),false);}"
+        "}).catch(function(e){setStatus('请求失败：'+e,false);});"
+        "};"
+        "})();</script>"
+    )
     return (f"{msg}{header_html}"
-            f"{plan_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}")
+            f"{plan_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}{click_guard_js}{replan_js}")
 
 
 def _proposal_body(d: dict, msg: str = "") -> str:
@@ -2132,6 +2287,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_campaign_feedback(gid, cid, jsbody)
         if path.endswith("/complete"):
             return self._handle_complete(jsbody)
+        if path.endswith("/replan-prompt") and "/campaign/" in path:
+            _parts = [x for x in path.split("/") if x]
+            if len(_parts) == 5 and _parts[2] == "campaign" and _parts[4] == "replan-prompt":
+                return self._handle_replan_prompt(_parts[1], _parts[3], jsbody)
+        if path.endswith("/confirm-strategy"):
+            return self._handle_confirm_strategy(jsbody)
         if path.endswith("/approve") and "/service/" in path:
             parts = [x for x in path.split("/") if x]
             return self._handle_service_approve(parts[1], parts[3], jsbody)
@@ -2555,11 +2716,18 @@ class Handler(BaseHTTPRequestHandler):
             msg = f"<div class='card'><p class='b-bad'>推送被拒：{_esc(reason)}</p></div>"
             return self._send(200, _page("Program", _program_body(p, msg)))
         result = push(s["proposal"], env="local", approved=True)
-        s["proposal"]["deployed"] = True
         s["proposal"]["deploy_result"] = result
-        _save_program(p)
-        msg = (f"<div class='card'><p class='b-ok'>服务序列已提交推送"
-               f"（{_esc('dry-run' if result.get('dry_run') else result.get('env'))}）：{_esc(reason)}</p></div>")
+        push_ok, push_err = _check_push_result(result)
+        if push_ok:
+            s["proposal"]["deployed"] = True
+            _save_program(p)
+            msg = (f"<div class='card'><p class='b-ok'>服务序列已提交推送"
+                   f"（{_esc('dry-run' if result.get('dry_run') else result.get('env'))}）：{_esc(reason)}</p></div>")
+        else:
+            s["proposal"]["deployed"] = False
+            _save_program(p)
+            msg = (f"<div class='card'><p class='b-bad'>服务序列推送失败（已回滚 deployed）：{_esc(push_err)}</p>"
+                   f"<p class='note'>可再次点击「推送」重试。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
     def _handle_campaign_push(self, gid, cid):
@@ -2578,10 +2746,22 @@ class Handler(BaseHTTPRequestHandler):
                    "请先由运营启用</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         result = push(c["proposal"], env="local", approved=True)
-        c["proposal"]["deployed"] = True
         c["proposal"]["deploy_result"] = result
-        _save_program(p)
-        msg = f"<div class='card'><p class='b-ok'>已提交推送（{_esc('dry-run' if result.get('dry_run') else result.get('env'))}）：{_esc(reason)}</p></div>"
+        # 真实反映 push 结果：失败时回退状态、显示错误
+        push_ok, push_err = _check_push_result(result)
+        if push_ok:
+            c["proposal"]["deployed"] = True
+            _save_program(p)
+            note = "dry-run" if result.get("dry_run") else result.get("env")
+            msg = f"<div class='card'><p class='b-ok'>已提交推送（{_esc(note)}）：{_esc(reason or '已上线')}</p></div>"
+        else:
+            c["proposal"]["deployed"] = False
+            _save_program(p)
+            msg = (f"<div class='card'><p class='b-bad'>推送失败（已回滚 status）：{_esc(push_err)}</p>"
+                   f"<p class='note'>Mautic 返回了错误，campaign 未真正创建。常见原因："
+                   f"①事件图缺少 contact source（segment list）→ Mautic 7 必填；"
+                   f"②email/landing 资产未先创建（properties.email=0 等占位）；"
+                   f"③campaign 名冲突。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
     def _handle_campaign_activate(self, gid, cid):
@@ -2634,16 +2814,34 @@ class Handler(BaseHTTPRequestHandler):
         if not c["proposal"].get("approval"):
             msg = f"<div class='card'><p class='b-bad'>{_esc(cid)} 尚未审批，不能创建（审批门是硬约束）</p></div>"
             return self._send(200, _page("Program", _program_body(p, msg)))
-        c["status"] = "approved_idle"   # 已审核-未执行：草稿已在 Mautic，待发布执行
+        # 推之前先记 approved_idle（避免直接跳 executing 之后再被回滚显得反复）
+        c["status"] = "approved_idle"
         _save_program(p)
         result = push(c["proposal"], env="local", approved=True)
-        c["proposal"]["deployed"] = True
         c["proposal"]["deploy_result"] = result
-        c["status"] = "executing"        # 推送已发布 → 执行中
-        _save_program(p)
-        note = "dry-run" if result.get("dry_run") else result.get("env")
-        msg = (f"<div class='card'><p class='b-ok'>{_esc(cid)} 已创建并推送到 Mautic（{_esc(note)}），"
-               f"状态：执行中。{_esc('（未填凭证，仅 dry-run）' if result.get('dry_run') else '')}</p></div>")
+        # 真实反映 push 结果：失败时回退 status、不置 deployed=True
+        push_ok, push_err = _check_push_result(result)
+        if push_ok:
+            c["proposal"]["deployed"] = True
+            c["status"] = "executing"
+            _save_program(p)
+            note = "dry-run" if result.get("dry_run") else result.get("env")
+            msg = (f"<div class='card'><p class='b-ok'>{_esc(cid)} 已创建并推送到 Mautic（{_esc(note)}），"
+                   f"状态：执行中。{_esc('（未填凭证，仅 dry-run）' if result.get('dry_run') else '')}</p></div>")
+        else:
+            # 失败：保持 approved_idle，不算 deployed
+            c["proposal"]["deployed"] = False
+            # status 不动（已设 approved_idle），不强行 executing
+            _save_program(p)
+            mcid = result.get("campaign_id")
+            mcid_txt = f"（campaign_id={_esc(mcid)}）" if mcid else ""
+            msg = (f"<div class='card'><p class='b-bad'>{_esc(cid)} 推送失败{mcid_txt}：{_esc(push_err)}</p>"
+                   f"<p class='note'>Mautic 真实响应未创建 campaign。常见原因："
+                   f"①事件图缺少 contact source（segment list）→ Mautic 7 必填；"
+                   f"②email/landing 资产未先在 Mautic 创建（properties.email=0 占位 → 引用不存在的 id）；"
+                   f"③campaign 名重复或别名冲突。</p>"
+                   f"<p class='note'>已自动回滚：status 保持 approved_idle，proposal.deployed=False。"
+                   f"修复后可再次点击「创建并推送到 Mautic」重试。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
     def _handle_program_auto_feedback(self, gid, date_str):
@@ -2922,6 +3120,93 @@ class Handler(BaseHTTPRequestHandler):
         msg = (f"<div class='card'><p class='b-ok'>上游 {_esc(cid)} 完成（{_esc(done_lbl)}），"
                f"判定 <b>{_esc(verdict_lbl or '—')}</b>，达成率 {_esc(ratio_txt)}<br>"
                f"下游改写：{_esc(changed)}{branch_txt}</p></div>")
+        self._send(200, _page("Program", _program_body(p, msg)))
+
+    def _handle_replan_prompt(self, gid, cid, body):
+        """构建「下一阶段策略」自包含提示词，供运营复制到 WorkBuddy 生成后贴回。返回 JSON。"""
+        p = _load_program(gid)
+        if not p:
+            return self._send_json({"ok": False, "error": "Program 不存在"})
+        try:
+            prompt = _build_replan_prompt(p, gid, cid)
+        except Exception as e:  # noqa: BLE001
+            return self._send_json({"ok": False, "error": f"构建提示词失败：{e}"})
+        return self._send_json({"ok": True, "prompt": prompt})
+
+    def _handle_confirm_strategy(self, form):
+        """L1 辅助路径（替代启发式）：粘贴 WorkBuddy 返回的策略 JSON，标记上游完成并应用到下游。"""
+        gid = self.path.split("/")[2] if self.path.startswith("/program/") else ""
+        p = _load_program(gid)
+        if not p:
+            return self._send(404, _page("未找到", "<p>Program 不存在</p>"))
+        cid = (form.get("cid") or "").strip()
+        c = next((x for x in p["campaigns"] if x["cid"] == cid), None)
+        if not c:
+            return self._send(404, _page("未找到", "<p>campaign 不存在</p>"))
+        raw = (form.get("strategy_spec") or "").strip()
+        if not raw:
+            msg = ("<div class='card'><p class='b-bad'>请先粘贴 WorkBuddy 返回的策略 JSON，"
+                   "再点「确认下阶段策略」。</p></div>")
+            return self._send(200, _page("Program", _program_body(p, msg)))
+        # 解析 StrategySpec
+        try:
+            spec = parse_strategy_spec(raw)
+            from goal_intake import GoalSpec
+            goal = GoalSpec(**p["goal"])
+            strategies = strategies_from_spec(spec, goal)
+        except Exception as e:  # noqa: BLE001
+            msg = f"<div class='card'><p class='b-bad'>策略解析失败：{_esc(str(e))}</p></div>"
+            return self._send(200, _page("Program", _program_body(p, msg)))
+        # 记录上游完成结果（与 _handle_complete 同口径）
+        conv_raw = (form.get("conversion", "") or "").strip()
+        unsub_raw = (form.get("unsub", "") or "").strip()
+        if not conv_raw and c.get("feedback"):
+            conv_raw = c["feedback"].get("conv_rate", 0)
+        if not unsub_raw and c.get("feedback"):
+            unsub_raw = c["feedback"].get("unsub_rate", 0)
+        result = {"conversion": float(conv_raw or 0), "unsub": float(unsub_raw or 0)}
+        cmp_target = c.get("conv_target")
+        if cmp_target is None:
+            cmp_target = (p["goal"].get("kpi") or {}).get("target")
+        met = (float(result["conversion"] or 0) >= float(cmp_target or 0))
+        c["status"] = "done_met" if met else "done_below"
+        c["result"] = result
+        # 应用 spec 到下游（仅改待推进且 cid 匹配者；spec 独有的 cid 视为 L1 新增分支）
+        from plan_compiler import compile
+        spec_map = {s["cid"]: s for s in strategies}
+        applied, added = [], []
+        for c2 in p["campaigns"]:
+            if c2["cid"] == cid:
+                continue
+            if c2["status"] not in ("unreviewed", "reviewed", "pending"):
+                continue
+            if c2["cid"] in spec_map:
+                new_s = spec_map[c2["cid"]]
+                c2["strategy"] = new_s
+                c2["proposal"] = compile(goal, new_s)
+                applied.append(c2["cid"])
+        existing = {x["cid"] for x in p["campaigns"]}
+        for s in strategies:
+            if s["cid"] not in existing:
+                prop = compile(goal, s)
+                p["campaigns"].append({
+                    "cid": s["cid"], "wave_id": s.get("wave_id"),
+                    "strategy": s, "proposal": prop,
+                    "status": "unreviewed", "result": None,
+                })
+                added.append(s["cid"])
+        p["n_campaigns"] = len(p["campaigns"])
+        p["changelog"].append({
+            "completed_cid": cid, "result": result, "ratio": None,
+            "verdict": "l1_workbuddy", "target_unset": False,
+            "changes": [], "applied": applied, "added": added,
+            "source": "l1_workbuddy", "at": time.time(),
+        })
+        _save_program(p)
+        msg = (f"<div class='card'><p class='b-ok'>上游 {_esc(cid)} 完成（L1 策略已应用）· "
+               f"达成率 {result['conversion']} · 退订率 {result['unsub']}<br>"
+               f"改写下游：{_esc('；'.join(applied) or '无匹配下游')}<br>"
+               f"新增分支：{_esc('；'.join(added) or '无')}</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
     def _handle_legacy_approve(self, gid, form):
