@@ -802,6 +802,10 @@ def build_strategy_prompt(brief: dict) -> str:
     oc_json = oc if oc else "0.0"
     cons = (brief.get("constraints") or "").strip().replace("\n", "；").replace("\r", "")
     name = (brief.get("goal_name") or "").strip() or "(未命名，请用 goal_id 或一句话概括)"
+    # 简单 slug（无 re 依赖）：空白转下划线、非字母数字下划线剔除
+    raw_gid = (brief.get("goal_id") or brief.get("goal_name") or "campaign").strip().lower()
+    goal_id = "_".join(raw_gid.split()) if raw_gid else "campaign"
+    goal_id = "".join(c for c in goal_id if c.isalnum() or c == "_") or "campaign"
     # locale 可能是多选 list
     _loc = brief.get("locale")
     if isinstance(_loc, (list, tuple)):
@@ -890,7 +894,8 @@ def build_strategy_prompt(brief: dict) -> str:
         "6. 严格遵守约束/红线（免打扰、抑制名单、退订熔断 0.3% 等）。\n"
         "7. 只输出 JSON。\n"
     )
-    return tpl.format(name=name, objective=objective, start_date=start_date, end_date=end_date,
+    return tpl.format(name=name, goal_id=goal_id, objective=objective,
+                      start_date=start_date, end_date=end_date,
                       oc=oc, lang_label=lang_label, locale=locale, budget=budget,
                       is_revenue=str(is_revenue).lower(), cons=cons,
                       aud_pkg=aud_pkg, aud_block=aud_block, oc_json=oc_json,
