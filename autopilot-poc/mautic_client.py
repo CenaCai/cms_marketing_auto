@@ -29,6 +29,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 资产列表进程内缓存（Mautic 全量拉取慢，避免每页刷新重复请求）
 _ASSET_CACHE_TTL = 300  # 秒
 _ASSET_CACHE = {"ts": 0.0, "data": None}
+_CAMP_CACHE = {"ts": 0.0, "data": None}
+# Stats API 缓存：同一进程内重复取相同 table 直接走内存（auto_feedback 一个事件一查，3 个事件 = 3 次拉）
+_STATS_CACHE_TTL = 120  # 秒
+_STATS_CACHE: dict[str, dict] = {}  # table → {"ts": float, "rows": list}
+_STATS_LOCK_NAME = "_stats_lock"
+import threading as _thr_stats  # noqa: E402
+try:
+    _STATS_LOCK = _thr_stats.Lock()
+except Exception:  # pragma: no cover
+    _STATS_LOCK = None
 _ASSET_LOCK = threading.Lock()
 
 # 绕过任何 HTTP 代理直连 Mautic（沙箱环境下 localhost 经默认代理会偶发 502；
@@ -56,6 +66,64 @@ def _safe_json(s: str):
         return json.loads(s)
     except Exception:  # noqa: BLE001
         return s[:500]
+
+
+def _stats_get(table: str, env: str = "local", limit: int = 1000, timeout: int = 40) -> list:
+    """读取 Stats API 整表 → 列表（本地按需过滤；Mautic 7 stats 接口对 where/filter 支持不全，先取全量）。
+    进程内缓存 _STATS_CACHE_TTL 秒，避免同一次 auto-feedback 对同一 table 反复拉。"""
+    cache_key = f"{env}:{table}:{limit}"
+    now = time.time()
+    cached = _STATS_CACHE.get(cache_key)
+    if cached and (now - cached["ts"]) < _STATS_CACHE_TTL:
+        return cached["rows"]
+    try:
+        cfg = load_config(env)
+    except Exception:  # noqa: BLE001
+        return []
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return []
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception:  # noqa: BLE001
+        return []
+    res = _get(base, f"/api/stats/{table}?limit={limit}", token, timeout=timeout)
+    if not isinstance(res, dict):
+        return []
+    bucket = res.get("stats", res)
+    if isinstance(bucket, list):
+        rows = [r for r in bucket if isinstance(r, dict)]
+    elif isinstance(bucket, dict):
+        if "items" in bucket and isinstance(bucket["items"], list):
+            rows = [r for r in bucket["items"] if isinstance(r, dict)]
+        else:
+            rows = [r for r in bucket.values() if isinstance(r, dict)]
+    else:
+        rows = []
+    _STATS_CACHE[cache_key] = {"ts": now, "rows": rows}
+    return rows
+
+
+def _parse_dt(s: str):
+    """宽松解析 Mautic 时间串 'YYYY-MM-DD HH:MM:SS' → datetime；空串返回 None。"""
+    if not s:
+        return None
+    from datetime import datetime
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(s[:19], fmt[:19] if "+" not in s and "T" not in fmt else fmt)
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
+def _in_date(s: str, date_str: str) -> bool:
+    """判断 Mautic 时间串 s 是否属于 date_str (YYYY-MM-DD) 当天。"""
+    dt = _parse_dt(s)
+    if not dt:
+        return False
+    return dt.strftime("%Y-%m-%d") == date_str
 
 
 def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int = 15) -> str:
@@ -173,6 +241,74 @@ def mautic_read_assets(env: str = "local") -> dict:
     return out
 
 
+def mautic_read_campaigns(env: str = "local") -> dict:
+    """读取 Mautic campaigns 列表 → {"available": bool, "by_id": {id: name}, "by_name": {name: id}}。
+    进程内缓存 _ASSET_CACHE_TTL 秒（供 campaign 名→id / id→名 反查）。"""
+    with _ASSET_LOCK:
+        if _CAMP_CACHE["data"] is not None and (time.time() - _CAMP_CACHE["ts"]) < _ASSET_CACHE_TTL:
+            return _CAMP_CACHE["data"]
+    empty = {"available": False, "by_id": {}, "by_name": {}}
+    try:
+        cfg = load_config(env)
+    except Exception:  # noqa: BLE001
+        return empty
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return empty
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception:  # noqa: BLE001
+        return empty
+    res = _get(base, "/api/campaigns?limit=0", token, timeout=45)
+    if res is None:
+        return empty
+    b = res.get("campaigns") if isinstance(res, dict) else res
+    if isinstance(b, dict):
+        items = list(b.values())
+    elif isinstance(b, list):
+        items = b
+    else:
+        items = []
+    by_id, by_name = {}, {}
+    for it in items:
+        if isinstance(it, dict) and it.get("id") is not None:
+            nm = (it.get("name") or "").strip()
+            by_id[str(it["id"])] = nm
+            if nm:
+                by_name[nm] = str(it["id"])
+    out = {"available": True, "by_id": by_id, "by_name": by_name}
+    with _ASSET_LOCK:
+        _CAMP_CACHE["ts"] = time.time()
+        _CAMP_CACHE["data"] = out
+    return out
+
+
+def mautic_get_campaign(campaign_id, env: str = "local") -> dict:
+    """读取单个 campaign（不缓存，保证改名后实时同步）→ {"id","name","events"}；失败/缺失返回 {}。"""
+    if not campaign_id:
+        return {}
+    try:
+        cfg = load_config(env)
+    except Exception:  # noqa: BLE001
+        return {}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception:  # noqa: BLE001
+        return {}
+    res = _get(base, f"/api/campaigns/{campaign_id}", token, timeout=10)
+    if not isinstance(res, dict):
+        return {}
+    c = res.get("campaign", res)
+    if not isinstance(c, dict):
+        return {}
+    return {"id": c.get("id"), "name": (c.get("name") or "").strip(), "events": c.get("events") or []}
+
+
 def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
     """
     推送提案到 Mautic。返回结构化结果（含每步状态）。
@@ -219,3 +355,152 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         steps.append({"step": "publish", **r3})
 
     return {"dry_run": False, "env": env, "campaign_id": new_id, "steps": steps}
+
+
+# ---------------------- 每日自动取数（email_stats 等） ----------------------
+def fetch_email_event_stats(event_id, date_str: str, env: str = "local") -> dict:
+    """按 Mautic campaign 事件 id + 日期，取该事件的 email_stats 行：
+    发送数 sent = 行数(排除 is_failed=1)；
+    打开数 opened = sum(open_count)（更准，反映重复打开）或 is_read=1 行数。
+    返回 {"sent": int, "opened": int, "_matched_rows": int}"""
+    rows = _stats_get("email_stats", env=env, limit=2000, timeout=40)
+    if not rows:
+        return {"sent": 0, "opened": 0, "_matched_rows": 0}
+    eid = str(event_id)
+    sent = 0
+    opened = 0
+    matched = 0
+    for r in rows:
+        if str(r.get("source") or "") != "campaign.event":
+            continue
+        if str(r.get("source_id") or "") != eid:
+            continue
+        if not _in_date(r.get("date_sent", ""), date_str):
+            continue
+        if str(r.get("is_failed") or "0") == "1":
+            continue
+        matched += 1
+        sent += 1
+        try:
+            opened += int(r.get("open_count") or 0)
+        except (TypeError, ValueError):
+            if str(r.get("is_read") or "0") == "1":
+                opened += 1
+    return {"sent": sent, "opened": opened, "_matched_rows": matched}
+
+
+def fetch_landing_page_clicks(page_id, date_str: str, env: str = "local") -> int:
+    """按落地页 id + 日期，取 page_hits 中匹配的行数（视为该页点击）。
+    Mautic 把 email 链接点击经 channel_url_trackables 落到 page_hits，按 page_id 统计。"""
+    if not page_id:
+        return 0
+    rows = _stats_get("page_hits", env=env, limit=2000, timeout=40)
+    pid = str(page_id)
+    n = 0
+    for r in rows:
+        if str(r.get("page_id") or "") != pid:
+            continue
+        if not _in_date(r.get("date_hit", ""), date_str):
+            continue
+        n += 1
+    return n
+
+
+def fetch_form_submissions(form_id, date_str: str, env: str = "local") -> int:
+    """按 form id + 日期，取 form_submissions 行数（视为该 form 的"转化"事件）。"""
+    if not form_id:
+        return 0
+    rows = _stats_get("form_submissions", env=env, limit=2000, timeout=40)
+    fid = str(form_id)
+    n = 0
+    for r in rows:
+        if str(r.get("form_id") or "") != fid:
+            continue
+        if not _in_date(r.get("date_submitted", ""), date_str):
+            continue
+        n += 1
+    return n
+
+
+def fetch_unsub_count(env: str = "local", date_str: str = "") -> int:
+    """退订：lead_donotcontact 中 date_added 在 date_str 当天的行数（best effort，按天统计全量退订）。"""
+    rows = _stats_get("lead_donotcontact", env=env, limit=2000, timeout=40)
+    if not date_str:
+        return len(rows)
+    n = 0
+    for r in rows:
+        # lead_donotcontact 常见字段 date_added
+        for k in ("date_added", "dateUnsubscribed", "dateAdded"):
+            if r.get(k) and _in_date(str(r[k]), date_str):
+                n += 1
+                break
+    return n
+
+
+def _event_props(ev: dict) -> dict:
+    """统一从 Mautic 事件对象取 properties（兼容 ev 顶层字段与 ev.properties）。"""
+    p = ev.get("properties") or {}
+    if not isinstance(p, dict):
+        p = {}
+    # 兼容：email 字段可能直接在 properties，也可能在 channelId
+    if not p.get("email") and ev.get("channelId"):
+        try:
+            p["email"] = int(ev["channelId"])
+        except (TypeError, ValueError):
+            pass
+    if not p.get("page") and ev.get("channelId"):
+        try:
+            p["page"] = int(ev["channelId"])
+        except (TypeError, ValueError):
+            pass
+    return p
+
+
+def auto_feedback_for_campaign(mcid, date_str: str, env: str = "local") -> dict:
+    """对单个 Mautic campaign，按 date_str 聚合五指标。
+    返回 {sent, opened, clicked, converted, unsub, conv_rate, unsub_rate, _evidence, _errors}。"""
+    info = mautic_get_campaign(mcid, env=env)
+    events = info.get("events") or []
+    out = {"sent": 0, "opened": 0, "clicked": 0, "converted": 0, "unsub": 0,
+           "conv_rate": 0.0, "unsub_rate": 0.0, "_evidence": [], "_errors": []}
+    if not events:
+        out["_errors"].append("no_events")
+        return out
+    sent_total, opened_total, clicked_total, converted_total = 0, 0, 0, 0
+    for ev in events:
+        et = (ev.get("type") or "").lower()
+        p = _event_props(ev)
+        try:
+            if et == "email.send":
+                eid = ev.get("id")
+                s = fetch_email_event_stats(eid, date_str, env=env)
+                sent_total += s["sent"]; opened_total += s["opened"]
+                if s["sent"]:
+                    out["_evidence"].append(f"email.send(ev={eid}, email={p.get('email')}) → sent={s['sent']} opened={s['opened']}")
+            elif et == "page.hit":
+                pid = p.get("page")
+                if pid:
+                    c = fetch_landing_page_clicks(pid, date_str, env=env)
+                    clicked_total += c        # 计入 clicked：Mautic 把邮件链接点击经 channel_url_trackables 落到 page_hits
+                    converted_total += c     # 同时计入 converted：LP 访问即转化（无 form 时 page.hit 是 Mautic 原生唯一信号）
+                    if c:
+                        out["_evidence"].append(
+                            f"page.hit(ev={ev.get('id')}, page={pid}) → visits={c} (clicked + converted)")
+            elif et in ("form.submit",):
+                fid = p.get("form")
+                if fid:
+                    c = fetch_form_submissions(fid, date_str, env=env)
+                    converted_total += c     # form 提交累加在 converted 上（比 page.hit 更深的转化信号）
+                    if c:
+                        out["_evidence"].append(f"form.submit(ev={ev.get('id')}, form={fid}) → submits={c}")
+        except Exception as e:  # noqa: BLE001
+            out["_errors"].append(f"{et}({ev.get('id')}): {e}")
+    out["sent"] = sent_total
+    out["opened"] = opened_total
+    out["clicked"] = clicked_total
+    out["converted"] = converted_total
+    out["unsub"] = fetch_unsub_count(env=env, date_str=date_str)
+    out["conv_rate"] = round(converted_total / sent_total, 4) if sent_total else 0.0
+    out["unsub_rate"] = round(out["unsub"] / sent_total, 4) if sent_total else 0.0
+    return out
+

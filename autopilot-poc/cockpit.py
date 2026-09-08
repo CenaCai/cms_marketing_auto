@@ -49,7 +49,8 @@ PORT = 8090
 HOST = "127.0.0.1"
 
 # 多选表单字段（提交时同名多值，后端按 list 解析）
-MULTI_FORM_FIELDS = {"audience_age", "audience_education", "audience_industry",
+MULTI_FORM_FIELDS = {"audience_age", "audience_gender", "audience_income",
+                     "audience_education", "audience_industry",
                      "audience_source", "audience_region", "locale"}
 
 # --------------------------- 6 态状态机 ---------------------------
@@ -164,6 +165,21 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);bord
 .b-idle{background:#eef0f3;color:#5f5e5a}
 .req{color:#c0392b;font-weight:700;margin-right:2px}  /* 必填星号 */
 .opt{color:#7f8896;font-size:11px;font-weight:500;margin-left:2px}  /* 可选小标 */
+/* 多选 chip 选择器（替代原生 select multiple） */
+.chip-group{display:flex;flex-wrap:wrap;gap:8px;padding:3px 0 13px;border-bottom:1px dashed #d3d9e2}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid var(--line);
+ border-radius:999px;background:#fcfdff;font-size:13px;line-height:1;cursor:pointer;user-select:none;
+ transition:border-color .12s,background .12s,color .12s}
+.chip:hover{border-color:var(--brand);background:var(--brand-soft)}
+.chip input{display:none}
+.chip:has(input:checked){background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+/* 营销目标「最近填写」历史下拉 */
+.obj-history{position:relative;background:#fff;border:1px solid var(--line);border-radius:10px;
+ margin-top:4px;box-shadow:var(--shadow);z-index:20;max-height:210px;overflow:auto}
+.obj-hist-empty{padding:7px 12px;color:var(--muted);font-size:12px;border-bottom:1px solid #f0f2f5}
+.obj-hist-item{padding:8px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid #f0f2f5}
+.obj-hist-item:last-child{border-bottom:0}
+.obj-hist-item:hover{background:var(--brand-soft);color:var(--brand)}
 /* KPI 看板 (issue 2026-09-07) */
 .kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:8px 0}
 .kpi-card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;text-align:center;position:relative;overflow:hidden}
@@ -383,8 +399,10 @@ STRATEGY_GEN_JS = """
 (function(){
 function gatherBrief(){
   var get=function(n){var el=document.querySelector('[name='+n+']');return el?(el.value||'').trim():'';};
-  var getMulti=function(n){var el=document.querySelector('[name='+n+']');
-    if(el && el.multiple){return Array.from(el.selectedOptions).map(function(o){return o.value;}).filter(function(v){return v!=='';});}
+  var getMulti=function(n){
+    var cbs=document.querySelectorAll('input[type=checkbox][name='+n+']:checked');
+    if(cbs.length){return Array.from(cbs).map(function(o){return o.value;});}
+    var el=document.querySelector('[name='+n+']');
     return el?(el.value||'').trim():'';};
   var fields=['age','gender','income','education','industry','source','region'];
   var profile={};
@@ -401,11 +419,38 @@ function setStatus(msg, ok){
 function escapeHtml(s){
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-function doGen(){
+function genCacheKey(obj){ return 'brief_genstrat_' + (obj||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+function genCacheGet(key){ try{ var v=sessionStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){ return null; } }
+function genCacheSet(key,val){ try{ sessionStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+function doGen(force){
+  force = !!force;
   var btn=document.getElementById('gen-strategy-btn');
   if(btn) btn.disabled=true;
-  setStatus('正在生成策略…', false);
   var brief=gatherBrief();
+  setStatus('正在生成策略…', false);
+  // 会话内记忆：相同营销目标（归一化）不再调 AI，直接复用上次生成的 StrategySpec
+  var obj=(brief.objective||'').trim();
+  var key=obj?genCacheKey(obj):null;
+  if(key && !force){
+    var cached=genCacheGet(key);
+    if(cached && cached.strategy_spec){
+      var ta0=document.querySelector('[name=strategy_spec]');
+      if(ta0){ ta0.value=cached.strategy_spec; }
+      var msg='♻️ 会话内复用上次策略（未调用 AI）'+(cached.via?(' · '+cached.via):'')+
+              ' <a href="#" id="gen-strategy-force" style="margin-left:8px">重新生成（忽略缓存）</a>';
+      setStatus(msg, true);
+      var forceLink=document.getElementById('gen-strategy-force');
+      if(forceLink){
+        forceLink.onclick=function(ev){
+          ev.preventDefault();
+          sessionStorage.removeItem(key);
+          doGen(true);
+        };
+      }
+      if(btn) btn.disabled=false;
+      return;
+    }
+  }
   fetch('/brief/generate-strategy', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(brief)
@@ -415,6 +460,7 @@ function doGen(){
       if(res.ok && j.ok && j.strategy_spec){
         var ta=document.querySelector('[name=strategy_spec]');
         if(ta){ ta.value=j.strategy_spec; }
+        if(key){ genCacheSet(key, {strategy_spec:j.strategy_spec, via:j.via}); }
         setStatus('✅ 已生成 StrategySpec 并填入上方文本框', true);
       } else if(j.fallback){
         var p=j.prompt||'';
@@ -434,8 +480,39 @@ function doGen(){
     .catch(function(e){ setStatus('请求失败：'+e, false); })
     .finally(function(){ if(btn) btn.disabled=false; });
 }
+function doCopyPrompt(){
+  var btn=document.getElementById('copy-prompt-btn');
+  if(btn) btn.disabled=true;
+  setStatus('正在生成基础信息…', false);
+  var brief=gatherBrief();
+  fetch('/brief/strategy-prompt', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(brief)
+  }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+    .then(function(res){
+      var j=res.j||{};
+      if(res.ok && j.ok && j.prompt){
+        var p=j.prompt||'';
+        if(navigator.clipboard && navigator.clipboard.writeText){
+          navigator.clipboard.writeText(p).then(function(){
+            setStatus('✅ 已复制基础信息：请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框', true);
+          }, function(){
+            setStatus('自动复制失败，请手动复制：<br><textarea readonly style="width:100%;height:120px">'+escapeHtml(p)+'</textarea>', false);
+          });
+        } else {
+          setStatus('请复制并在 WorkBuddy 发给小腾：<br><textarea readonly style="width:100%;height:120px">'+escapeHtml(p)+'</textarea>', false);
+        }
+      } else {
+        setStatus('复制失败：'+(j.error||'未知错误'), false);
+      }
+    })
+    .catch(function(e){ setStatus('请求失败：'+e, false); })
+    .finally(function(){ if(btn) btn.disabled=false; });
+}
 var b=document.getElementById('gen-strategy-btn');
 if(b){ b.addEventListener('click', function(ev){ ev.preventDefault(); doGen(); }); }
+var cb=document.getElementById('copy-prompt-btn');
+if(cb){ cb.addEventListener('click', function(ev){ ev.preventDefault(); doCopyPrompt(); }); }
 })();
 """
 
@@ -527,6 +604,48 @@ def load_deepseek_config() -> dict:
     }
 
 
+def _deepseek_completion(system_prompt: str, user_content: str, temperature: float = 0.0) -> str:
+    """
+    调 DeepSeek chat/completions，返回 message.content 文本。
+    未配置 / 请求失败 / 解析失败时 raise RuntimeError（带可读信息）。
+    （意图识别与策略合成共用，避免两处重复拼请求。）
+    """
+    cfg = load_deepseek_config()
+    if not cfg["enabled"]:
+        raise RuntimeError("未配置 DeepSeek（config.json [deepseek].api_key 或 DEEPSEEK_API_KEY）")
+    payload = {
+        "model": cfg["model"],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": temperature,
+    }
+    import urllib.request as _u, urllib.error as _ue  # noqa: E402
+    url = cfg["base_url"] + "/chat/completions"
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = _u.Request(url, data=data, method="POST")
+    for k, v in cfg["headers"].items():
+        req.add_header(k, v)
+    try:
+        with _u.urlopen(req, timeout=cfg["timeout"]) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except _ue.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"DeepSeek HTTP {e.code}: {raw[:500]}")
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"DeepSeek 请求失败：{e}")
+    try:
+        outer = json.loads(raw)
+        content = (outer.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"DeepSeek 返回解析失败：{e}；原文：{raw[:500]}")
+    if not content:
+        raise RuntimeError("DeepSeek 返回空内容")
+    return content
+
+
 # 「营销目标 → AI 意图识别」按钮逻辑（DeepSeek）：读取目标文本，回填简称/日期/年龄/性别/收入/渠道来源等字段。
 AI_PARSE_JS = """
 (function(){
@@ -537,6 +656,15 @@ function setStatus(msg, ok){
 }
 function setVal(name, val){
   if(val===undefined || val===null || val==='') return;
+  var cbs=document.querySelectorAll('input[type=checkbox][name='+name+']');
+  if(cbs.length){
+    var arr=Array.isArray(val)?val.map(String):String(val).split(',').map(function(s){return s.trim();});
+    cbs.forEach(function(cb){
+      cb.checked = arr.indexOf(cb.value)>=0;
+      if(cb.dispatchEvent){ cb.dispatchEvent(new Event('change',{bubbles:true})); }
+    });
+    return;
+  }
   var el=document.querySelector('[name='+name+']');
   if(!el) return;
   if(el.tagName==='SELECT'){
@@ -553,13 +681,56 @@ function setVal(name, val){
   if(el.dispatchEvent){ el.dispatchEvent(new Event('change', {bubbles:true})); }
   if(el.dispatchEvent){ el.dispatchEvent(new Event('input', {bubbles:true})); }
 }
-function doParse(){
+function aiCacheKey(obj){ return 'brief_aiparse_' + (obj||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+function aiCacheGet(key){ try{ var v=sessionStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){ return null; } }
+function aiCacheSet(key,val){ try{ sessionStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+function fillParse(j){
+  setVal('goal_name', j.goal_name);
+  setVal('start_date', j.start_date);
+  setVal('end_date', j.end_date);
+  setVal('overall_conv', j.overall_conv);
+  setVal('is_revenue', j.is_revenue);
+  setVal('budget', j.budget);
+  setVal('locale', j.locale);
+  setVal('audience_age', j.audience_age);
+  setVal('audience_gender', j.audience_gender);
+  setVal('audience_income', j.audience_income);
+  setVal('audience_source', j.audience_source);
+  setVal('audience_education', j.audience_education);
+  setVal('audience_industry', j.audience_industry);
+  setVal('audience_region', j.audience_region);
+  setVal('constraints', j.constraints);
+  setVal('strategy_spec', j.strategy_spec);
+}
+function doParse(force){
+  force = !!force;
   var btn=document.getElementById('ai-parse-btn');
   if(btn) btn.disabled=true;
-  setStatus('正在调用 DeepSeek 识别意图…', false);
   var el=document.querySelector('[name=objective]');
   var objective=el?(el.value||'').trim():'';
-  if(!objective){ setStatus('请先填写「营销目标」文本', false); if(btn) btn.disabled=false; return; }
+  if(!objective){ if(btn) btn.disabled=false; setStatus('请先填写「营销目标」文本', false); return; }
+  var key=aiCacheKey(objective);
+  if(!force){
+    var cached=aiCacheGet(key);
+    if(cached && cached.ok){
+      fillParse(cached);
+      var filled=(cached.filled||[]).join('、')||'无可回填字段';
+      var msg='♻️ 会话内复用上次识别结果（未调用 DeepSeek）：'+filled+
+              ' <a href="#" id="ai-parse-force" style="margin-left:8px">重新识别（忽略缓存）</a>';
+      setStatus(msg, true);
+      var forceLink=document.getElementById('ai-parse-force');
+      if(forceLink){
+        forceLink.onclick=function(ev){
+          ev.preventDefault();
+          sessionStorage.removeItem(key);
+          doParse(true);
+        };
+      }
+      if(btn) btn.disabled=false;
+      return;
+    }
+  }
+  setStatus('正在调用 DeepSeek 识别意图…', false);
   fetch('/brief/ai-parse', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({objective:objective})
@@ -567,22 +738,8 @@ function doParse(){
     .then(function(res){
       var j=res.j||{};
       if(res.ok && j.ok){
-        setVal('goal_name', j.goal_name);
-        setVal('start_date', j.start_date);
-        setVal('end_date', j.end_date);
-        setVal('overall_conv', j.overall_conv);
-        setVal('is_revenue', j.is_revenue);
-        setVal('budget', j.budget);
-        setVal('locale', j.locale);
-        setVal('audience_age', j.audience_age);
-        setVal('audience_gender', j.audience_gender);
-        setVal('audience_income', j.audience_income);
-        setVal('audience_source', j.audience_source);
-        setVal('audience_education', j.audience_education);
-        setVal('audience_industry', j.audience_industry);
-        setVal('audience_region', j.audience_region);
-        setVal('constraints', j.constraints);
-        setVal('strategy_spec', j.strategy_spec);
+        fillParse(j);
+        aiCacheSet(key, Object.assign({}, j));
         setStatus('✅ 已识别并回填：'+(j.filled||[]).join('、')||'无可回填字段', true);
       } else {
         setStatus('识别失败：'+(j.error||'未知错误'), false);
@@ -593,6 +750,48 @@ function doParse(){
 }
 var b=document.getElementById('ai-parse-btn');
 if(b){ b.addEventListener('click', function(ev){ ev.preventDefault(); doParse(); }); }
+})();
+"""
+
+
+# 「营销目标」最近填写历史（localStorage）：浏览器对 textarea 不提供原生 autofill，
+# 这里自建下拉，记录最近提交的目标，点击输入框弹出、点选回填。
+OBJ_HISTORY_JS = """
+(function(){
+  var KEY='brief_objective_history';
+  function geth(){ try{ return JSON.parse(localStorage.getItem(KEY)||'[]'); }catch(e){ return []; } }
+  function seth(h){ try{ localStorage.setItem(KEY, JSON.stringify(h)); }catch(e){} }
+  function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  var ta=document.querySelector('[name=objective]');
+  if(!ta) return;
+  var dd=document.createElement('div'); dd.className='obj-history'; dd.style.display='none';
+  ta.parentNode.insertBefore(dd, ta.nextSibling);
+  function render(){
+    var h=geth();
+    if(!h.length){ dd.style.display='none'; return; }
+    var html='<div class="obj-hist-empty">最近填写（点击回填）：</div>';
+    h.forEach(function(x){ html+='<div class="obj-hist-item">'+esc(x)+'</div>'; });
+    dd.innerHTML=html;
+    var items=dd.querySelectorAll('.obj-hist-item');
+    items.forEach(function(item,i){
+      item.onclick=function(){
+        ta.value=h[i]; dd.style.display='none';
+        if(ta.dispatchEvent){ ta.dispatchEvent(new Event('input',{bubbles:true})); }
+        ta.focus();
+      };
+    });
+    dd.style.display='block';
+  }
+  function record(){
+    var v=(ta.value||'').trim();
+    if(v.length<4) return;
+    var h=geth().filter(function(x){ return x!==v; });
+    h.unshift(v); if(h.length>8) h=h.slice(0,8); seth(h);
+  }
+  ta.addEventListener('focus', function(){ render(); });
+  ta.addEventListener('blur', function(){ setTimeout(function(){ dd.style.display='none'; },160); });
+  var form=ta.closest('form');
+  if(form){ form.addEventListener('submit', record); }
 })();
 """
 
@@ -715,6 +914,65 @@ def _extract_strategy_spec(raw: str):
     return None
 
 
+def _build_strategy_prompt_from_brief(brief: dict) -> str:
+    """注入多画像推断，再拼出自包含策略合成提示词（生成 / 复制共用）。"""
+    from goal_intake import infer_audience_package
+    brief = dict(brief)
+    inferred = infer_audience_package(brief.get("audience_profile") or {})
+    brief["audience_package"] = inferred.get("code", "GENERIC")
+    brief["audience_packages"] = inferred.get("codes", [])
+    brief["audience_match"] = inferred
+    return build_strategy_prompt(brief)
+
+
+def _brief_from_parsed(parsed: dict, objective: str) -> dict:
+    """
+    把「意图识别」抽出的字段映射成 build_strategy_prompt 所需的 brief dict。
+    audience_* → audience_profile（age/gender/income/education/industry/source/region）。
+    """
+    prof = {}
+    for k in ("age", "gender", "income", "education", "industry", "source", "region"):
+        v = parsed.get("audience_" + k)
+        if isinstance(v, str):
+            v = [v] if v.strip() else []
+        elif not isinstance(v, (list, tuple)):
+            v = []
+        v = [str(x).strip() for x in v if str(x).strip()]
+        if v:
+            prof[k] = v
+    return {
+        "goal_name": (parsed.get("goal_name") or "").strip(),
+        "objective": objective,
+        "start_date": (parsed.get("start_date") or "").strip(),
+        "end_date": (parsed.get("end_date") or "").strip(),
+        "overall_conv": (parsed.get("overall_conv") or "").strip(),
+        "budget": (parsed.get("budget") or "").strip(),
+        "is_revenue": (parsed.get("is_revenue") or "").strip(),
+        "locale": (parsed.get("locale") or "").strip(),
+        "audience_profile": prof,
+        "constraints": (parsed.get("constraints") or "").strip(),
+    }
+
+
+def _should_synthesize_strategy(parsed: dict) -> bool:
+    """判断是否值得自动合成多波 StrategySpec：日期跨度 ≥7 天，或（≥1 天且给了转化目标）。"""
+    from datetime import date
+    s = (parsed.get("start_date") or "").strip()
+    e = (parsed.get("end_date") or "").strip()
+    try:
+        span = (date.fromisoformat(e) - date.fromisoformat(s)).days
+    except Exception:  # noqa: BLE001
+        return False
+    if span >= 7:
+        return True
+    oc = (parsed.get("overall_conv") or "").strip()
+    try:
+        has_conv = float(oc) > 0
+    except Exception:  # noqa: BLE001
+        has_conv = False
+    return span >= 1 and has_conv
+
+
 def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict = None,
                 service_spec: list = None, prefill: dict = None) -> str:
     """
@@ -743,8 +1001,14 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     )
     def _sel(k, lbl, v, opts, multiple=False):
         vals = list(v) if isinstance(v, (list, tuple, set)) else ([v] if v not in (None, "") else [])
-        attr = " multiple" if multiple else ""
-        return (f"<label>{lbl}</label><select name='{k}'{attr}>" +
+        if multiple:
+            chips = "".join(
+                f"<label class='chip'><input type='checkbox' name='{k}' value='{_esc(o)}'"
+                f"{' checked' if o in vals else ''}><span>{_esc(o)}</span></label>"
+                for o in opts if o != ""
+            )
+            return f"<label>{lbl}</label><div class='chip-group'>{chips}</div>"
+        return (f"<label>{lbl}</label><select name='{k}'>" +
                 "".join(f"<option value='{_esc(o)}' {'selected' if o in vals else ''}>{_esc(o)}</option>" for o in opts) +
                 "</select>")
     age_buckets = ["", "18-24", "25-34", "35-44", "45-54", "55+"]
@@ -761,7 +1025,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<textarea name='objective' rows='3' required>{_esc(ex['objective'])}</textarea>"
                 f"<button id='ai-parse-btn' class='btn sec' type='button' style='margin-top:8px'>✨ AI 识别意图（DeepSeek）</button>"
                 f"<div id='ai-parse-status' class='note'></div>"
-                f"<p class='note'>{('已配置 DeepSeek：点击将识别简称/日期/年龄/性别/收入/渠道来源等字段并自动回填上方表单。' if _deepseek_on else '未配置 DeepSeek：请在 config.json [deepseek].api_key 填入 key，或设置环境变量 DEEPSEEK_API_KEY。')}</p>"
+                f"<p class='note'>{('已配置 DeepSeek：点击将识别简称/日期/年龄/性别/收入/渠道来源等字段并回填上方表单；当活动周期 ≥7 天（或设了转化目标）时，还会自动合成多波次 StrategySpec。' if _deepseek_on else '未配置 DeepSeek：请在 config.json [deepseek].api_key 填入 key，或设置环境变量 DEEPSEEK_API_KEY。')}</p>"
                 f"<div class='grid2'>"
                 f"{fld('start_date','开始日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['start_date'])}"
                 f"{fld('end_date','结束日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['end_date'])}</div>"
@@ -775,9 +1039,9 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<p class='note'>填入受众字段后，系统按打分公式自动匹配画像包（家庭 / 年轻人 / 父母辈 / 公司客户 / 沉默客户激活）；无匹配则用 GENERIC 兜底。</p>"
                 f"<div class='grid2'>"
                 f"{_sel('audience_age','年龄段（多选）',ex['audience_age'],age_buckets,multiple=True)}"
-                f"{_sel('audience_gender','性别',ex['audience_gender'],gender_opts)}</div>"
+                f"{_sel('audience_gender','性别（多选）',ex['audience_gender'],gender_opts,multiple=True)}</div>"
                 f"<div class='grid2'>"
-                f"{_sel('audience_income','月收入档*RMB（<3k=L1, 3-8k=L2, 8-20k=L3, 20-50k=L4, >50k=L5）',ex['audience_income'],income_opts)}"
+                f"{_sel('audience_income','月收入档*RMB（多选；<3k=L1, 3-8k=L2, 8-20k=L3, 20-50k=L4, >50k=L5）',ex['audience_income'],income_opts,multiple=True)}"
                 f"{_sel('audience_education','教育经历（多选）',ex['audience_education'],edu_opts,multiple=True)}</div>"
                 f"<div class='grid2'>"
                 f"{_sel('audience_industry','行业（多选）',ex['audience_industry'],ind_opts,multiple=True)}"
@@ -815,9 +1079,12 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"</ul></div>"
                 f"<textarea name='strategy_spec' placeholder='strategies/ucl2028_send_strategy.json, strategies/ucl2028_content_map.json'>"
                 f"{_esc('strategies/example_strategy.json' if strategy_spec else '')}</textarea>"
-                f"<button id='gen-strategy-btn' class='btn sec' type='button' style='margin-top:8px'>✨ 用 WorkBuddy 生成策略</button>"
+                f"<div style='margin-top:8px;display:flex;gap:8px;flex-wrap:wrap'>"
+                f"<button id='gen-strategy-btn' class='btn sec' type='button'>✨ 自动生成策略</button>"
+                f"<button id='copy-prompt-btn' class='btn ghost' type='button'>📋 复制基础信息（去 WorkBuddy 生成）</button>"
+                f"</div>"
                 f"<div id='gen-strategy-status' class='note'></div>"
-                f"<p class='note'>{('已配置策略自动生成端点：点击将直接把 StrategySpec 填回上方文本框。' if _strategy_gen_on else '未配置自动生成端点：点击后将把提示词复制到剪贴板，请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框。')}</p>"
+                f"<p class='note'>{('已配置策略自动生成端点：点击将直接把 StrategySpec 填回上方文本框。' if _strategy_gen_on else ('已配置 DeepSeek：点击将直连 DeepSeek 自动生成 StrategySpec 并填回上方文本框。' if _deepseek_on else '未配置生成能力（无外部端点、无 DeepSeek）：点击后将把提示词复制到剪贴板，请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框。'))}</p>"
                 f"<div id='plan-preview' class='note'>填写「总体目标转化率」与「开始 / 结束日期」后，将自动推算派生战役数量、单 campaign 点击率与合理性。</div>"
                 f"<button class='btn' type='submit' style='margin-top:14px'>编译并生成 Program →</button>"
                 f"</div>"
@@ -834,10 +1101,9 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"function _computeMatch(){{"
                 f"  var fields=['age','gender','income','education','industry','source','region'];"
                 f"  var vals={{}};"
-                f"  fields.forEach(function(k){{var el=document.querySelector('[name=audience_'+k+']');"
-                f"    if(el && el.multiple){{"
-                f"      vals[k]=Array.from(el.selectedOptions).map(function(o){{return o.value;}}).filter(function(v){{return v!=='';}});"
-                f"    }}else{{vals[k]=el?el.value:'';}}}});"
+                f"  fields.forEach(function(k){{var cbs=document.querySelectorAll('input[type=checkbox][name=audience_'+k+']:checked');"
+                f"    if(cbs.length){{vals[k]=Array.from(cbs).map(function(o){{return o.value;}});}}"
+                f"    else{{var el=document.querySelector('[name=audience_'+k+']'); vals[k]=el?el.value:'';}}}});"
                 f"  var rows=[];"
                 f"  for(var code in _PKG_MATCH){{"
                 f"    var pkg=_PKG_MATCH[code];"
@@ -877,7 +1143,8 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
 
                 f"<script>{DERIVE_JS}</script>"
                 f"<script>{STRATEGY_GEN_JS}</script>"
-                f"<script>{AI_PARSE_JS}</script>")
+                f"<script>{AI_PARSE_JS}</script>"
+                f"<script>{OBJ_HISTORY_JS}</script>")
     agent = ("<div class='agent'><h4>② Agent 自动决策（运营无需、也不能改）</h4>"
              "<div class='row'>"
              "<span class='tag biz'>主渠道 email（MVP 裁定）</span>"
@@ -1740,6 +2007,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_generate_strategy(jsbody)
         if path == "/brief/ai-parse":
             return self._handle_ai_parse(jsbody)
+        if path == "/brief/strategy-prompt":
+            return self._handle_strategy_prompt(jsbody)
         if path.endswith("/approve") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
             return self._handle_campaign_approve(gid, cid, jsbody)
@@ -1860,7 +2129,7 @@ class Handler(BaseHTTPRequestHandler):
             # 画像包由服务端按 profile 推断；表单不接收 audience_package
             goal_name = (form.get("goal_name", "") or "").strip()
             # 多值字段（age/education/industry/source/region）直接透传 list；单值字段 strip
-            _multi_aud = {"age", "education", "industry", "source", "region"}
+            _multi_aud = {"age", "gender", "income", "education", "industry", "source", "region"}
             raw = {
                 "objective": (form.get("objective", "") or d.get("objective", "")).strip(),
                 # 分群由 Agent 策略决定；表单不再收集，取首波分群兜底，保证 L0 校验不破
@@ -1927,38 +2196,59 @@ class Handler(BaseHTTPRequestHandler):
                   或 {"ok":false,"fallback":true,"prompt":<str>,"error":<可选>}。
         """
         # 服务端按 audience_profile 推断（多值 → 多画像），注入 brief 供提示词「取最大值」
-        from goal_intake import infer_audience_package
-        brief = dict(brief)
-        inferred = infer_audience_package(brief.get("audience_profile") or {})
-        brief["audience_package"] = inferred.get("code", "GENERIC")
-        brief["audience_packages"] = inferred.get("codes", [])
-        brief["audience_match"] = inferred
-        prompt = build_strategy_prompt(brief)
-        try:
-            sg = load_strategy_gen_config()
-            if not sg["enabled"]:
-                return self._send_json({"ok": False, "fallback": True, "prompt": prompt})
-            import urllib.request as _u, urllib.error as _ue  # noqa: E402
-            payload = json.dumps(brief, ensure_ascii=False).encode("utf-8")
-            req = _u.Request(sg["endpoint"], data=payload, method=sg["method"])
-            for k, v in sg["headers"].items():
-                req.add_header(k, v)
+        prompt = _build_strategy_prompt_from_brief(brief)
+        sg = load_strategy_gen_config()
+        if sg["enabled"]:
+            # 外部策略生成端点优先
             try:
-                with _u.urlopen(req, timeout=sg["timeout"]) as resp:
-                    raw = resp.read().decode("utf-8", "replace")
-            except _ue.HTTPError as e:
-                raw = e.read().decode("utf-8", "replace")
+                import urllib.request as _u, urllib.error as _ue  # noqa: E402
+                payload = json.dumps(brief, ensure_ascii=False).encode("utf-8")
+                req = _u.Request(sg["endpoint"], data=payload, method=sg["method"])
+                for k, v in sg["headers"].items():
+                    req.add_header(k, v)
+                try:
+                    with _u.urlopen(req, timeout=sg["timeout"]) as resp:
+                        raw = resp.read().decode("utf-8", "replace")
+                except _ue.HTTPError as e:
+                    raw = e.read().decode("utf-8", "replace")
+                except Exception as e:  # noqa: BLE001
+                    return self._send_json({"ok": False, "fallback": True,
+                                            "prompt": prompt, "error": f"端点请求失败：{e}"})
+                spec = _extract_strategy_spec(raw)
+                if spec is None:
+                    return self._send_json({"ok": False, "fallback": True,
+                                            "prompt": prompt, "error": "端点返回无法解析为 StrategySpec"})
+                return self._send_json({"ok": True, "strategy_spec": spec, "prompt": prompt,
+                                        "via": "endpoint"})
             except Exception as e:  # noqa: BLE001
-                return self._send_json({"ok": False, "fallback": True,
-                                        "prompt": prompt, "error": f"端点请求失败：{e}"})
-            spec = _extract_strategy_spec(raw)
+                return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
+                                        "error": str(e)})
+        # 无外部端点：直连 DeepSeek 合成（复用 deepseek key + build_strategy_prompt）
+        try:
+            content = _deepseek_completion(
+                "你是营销 Agent 的 L1 策略合成器。只输出严格 JSON，不要解释文字、"
+                "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
+                prompt)
+            spec = _extract_strategy_spec(content)
             if spec is None:
-                return self._send_json({"ok": False, "fallback": True,
-                                        "prompt": prompt, "error": "端点返回无法解析为 StrategySpec"})
-            return self._send_json({"ok": True, "strategy_spec": spec, "prompt": prompt})
-        except Exception as e:  # noqa: BLE001
+                return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
+                                        "error": "DeepSeek 返回无法解析为 StrategySpec"})
+            return self._send_json({"ok": True, "strategy_spec": spec, "prompt": prompt,
+                                    "via": "deepseek"})
+        except RuntimeError as e:
             return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
                                     "error": str(e)})
+
+    def _handle_strategy_prompt(self, brief: dict):
+        """
+        只返回策略合成提示词（不调 DeepSeek / 外部端点），供用户复制到 WorkBuddy 生成后贴回。
+        返回 JSON：{"ok":true,"prompt":<str>} 或 {"ok":false,"error":<str>}。
+        """
+        try:
+            prompt = _build_strategy_prompt_from_brief(brief)
+        except Exception as e:  # noqa: BLE001
+            return self._send_json({"ok": False, "error": f"构建提示词失败：{e}"})
+        return self._send_json({"ok": True, "prompt": prompt})
 
     def _handle_ai_parse(self, body: dict):
         """
@@ -2082,7 +2372,33 @@ class Handler(BaseHTTPRequestHandler):
             out[f] = v
             if v:
                 filled.append(field_label.get(f, f))
-        return self._send_json({"ok": True, **out, "filled": filled})
+
+        # 方案 B：意图识别未直接产出 strategy_spec 时，按启发式自动合成多波策略
+        strategy_auto = False
+        if not out.get("strategy_spec") and _should_synthesize_strategy(out):
+            try:
+                from goal_intake import infer_audience_package
+                brief = _brief_from_parsed(out, objective)
+                inferred = infer_audience_package(brief.get("audience_profile") or {})
+                brief["audience_package"] = inferred.get("code", "GENERIC")
+                brief["audience_packages"] = inferred.get("codes", [])
+                brief["audience_match"] = inferred
+                prompt = build_strategy_prompt(brief)
+                content = _deepseek_completion(
+                    "你是营销 Agent 的 L1 策略合成器。只输出严格 JSON，不要解释文字、"
+                    "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
+                    prompt)
+                spec = _extract_strategy_spec(content)
+                if spec:
+                    out["strategy_spec"] = spec
+                    strategy_auto = True
+            except RuntimeError:
+                pass  # 合成失败不阻断字段回填（前端仍拿到识别字段）
+        resp = {"ok": True, **out, "filled": filled}
+        if strategy_auto:
+            resp["strategy_auto"] = True
+            resp["filled"] = list(filled) + ["策略(自动合成)"]
+        return self._send_json(resp)
 
     def _handle_campaign_approve(self, gid, cid, form):
         p = _load_program(gid)

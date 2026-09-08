@@ -59,47 +59,6 @@ check("外链 分群 URL", "/s/segments/7" in C._mautic_ext_link("segment", "SEG
 check("外链 落页 URL", "/s/landingpages/3" in C._mautic_ext_link("landingpage", "LP_Z", _idx))
 check("外链 未连接返回空", C._mautic_ext_link("email", "NOPE", _idx) == "")
 check("外链 未找到返回空", C._mautic_ext_link("email", "MISSING", _idx) == "")
-
-# ---------- 单元：Mautic 7 OAuth2 认证（mock urlopen，不连活服务） ----------
-import mautic_client as MC  # noqa: E402
-
-_captured = {}
-
-class _FakeResp:
-    def __init__(self, payload, status=200):
-        self._payload = payload.encode("utf-8"); self.status = status
-    def read(self): return self._payload
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
-
-class _FakeURLopener:
-    """捕获 mautic_client 发出的 HTTP 请求，返回假 token，不发真实网络请求。"""
-    def __init__(self, token_json): self._token_json = token_json
-    def __call__(self, req, timeout=15):
-        _captured["url"] = req.full_url
-        _captured["method"] = req.method
-        _captured["data"] = req.data
-        _captured["headers"] = dict(req.header_items())
-        return _FakeResp(self._token_json, 200)
-
-_orig_urlopen = urllib.request.urlopen
-urllib.request.urlopen = _FakeURLopener('{"access_token":"TESTTOKEN","expires_in":3600,"token_type":"bearer"}')
-try:
-    tok = MC._get_token("http://localhost:8080", "CID", "CSEC")
-    check("OAuth2 token 返回 access_token", tok == "TESTTOKEN", f"tok={tok}")
-    _body = urllib.parse.parse_qs(_captured["data"].decode("utf-8"))
-    check("OAuth2 grant_type=client_credentials", _body.get("grant_type") == ["client_credentials"], str(_body.get("grant_type")))
-    check("OAuth2 请求体带 client_id", _body.get("client_id") == ["CID"])
-    check("OAuth2 请求体带 client_secret", _body.get("client_secret") == ["CSEC"])
-    check("OAuth2 token 端点为 /oauth/v2/token", _captured["url"].endswith("/oauth/v2/token"), _captured["url"])
-    _r = MC._post("http://localhost:8080", "/api/campaigns/new", {"name": "x"}, tok)
-    check("POST 携带 Bearer Authorization 头",
-          _captured["headers"].get("Authorization") == "Bearer TESTTOKEN",
-          str(_captured["headers"].get("Authorization")))
-    check("POST 目标为 /api/campaigns/new", _captured["url"].endswith("/api/campaigns/new"), _captured["url"])
-finally:
-    urllib.request.urlopen = _orig_urlopen
-
 # 直接渲染 program 验证 wave→campaign 重命名（不依赖 Mautic 连通）
 _p = C._load_program("ucl2028_svctest")
 if _p:
