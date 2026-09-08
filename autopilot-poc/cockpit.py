@@ -684,6 +684,43 @@ function setVal(name, val){
 function aiCacheKey(obj){ return 'brief_aiparse_' + (obj||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
 function aiCacheGet(key){ try{ var v=sessionStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){ return null; } }
 function aiCacheSet(key,val){ try{ sessionStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+function matchAgeBuckets(minRaw, maxRaw){
+  var buckets=[["18",24],["25",34],["35",44],["45",54],["55",200]];
+  var min = (minRaw===''||minRaw==null)?null:parseInt(minRaw,10);
+  var max = (maxRaw===''||maxRaw==null)?null:parseInt(maxRaw,10);
+  if((min===null&&max===null)||(min!==null&&isNaN(min))||(max!==null&&isNaN(max))) return [];
+  if(min!==null&&max!==null&&min>max){ var t=min; min=max; max=t; }
+  var out=[];
+  for(var i=0;i<buckets.length;i++){
+    var lo=parseInt(buckets[i][0],10), hi=buckets[i][1];
+    var overlap = (min===null || hi>=min) && (max===null || lo<=max);
+    if(overlap) out.push(buckets[i][0] + (hi>=200?'+':('-'+hi)));
+  }
+  return out;
+}
+function updateAgeMatch(){
+  var mn=document.querySelector('[name=audience_age_min]');
+  var mx=document.querySelector('[name=audience_age_max]');
+  var bks=matchAgeBuckets(mn?mn.value:'', mx?mx.value:'');
+  var hid=document.querySelector('[name=audience_age]');
+  if(hid) hid.value=bks.join(',');
+  var disp=document.getElementById('audience_age_match_disp');
+  if(disp) disp.textContent = bks.length ? ('匹配档位：'+bks.join('、')) : '（请填写起始/结束年龄，系统自动匹配档位）';
+}
+function fillAgeFromBuckets(str){
+  if(!str) return;
+  var parts=String(str).split(',').map(function(s){return s.trim();}).filter(Boolean);
+  if(!parts.length) return;
+  var mn=999, mx=null;
+  parts.forEach(function(p){
+    if(p.indexOf('+')>=0){ var a=parseInt(p,10); if(!isNaN(a)){ mn=Math.min(mn,a); } }
+    else { var rng=p.split('-'); var lo=parseInt(rng[0],10), hi=parseInt(rng[1],10); if(!isNaN(lo)) mn=Math.min(mn,lo); if(!isNaN(hi)) mx=(mx===null?hi:Math.max(mx,hi)); }
+  });
+  var imn=document.querySelector('[name=audience_age_min]'), imx=document.querySelector('[name=audience_age_max]');
+  if(imn && mn<999) imn.value=mn;
+  if(imx && mx!==null) imx.value=mx;
+  updateAgeMatch();
+}
 function fillParse(j){
   setVal('goal_name', j.goal_name);
   setVal('start_date', j.start_date);
@@ -693,6 +730,7 @@ function fillParse(j){
   setVal('budget', j.budget);
   setVal('locale', j.locale);
   setVal('audience_age', j.audience_age);
+  fillAgeFromBuckets(j.audience_age);
   setVal('audience_gender', j.audience_gender);
   setVal('audience_income', j.audience_income);
   setVal('audience_source', j.audience_source);
@@ -872,9 +910,12 @@ def build_strategy_prompt(brief: dict) -> str:
         "     - locale 仅 zh_CN → 主内容中文；\n"
         "     - locale 仅 en_US → 主内容英文；\n"
         "     - locale 同时含 zh_CN 和 en_US → 默认主内容英文，附加中文翻译稿。生成时先排英文主 campaign（c1/c2/...），再排对应的中文翻译 campaign（c1_zh/c2_zh/...），英文优先执行、中文翻译稿作为双语备选。\n"
-        "2. 落地页 URL 按主语言区分，使用 Mautic 公开页路径 http://localhost:8080/s/<slug>：\n"
-        "   · 中文主内容 → http://localhost:8080/s/<campaign-cid>-zh\n"
-        "   · 英文主内容 → http://localhost:8080/s/<campaign-cid>-en\n"
+        "2. 落地页 URL 按 campaign 主语言区分，使用 Mautic 公开页路径 http://localhost:8080/s/<slug>。"
+        "必须用当前 campaign 的 cid 生成 URL：\n"
+        "   · 英文主 campaign c1 → http://localhost:8080/s/c1-en\n"
+        "   · 英文主 campaign c2 → http://localhost:8080/s/c2-en\n"
+        "   · 中文翻译 campaign c1_zh → http://localhost:8080/s/c1_zh-zh\n"
+        "   同一 campaign 的所有落地页链接必须一致，不要全部复用 c1。\n"
         "3. 分群命名体现 region+locale，如 SEG_{goal_id}_CN_ZH、SEG_{goal_id}_GLOBAL_EN。\n"
         "【输出要求】\n"
         "1. 顶层：goal_id（slug）、objective、kpi（{{\"metric\":\"conversion\",\"target\":{oc_json}}}）、"
@@ -935,6 +976,18 @@ def _build_strategy_prompt_from_brief(brief: dict) -> str:
     """注入多画像推断，再拼出自包含策略合成提示词（生成 / 复制共用）。"""
     from goal_intake import infer_audience_package
     brief = dict(brief)
+    # 语言/地区由 audience_region 兜底：不含「中国大陆」时强制移除 zh_CN，只走英文
+    regions = brief.get("audience_profile", {}).get("region") or []
+    if isinstance(regions, str):
+        regions = [r.strip() for r in regions.split(",") if r.strip()]
+    locales = brief.get("locale") or []
+    if isinstance(locales, str):
+        locales = [x.strip() for x in locales.split(",") if x.strip()]
+    if "中国大陆" not in regions:
+        locales = [x for x in locales if x != "zh_CN"]
+        if not locales:
+            locales = ["en_US"]
+    brief["locale"] = locales
     inferred = infer_audience_package(brief.get("audience_profile") or {})
     brief["audience_package"] = inferred.get("code", "GENERIC")
     brief["audience_packages"] = inferred.get("codes", [])
@@ -1028,6 +1081,28 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
         return (f"<label>{lbl}</label><select name='{k}'>" +
                 "".join(f"<option value='{_esc(o)}' {'selected' if o in vals else ''}>{_esc(o)}</option>" for o in opts) +
                 "</select>")
+    def _age_minmax(bucket_str):
+        if not bucket_str:
+            return "", ""
+        lo, hi = 999, None
+        for p in str(bucket_str).split(","):
+            p = p.strip()
+            if not p:
+                continue
+            if p.endswith("+"):
+                try:
+                    lo = min(lo, int(p[:-1]))
+                except ValueError:
+                    pass
+            elif "-" in p:
+                try:
+                    a, b = p.split("-", 1)
+                    a, b = int(a), int(b)
+                    lo = min(lo, a)
+                    hi = b if hi is None else max(hi, b)
+                except ValueError:
+                    pass
+        return (str(lo) if lo != 999 else ""), (str(hi) if hi is not None else "")
     age_buckets = ["", "18-24", "25-34", "35-44", "45-54", "55+"]
     gender_opts = ["", "男", "女", "未知"]
     income_opts = ["", "L1", "L2", "L3", "L4", "L5"]
@@ -1056,7 +1131,12 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<h4 style='margin:6px 0'>目标人群特点</h4>"
                 f"<p class='note'>填入受众字段后，系统按打分公式自动匹配画像包（家庭 / 年轻人 / 父母辈 / 公司客户 / 沉默客户激活）；无匹配则用 GENERIC 兜底。</p>"
                 f"<div class='grid2'>"
-                f"{_sel('audience_age','年龄段（多选）',ex['audience_age'],age_buckets,multiple=True)}"
+                f"<label>年龄段（输入起止年龄，自动匹配档位）</label>"
+                f"<div class='grid2' style='gap:8px'>"
+                f"<div><span class='opt'>起始年龄</span><br><input type='number' name='audience_age_min' min='0' max='120' value='{_age_minmax(ex['audience_age'])[0]}' style='width:100%' oninput='updateAgeMatch()'></div>"
+                f"<div><span class='opt'>结束年龄</span><br><input type='number' name='audience_age_max' min='0' max='120' value='{_age_minmax(ex['audience_age'])[1]}' style='width:100%' oninput='updateAgeMatch()'></div></div>"
+                f"<input type='hidden' name='audience_age' value='{_esc(ex['audience_age'])}'>"
+                f"<p class='note' id='audience_age_match_disp'>{'匹配档位：' + ex['audience_age'] if ex['audience_age'] else '（请填写起始/结束年龄，系统自动匹配档位）'}</p>"
                 f"{_sel('audience_gender','性别（多选）',ex['audience_gender'],gender_opts,multiple=True)}</div>"
                 f"<div class='grid2'>"
                 f"{_sel('audience_income','月收入档*RMB（多选；<3k=L1, 3-8k=L2, 8-20k=L3, 20-50k=L4, >50k=L5）',ex['audience_income'],income_opts,multiple=True)}"
@@ -2404,13 +2484,8 @@ class Handler(BaseHTTPRequestHandler):
         strategy_auto = False
         if not out.get("strategy_spec") and _should_synthesize_strategy(out):
             try:
-                from goal_intake import infer_audience_package
                 brief = _brief_from_parsed(out, objective)
-                inferred = infer_audience_package(brief.get("audience_profile") or {})
-                brief["audience_package"] = inferred.get("code", "GENERIC")
-                brief["audience_packages"] = inferred.get("codes", [])
-                brief["audience_match"] = inferred
-                prompt = build_strategy_prompt(brief)
+                prompt = _build_strategy_prompt_from_brief(brief)
                 content = _deepseek_completion(
                     "你是营销 Agent 的 L1 策略合成器。只输出严格 JSON，不要解释文字、"
                     "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
