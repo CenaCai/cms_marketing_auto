@@ -274,6 +274,26 @@ def _variant_int(vid: str, fallback: int) -> int:
     return fallback
 
 
+def _synthesize_variant_spec(c: dict, campaign_name: str, discount: dict = None) -> dict:
+    """策略未显式给出 content_variant（空槽）时，同步生成一个默认 v1 变体。
+
+    变体是「与主邮件同主题、不同切入角度」的 A/B 版本，保证 campaign 流程里始终有一条
+    可走的变体路径（plan_compiler 据此注入 decision.variant 路由节点）。
+    角度按是否带折扣推导：带折扣 → 限时紧迫；否则 → 稀缺专属。headline/summary 从
+    campaign 名与折扣推导，确定、可读、便于审批人核对。"""
+    cv = _as_dict(c.get("content_variant")) if isinstance(c, dict) else {}
+    if cv.get("id") and (cv.get("angle") or cv.get("headline") or cv.get("summary")):
+        return cv  # 已显式提供完整变体 → 原样返回
+    has_discount = bool(isinstance(discount, dict) and discount.get("enabled"))
+    pct = int(discount["pct"]) if (has_discount and discount.get("pct")) else None
+    angle = "限时紧迫" if has_discount else "稀缺专属"
+    disc_txt = f"（{pct}% OFF 限时）" if pct else "（专属限时）"
+    headline = f"{campaign_name or '活动'} · 变体 v1{disc_txt}"
+    summary = ("与主邮件同主题、不同切入角度的 A/B 变体："
+               f"以「{angle}」制造紧迫感促转化；variant_split 命中比例时走此变体路径。")
+    return {"id": "v1", "angle": angle, "headline": headline, "summary": summary}
+
+
 def _num(v, default):
     if v is None or v == "":
         return default
@@ -755,7 +775,11 @@ def normalize_campaign(c: dict, idx: int, goal_id: str = "",
     locales = _as_list(email_brief.get("locale")) or _as_list(default_locales)
 
     # ---- content_variant：带 angle/headline 的实体，不再是裸序号 ----
+    # 策略未显式给出（空槽）→ 同步生成默认 v1 变体，保证流程里始终有可走的变体路径。
     cv = _as_dict(c.get("content_variant"))
+    if not (cv.get("id") and (cv.get("angle") or cv.get("headline") or cv.get("summary"))):
+        cv = _synthesize_variant_spec(c, c.get("name") or f"[Agent] {cid}",
+                                      _as_dict(c.get("discount")))
     cv_id = str(cv.get("id") or f"v{idx_n}")
     subject = (email_brief.get("subject") or cv.get("headline")
                or c.get("name") or "")
@@ -914,6 +938,9 @@ def normalize_campaign(c: dict, idx: int, goal_id: str = "",
             "headline": cv.get("headline", "") or "",
             "summary": cv.get("summary", "") or "",
         },
+        # A/B 分流比例：命中比例走变体 v1，其余走主邮件；0 表示不启用变体路径
+        "variant_split": (_num(c.get("variant_split"), 0.5)
+                          if _num(c.get("variant_split"), None) is not None else 0.5),
         # 着陆页
         "landing_page_ref": str(lp.get("ref") or ""),
         "landing_page_mode": str(lp.get("mode") or ""),
@@ -1027,6 +1054,9 @@ def normalize_service_sequence(s: dict, idx: int = 0, goal_id: str = "") -> dict
     email_mode = str(email.get("mode") or ("reuse" if email.get("ref") else "generate"))
     email_brief = _as_dict(email.get("brief"))
     cv = _as_dict(s.get("content_variant"))
+    if not (cv.get("id") and (cv.get("angle") or cv.get("headline") or cv.get("summary"))):
+        cv = _synthesize_variant_spec(s, s.get("name") or f"[service] {sid}",
+                                      _as_dict(s.get("discount")))
     cv_id = str(cv.get("id") or f"svc_v{idx + 1}")
     subject = (email_brief.get("subject") or cv.get("headline") or s.get("name") or "")
     tags, tag_warnings = validate_tags(s.get("tags_to_write"))
@@ -1076,6 +1106,9 @@ def normalize_service_sequence(s: dict, idx: int = 0, goal_id: str = "") -> dict
             "headline": cv.get("headline", "") or "",
             "summary": cv.get("summary", "") or "",
         },
+        # A/B 分流比例（service 序列同样可走变体路径；默认 0.5）
+        "variant_split": (_num(s.get("variant_split"), 0.5)
+                          if _num(s.get("variant_split"), None) is not None else 0.5),
         "landing_page_ref": str(_as_dict(s.get("landing_page")).get("ref") or ""),
         "landing_page_url": str(_as_dict(s.get("landing_page")).get("url") or ""),
         "send_conditions": sc,

@@ -1737,6 +1737,21 @@ def _strategy_summary(s: dict) -> str:
     sc = s.get("send_conditions", {}) or {}
     cv = s.get("content_variant_spec") or {}
     tags = " ".join(f"<span class='tag'>{_esc(t)}</span>" for t in s.get("tags_to_write", [])) or "—"
+    cv_id = cv.get("id") or ("v%s" % s.get("content_variant", 0))
+    split = s.get("variant_split")
+    try:
+        _split = float(split) if split is not None else 0.0
+    except (TypeError, ValueError):
+        _split = 0.0
+    if _split and _split > 0 and (cv.get("angle") or cv.get("headline") or cv.get("summary")):
+        # 命中分流比例 → 走变体路径；其余走主邮件。给运营明确的「何时走变体」判断条件。
+        variant_txt = (f"变体 <code>{_esc(cv_id)}</code> {_esc(cv.get('angle') or '')}"
+                       f" — 按 <b>{int(_split*100)}%</b> 比例走变体、其余走主邮件"
+                       f"{(('：' + _esc(cv['headline'])) if cv.get('headline') else '')}")
+    else:
+        variant_txt = (f"变体 <code>{_esc(cv_id)}</code>"
+                       f"{(' ' + _esc(cv.get('angle') or '')) if cv.get('angle') else ''}"
+                       f"{((' — ' + _esc(cv['headline'])) if cv.get('headline') else '')}")
     base = (f"分群 <code>{_esc(s.get('segment',''))}</code>"
             f"<span class='pill'>({_esc(s.get('segment_mode','reuse'))})</span>"
             f" · 频 <code>{sc.get('max_per_24h',1)}/24h·{sc.get('max_per_7d',3)}/7d</code>"
@@ -1744,9 +1759,7 @@ def _strategy_summary(s: dict) -> str:
             f"{(' · 免打扰 <code>' + _esc(sc['quiet_hours']) + '</code>') if sc.get('quiet_hours') else ''}"
             f" · 邮件 <code>{_esc(email_display(s))}</code>"
             f" · 落页 <code>{_esc(s.get('landing_page_ref','') or '—')}</code>"
-            f" · 变体 <code>{_esc(cv.get('id') or ('v%s' % s.get('content_variant',0)))}</code>"
-            f" {_esc(cv.get('angle') or '')}"
-            f"{((' — ' + _esc(cv['headline'])) if cv.get('headline') else '')}"
+            f" · {variant_txt}"
             f" · tag {tags}")
     why = ""
     if s.get("rationale") or s.get("evidence"):
@@ -1756,73 +1769,162 @@ def _strategy_summary(s: dict) -> str:
 
 
 def _graph_svg(graph: list) -> str:
-    """把事件图渲染成依赖无关的 inline SVG 流程图（左→右排布，>6 节点换行）。"""
-    import math as _m
+    """Mautic 风格竖向时间线：入口(source)在顶，action 纵向串联，decision 画菱形，
+    if_true/if_false 用绿/橙虚线分叉，配色对齐 Mautic。
+    纯前端渲染改造，不碰策略/事件图数据结构；透明节点（decision.variant/email.variant）同样画出，
+    但标注为「不建真实 Mautic 事件」。"""
     nodes = list(graph)
     if not nodes:
         return "<p class='note'>（事件图为空）</p>"
-    COLS, W, H = 6, 110, 56
-    GAPX, GAPY, PADX, PADY = 46, 34, 16, 16
-    rows = _m.ceil(len(nodes) / COLS)
-    vw = PADX * 2 + COLS * W + (COLS - 1) * GAPX
-    vh = PADY * 2 + rows * H + (rows - 1) * GAPY
+    by_id = {n["id"]: n for n in nodes}
+
+    # ---- 布局：主链沿 next 串联（左列），分支节点（仅由 if_true 可达）放右列 ----
+    # next 可能落在 top-level（nxt 透传）或 params（decision 路由参数）里，两者都认
+    def _next_of(nid):
+        nd = by_id.get(nid, {})
+        return nd.get("next") or (nd.get("params", {}) or {}).get("next")
+    seen, spine, cur = set(), [], nodes[0]["id"]
+    while cur and cur not in seen:
+        seen.add(cur)
+        spine.append(cur)
+        cur = _next_of(cur)
+    branch = [n["id"] for n in nodes if n["id"] not in set(spine)]
+
+    W, H = 156, 46                       # 节点框
+    HW, HH = W / 2, H / 2                # 半宽/半高（菱形同外接框）
+    COL_X, BR_X = 64, 340               # 主链列 x / 分支列 x
+    TOP, ROW = 34, 66                    # 顶部留白 / 行距
     pos = {}
-    for i, nd in enumerate(nodes):
-        r, cidx = divmod(i, COLS)
-        pos[nd["id"]] = (PADX + cidx * (W + GAPX), PADY + r * (H + GAPY))
+    for i, nid in enumerate(spine):
+        pos[nid] = (COL_X, TOP + i * ROW)
+    # 分支节点：挂到其父 decision 同高（右侧），否则顺延堆叠
+    br_idx = 0
+    for nid in branch:
+        parent = next((pid for pid in spine
+                       if by_id.get(pid, {}).get("if_true") == nid
+                       or by_id.get(pid, {}).get("if_false") == nid), None)
+        if parent and parent in pos:
+            pos[nid] = (BR_X, pos[parent][1])
+        else:
+            pos[nid] = (BR_X, TOP + (len(spine) + br_idx) * ROW)
+            br_idx += 1
 
     def _short(t: str) -> str:
-        # 取类型末两段，保证可读（decision.segment → segment；email.send → send）
         parts = t.split(".")
         return parts[-1] if len(parts) == 1 else ".".join(parts[-2:])
 
     def _color(nd: dict):
         t = nd.get("type", "")
+        if t in ("decision.variant", "email.variant"):
+            return "#7a4fb5", "#f1e9fa"   # 变体：紫（透明节点）
         if nd.get("governance") or t.endswith(".reserved"):
-            return "#3b6d11", "#eaf3de"      # 治理/预留：绿
+            return "#3b6d11", "#eaf3de"   # 治理/预留：绿
         if t.startswith("decision"):
-            return "#ba7517", "#faefda"      # 决策：橙
-        return "#185fa5", "#e8f1fb"          # 业务：蓝
+            return "#ba7517", "#faefda"   # 决策：橙
+        return "#185fa5", "#e8f1fb"       # 业务：蓝（对齐 Mautic）
 
+    # 锚点：按相对方位选出口/入口边（垂直优先从上/下，水平优先从左/右）
+    def _anchors(a, b):
+        x, y = a; tx, ty = b
+        dx, dy = tx - x, ty - y
+        if abs(dy) >= abs(dx):
+            s = (x, y + HH) if dy >= 0 else (x, y - HH)
+            e = (tx, ty - HH) if dy >= 0 else (tx, ty + HH)
+        else:
+            s = (x + HW, y) if dx >= 0 else (x - HW, y)
+            e = (tx - HW, ty) if dx >= 0 else (tx + HW, ty)
+        return s, e
+
+    total_rows = max(len(spine), len(spine) + br_idx)
+    vw = BR_X + W + 40
+    vh = TOP * 2 + total_rows * ROW
     svg = [f"<svg viewBox='0 0 {vw} {vh}' width='100%' "
            f"style='background:#fbfcfe;border:1px solid var(--line);border-radius:10px' "
            f"font-family='inherit' font-size='11'>"]
-    svg.append("<defs><marker id='arw' markerWidth='8' markerHeight='8' refX='6' refY='3' "
-               "orient='auto' markerUnits='userSpaceOnUse'>"
-               "<path d='M0,0 L6,3 L0,6 Z' fill='#6b7280'/></marker>"
-               "<marker id='arwok' markerWidth='8' markerHeight='8' refX='6' refY='3' "
-               "orient='auto' markerUnits='userSpaceOnUse'>"
-               "<path d='M0,0 L6,3 L0,6 Z' fill='#1d9e75'/></marker>"
-               "<marker id='arwbad' markerWidth='8' markerHeight='8' refX='6' refY='3' "
-               "orient='auto' markerUnits='userSpaceOnUse'>"
-               "<path d='M0,0 L6,3 L0,6 Z' fill='#d85a30'/></marker></defs>")
-    # 连线
-    for nd in nodes:
-        x, y = pos[nd["id"]]
-        for key, stroke, mk in (("next", "#6b7280", "url(#arw)"),
-                                 ("if_true", "#1d9e75", "url(#arwok)"),
-                                 ("if_false", "#d85a30", "url(#arwbad)")):
-            if key in nd:
-                tgt = pos.get(nd[key])
-                if not tgt:
-                    continue
-                tx, ty = tgt
-                x1, y1 = x + W, y + H / 2
-                x2, y2 = tx, ty + H / 2
-                dash = " stroke-dasharray='4 3'" if key == "if_false" else ""
-                svg.append(f"<line x1='{x1}' y1='{y1}' x2='{x2}' y2='{y2}' "
-                           f"stroke='{stroke}'{dash} stroke-width='1.4' marker-end='{mk}'/>")
-    # 节点
-    for nd in nodes:
-        x, y = pos[nd["id"]]
+    svg.append("<defs>"
+               "<marker id='arw' markerWidth='8' markerHeight='8' refX='6' refY='3' orient='auto' "
+               "markerUnits='userSpaceOnUse'><path d='M0,0 L6,3 L0,6 Z' fill='#6b7280'/></marker>"
+               "<marker id='arwok' markerWidth='8' markerHeight='8' refX='6' refY='3' orient='auto' "
+               "markerUnits='userSpaceOnUse'><path d='M0,0 L6,3 L0,6 Z' fill='#1d9e75'/></marker>"
+               "<marker id='arwbad' markerWidth='8' markerHeight='8' refX='6' refY='3' orient='auto' "
+               "markerUnits='userSpaceOnUse'><path d='M0,0 L6,3 L0,6 Z' fill='#d85a30'/></marker></defs>")
+    svg.append(f"<text x='{COL_X + W/2}' y='{TOP - 14}' text-anchor='middle' "
+               f"fill='#6b7280' font-size='10'>▶ 入口（campaign source）</text>")
+
+    def _edge(s, e, stroke, mk, dash, label=None):
+        svg.append(f"<line x1='{s[0]}' y1='{s[1]}' x2='{e[0]}' y2='{e[1]}' "
+                   f"stroke='{stroke}'{dash} stroke-width='1.4' marker-end='{mk}'/>")
+        if label:
+            mx, my = (s[0] + e[0]) / 2, (s[1] + e[1]) / 2
+            svg.append(f"<text x='{mx}' y='{my - 3}' text-anchor='middle' "
+                       f"fill='{stroke}' font-size='9.5'>{_esc(label)}</text>")
+
+    # ---- 连线 ----
+    order = spine + branch
+    for nid in order:
+        nd = by_id[nid]
+        c = pos[nid]
+        t = nd.get("type", "")
+        p = nd.get("params", {}) or {}
+        is_dec = t.startswith("decision")
+        # 边字段可能在 top-level（nxt 透传）或 params（decision 路由参数）里，两者都认
+        nxt = nd.get("next") or p.get("next")
+        if_true = p.get("if_true") or nd.get("if_true")
+        if_false = p.get("if_false") or nd.get("if_false")
+        if is_dec:
+            # decision：if_true 绿虚线、if_false 橙虚线（if_false 通常即穿透 continue）
+            it = pos.get(if_true)
+            iff = pos.get(if_false)
+            if it:
+                s, e = _anchors(c, it)
+                _edge(s, e, "#1d9e75", "url(#arwok)", " stroke-dasharray='5 3'",
+                      "走变体" if t == "decision.variant" else None)
+            if iff:
+                s, e = _anchors(c, iff)
+                _edge(s, e, "#d85a30", "url(#arwbad)", " stroke-dasharray='5 3'",
+                      "走主邮件" if t == "decision.variant" else None)
+            # next 若未被 if_false 覆盖（极少数情况），补画灰线
+            if nxt and nxt != if_false:
+                nt = pos.get(nxt)
+                if nt:
+                    s, e = _anchors(c, nt)
+                    _edge(s, e, "#6b7280", "url(#arw)", "", None)
+        else:
+            nt = pos.get(nxt)
+            if nt:
+                s, e = _anchors(c, nt)
+                _edge(s, e, "#6b7280", "url(#arw)", "", None)
+
+    # ---- 节点 ----
+    for nid in order:
+        nd = by_id[nid]
+        cx, cy = pos[nid]
         fill, stroke = _color(nd)
-        svg.append(f"<g><title>{_esc(nd['type'])}</title>"
-                   f"<rect x='{x}' y='{y}' width='{W}' height='{H}' rx='9' "
-                   f"fill='{stroke}' stroke='{fill}' stroke-width='1.5'/>"
-                   f"<text x='{x + W/2}' y='{y + 20}' text-anchor='middle' "
-                   f"fill='{fill}' font-weight='600'>{_esc(_short(nd['type']))}</text>"
-                   f"<text x='{x + W/2}' y='{y + 38}' text-anchor='middle' "
-                   f"fill='#1c2330' font-size='9'>{_esc(nd['id'].replace('wave_', 'campaign_') if isinstance(nd['id'], str) else nd['id'])}</text></g>")
+        t = nd.get("type", "")
+        is_dec = t.startswith("decision")
+        transparent = t in ("decision.variant", "email.variant")
+        svg.append(f"<g><title>{_esc(t)}</title>")
+        if is_dec:
+            # 菱形：上/右/下/左 四顶点
+            svg.append(
+                f"<polygon points='{cx},{cy-HH} {cx+HW},{cy} {cx},{cy+HH} {cx-HW},{cy}' "
+                f"fill='{stroke}' stroke='{fill}' stroke-width='1.6'/>"
+                f"<text x='{cx}' y='{cy-4}' text-anchor='middle' fill='{fill}' "
+                f"font-weight='600' font-size='10.5'>{_esc(_short(t))}</text>"
+                f"<text x='{cx}' y='{cy+12}' text-anchor='middle' fill='#1c2330' "
+                f"font-size='8.5'>{_esc(nd['id'])}</text>")
+        else:
+            svg.append(
+                f"<rect x='{cx-W/2}' y='{cy-H/2}' width='{W}' height='{H}' rx='9' "
+                f"fill='{stroke}' stroke='{fill}' stroke-width='1.5'/>"
+                f"<text x='{cx}' y='{cy-4}' text-anchor='middle' fill='{fill}' "
+                f"font-weight='600' font-size='10.5'>{_esc(_short(t))}</text>"
+                f"<text x='{cx}' y='{cy+13}' text-anchor='middle' fill='#1c2330' "
+                f"font-size='8.5'>{_esc(nd['id'])}</text>")
+        if transparent:
+            svg.append(f"<text x='{cx}' y='{cy+H/2+12}' text-anchor='middle' "
+                       f"fill='#7a4fb5' font-size='8'>透明节点·不建 Mautic 事件</text>")
+        svg.append("</g>")
     svg.append("</svg>")
     return "".join(svg)
 
@@ -1833,7 +1935,7 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
     if idx is None:
         idx = _mautic_asset_index()
     avail = idx["available"]
-    emails = idx["email"]; segs = idx["segment"]; pages = idx["page"]
+    emails = idx["email"]; segs = idx["segment"]; pages = idx["page"]; forms = idx["form"]
 
     def _exists(ref: str, name_map: dict, id_map: dict) -> bool:
         if not ref:
@@ -1845,7 +1947,8 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
         if is_none:
             ref = "（无）"
         ph = isinstance(ref, str) and "PLACEHOLDER" in ref
-        _map = emails if kind == "email" else segs if kind == "分群" else pages
+        _map = (emails if kind == "email" else segs if kind == "分群"
+                else pages if kind == "着陆页" else forms)
         resolved = bool(avail and not is_none and _exists(ref, _map, _map))
         # 结论以「是否真能调用已有」为准，而非盲目信任 mode ——
         # 防生成器占位 ref（EM_*_PLACEHOLDER / 未推送）被误标「调用已有」却没有外链。
@@ -1872,7 +1975,8 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
             real = "✗"
         # 仅当 ref 真能解析为 Mautic 实体时才渲染外链
         ref_cell = f"<code>{_esc(ref)}</code>"
-        lk_kind = {"email": "email", "分群": "segment", "着陆页": "landingpage"}.get(kind)
+        lk_kind = {"email": "email", "分群": "segment",
+                   "着陆页": "landingpage", "表单": "form"}.get(kind)
         if lk_kind and resolved:
             lk = _mautic_ext_link(lk_kind, ref, idx)
             if lk:
@@ -1888,6 +1992,7 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
         seg = s.get("segment", "")
         seg_mode = s.get("segment_mode", "reuse")
         lp = s.get("landing_page_ref", "")
+        form_ref = s.get("form_ref", "")
         rows += _row("email", em_ref, em_mode)
         rows += _row("分群", seg, seg_mode)
         if lp:
@@ -1896,6 +2001,15 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
             rows += ("<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
                      "<td>新建</td><td>未连</td></tr>" if not avail else
                      "<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
+                     "<td>新建</td><td>✗</td></tr>")
+        # 表单：与邮件/落地页同属「内容资产」，按「哪个 campaign 用到就在哪个 campaign 显示」原则
+        # 逐 campaign 展示（不特殊标注为独立/共享基础设施）。
+        if form_ref:
+            rows += _row("表单", form_ref, "reuse")
+        else:
+            rows += ("<tr><td>表单</td><td><code>—</code></td><td>generate</td>"
+                     "<td>新建</td><td>未连</td></tr>" if not avail else
+                     "<tr><td>表单</td><td><code>—</code></td><td>generate</td>"
                      "<td>新建</td><td>✗</td></tr>")
     note = ("（未连接 Mautic 或缺少凭证：以下为基于策略规格的预期清单，无外链）" if not avail
             else "（已连接 Mautic，✓=实存 / 待建=推送时自动创建 / ✗=策略声明复用但 Mautic 中不存在；ref 可点击跳转详情页）")
@@ -1912,6 +2026,7 @@ _MAUTIC_ADMIN_ROUTES = {
     "segment": "/s/segments/{id}",
     "landingpage": "/s/landingpages/{id}",
     "sms": "/s/sms/{id}/view",
+    "form": "/s/forms/{id}/view",
 }
 
 def _mautic_base() -> str:
@@ -1922,7 +2037,7 @@ def _mautic_base() -> str:
         return "http://localhost:8080"
 
 def _mautic_asset_index() -> dict:
-    """读取 Mautic 已存在资产，构建 ref→id 索引（email/segment/landingpage）。
+    """读取 Mautic 已存在资产，构建 ref→id 索引（email/segment/landingpage/form）。
     仅 available=True 时索引有意义；否则 available=False 且无外链。"""
     env = mautic_read_assets("local")
     avail = env.get("available", False)
@@ -1939,11 +2054,12 @@ def _mautic_asset_index() -> dict:
         "email": _idx(env.get("emails", []), "name", "alias", "id"),
         "segment": _idx(env.get("segments", []), "name", "alias", "id"),
         "page": _idx(env.get("pages", []), "name", "alias", "id"),
+        "form": _idx(env.get("forms", []), "name", "alias", "id"),
     }
 
 def _mautic_ext_link(kind: str, ref, idx: dict) -> str:
     """返回 Mautic 详情页外链 <a>；不可解析（未连接/未找到/未知类型）返回空串。
-    kind: campaign | email | segment | landingpage。"""
+    kind: campaign | email | segment | landingpage | form。"""
     base = _mautic_base()
     routes = _MAUTIC_ADMIN_ROUTES
     if kind == "campaign":
@@ -1951,7 +2067,7 @@ def _mautic_ext_link(kind: str, ref, idx: dict) -> str:
             return ""
         return (f"<a class='ext' href='{base}{routes['campaign'].format(id=ref)}' "
                 f"target='_blank' rel='noopener'>Mautic 战役详情</a>")
-    if kind in ("email", "segment", "landingpage"):
+    if kind in ("email", "segment", "landingpage", "form"):
         if not idx or not idx.get("available"):
             return ""
         key = "page" if kind == "landingpage" else kind
@@ -2322,7 +2438,7 @@ def _program_body(program: dict, msg: str = "") -> str:
         _reasonable = plan.get("reasonable", True)
         _verdict = ("<span class='b-ok'>合理 ✓</span>" if _reasonable
                     else "<span class='b-bad'>需优化 ⚠</span>")
-        plan_html = (f"<div class='card'><h3>派生计划摘要（系统反推，无需手填）</h3>"
+        plan_html = (f"<div class='card'><h3>派生计划摘要</h3>"
                      f"<p class='note'>战役数：<b>{_esc(plan.get('n_campaigns','—'))}</b> · "
                      f"各 campaign 转化目标：<b>{_esc(plan.get('per_campaign_target','—'))}</b></p>"
                      f"<p class='note'>单 campaign 打开/点击率（推算）：<b>{_cr_disp}</b>"
@@ -2542,6 +2658,7 @@ def _program_body(program: dict, msg: str = "") -> str:
         _seg_ref = c["strategy"].get("segment", "")
         _lp_ref = c["strategy"].get("landing_page_ref", "")
         _lp_url = c["strategy"].get("landing_page_url", "")
+        _form_ref = c["strategy"].get("form_ref", "")
         if _em_ref:
             _lk = _mautic_ext_link("email", _em_ref, idx)
             ext_bits.append(f"邮件 {_lk if _lk else _asset_note('email', _em_ref, idx)}")
@@ -2556,6 +2673,9 @@ def _program_body(program: dict, msg: str = "") -> str:
                 ext_bits.append(f"落页 <a class='ext' href='{_esc(_lp_url)}' target='_blank' rel='noopener'>详情</a>")
             elif _lp_ref:
                 ext_bits.append(f"落页 {_asset_note('landingpage', _lp_ref, idx)}")
+        if _form_ref:
+            _lk = _mautic_ext_link("form", _form_ref, idx)
+            ext_bits.append(f"表单 {_lk if _lk else _asset_note('form', _form_ref, idx)}")
         ext_html = ("<p class='pill'>Mautic 外链：" + " · ".join(ext_bits) + "</p>") if ext_bits else ""
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
@@ -2605,7 +2725,9 @@ def _program_body(program: dict, msg: str = "") -> str:
                 f"<p class='pill'>触发 <code>{_esc(trig.get('mode','event'))}</code> "
                 f"{_esc(trig.get('event',''))} · 延迟 {trig.get('delay_hours',0)}h · 不配 segment</p>"
                 f"<p class='pill'>邮件 <code>{_esc(email_display(s['strategy']))}</code> · "
-                f"变体 <code>{_esc((s['strategy'].get('content_variant_spec') or {}).get('id',''))}</code></p>"
+                f"变体 <code>{_esc((s['strategy'].get('content_variant_spec') or {}).get('id',''))}</code>"
+                f"{('（按 ' + str(int(float(s['strategy'].get('variant_split',0.5) or 0.5)*100)) + '% 比例走变体）') if (s['strategy'].get('variant_split') and float(s['strategy'].get('variant_split',0) or 0) > 0) else ''}"
+                f"{(' · 表单 <code>' + _esc(s['strategy'].get('form_ref','')) + '</code>') if s['strategy'].get('form_ref') else ''}</p>"
                 f"<p class='pill'>豁免：{_esc('；'.join(f'{k}' for k in ex) or '—')}</p>"
                 f"<p class='pill'>治理节点：{_esc(', '.join(gtypes))}</p>"
                 f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap3_txt}</p>"
@@ -2615,8 +2737,10 @@ def _program_body(program: dict, msg: str = "") -> str:
                 f"{approve3_f}{push3_f}</div>")
     if svc:
         svc = ("<div class='card' style='background:var(--gov-soft)'><h3>服务序列（service/transactional）</h3>"
-               "<p class='note'>与 promo Program 解耦：不注入频次闸门/锚点仲裁，豁免 suppress_promo 与 comm_freeze，"
-               "不占 promo 配额、不计入每人触达上限。</p></div>" + svc)
+               "<p class='note'>事务型 / 即时触发（由用户动作如表单提交直接驱动，不按 segment + delay 排期）；"
+               "合规分治：与 promo Program 解耦 —— 不注入频次闸门/锚点仲裁，豁免 suppress_promo 与 comm_freeze，"
+               "不占 promo 配额、不计入每人触达上限。表单等资产按「谁先用谁显示」随所属 campaign 呈现，"
+               "非跨 campaign 共享基础设施。</p></div>" + svc)
     # changelog
     clog = ""
     if program.get("changelog"):

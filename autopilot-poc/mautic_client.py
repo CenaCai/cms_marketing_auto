@@ -710,7 +710,7 @@ def _format_err(body) -> str:
 
 def mautic_read_assets(env: str = "local") -> dict:
     """
-    读取 Mautic 已存在的资产（email / segment / landingpage），供驾驶舱判断
+    读取 Mautic 已存在的资产（email / segment / landingpage / form），供驾驶舱判断
     「新建 vs 调用已有」。
     防御式：任何错误、缺凭证、连接失败 → {"available": False, ...空列表}。
     成功结果进程内缓存 _ASSET_CACHE_TTL 秒（Mautic 全量列表较慢，避免每页刷新都重拉）。
@@ -721,17 +721,17 @@ def mautic_read_assets(env: str = "local") -> dict:
     try:
         cfg = load_config(env)
     except Exception:  # noqa: BLE001
-        return {"available": False, "emails": [], "segments": [], "pages": []}
+        return {"available": False, "emails": [], "segments": [], "pages": [], "forms": []}
     base = cfg["base_url"]
     client_id, client_secret = _oauth_creds(cfg)
     if not client_id or not client_secret:
-        return {"available": False, "emails": [], "segments": [], "pages": []}
+        return {"available": False, "emails": [], "segments": [], "pages": [], "forms": []}
     try:
         token = _get_token(base, client_id, client_secret)
     except Exception as e:  # noqa: BLE001
-        return {"available": False, "reason": str(e), "emails": [], "segments": [], "pages": []}
+        return {"available": False, "reason": str(e), "emails": [], "segments": [], "pages": [], "forms": []}
 
-    out = {"available": True, "emails": [], "segments": [], "pages": []}
+    out = {"available": True, "emails": [], "segments": [], "pages": [], "forms": []}
     # (输出键, API 路径, 响应中承载资产的键名)
     # 实测 Mautic 7：emails→{"emails":{id:{...}}}；segments→{"lists":{id:{...}}}；pages→{"pages":[{...}]}
     # 全量列表较慢（emails ~18s / segments ~15s），故拉取超时放宽到 45s。
@@ -739,11 +739,12 @@ def mautic_read_assets(env: str = "local") -> dict:
         ("emails", "/api/emails?limit=0", "emails"),
         ("segments", "/api/segments?limit=0", "lists"),
         ("pages", "/api/pages?limit=0", "pages"),
+        ("forms", "/api/forms?limit=0", "forms"),
     )
     for key, path, bucket_key in endpoints:
         res = _get(base, path, token, timeout=45)
         if res is None:  # 连接失败 → 整体判定为未连接
-            return {"available": False, "reason": "连接失败", "emails": [], "segments": [], "pages": []}
+            return {"available": False, "reason": "连接失败", "emails": [], "segments": [], "pages": [], "forms": []}
         # Mautic 7 返回形态：{"emails": {"56": {...}}} 或 {"lists": {"54": {...}}}（按 id 键的字典）
         # 以及 pages：{"pages": [{...}]}（列表）
         # legacy 返回：{"emails": {"total":N,"items":[...]}} 或 {"emails":[...]}

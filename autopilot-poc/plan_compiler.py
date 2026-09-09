@@ -702,6 +702,15 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     tail_entry = (stage_rule_ids[0] if stage_rule_ids
                   else (main_judge_id or (main_ep_entry or "n_log")))
 
+    # ---- 内容变体 A/B 路由（透明节点：仅流程图展示 + 供审批/复盘，不建真实 Mautic 事件，避免双发）----
+    # 条件：content_variant_spec 已生成（策略未给则策略层已同步合成 v1）且 variant_split>0。
+    # 命中分流比例 → 走变体邮件路径；未命中 → 走主邮件路径（与改动前逐字节一致）。
+    cv_spec = strategy.get("content_variant_spec") or {}
+    _has_variant = bool(cv_spec and (cv_spec.get("angle") or cv_spec.get("headline")
+                                     or cv_spec.get("summary")))
+    _variant_split = float(strategy.get("variant_split") or 0.5) or 0.0
+    _variant_continue = fork_ids[0] if fork_ids else ("n_tag" if is_service else "n_wait")
+
     graph: list = []
     graph = _inject_governance(graph, goal, strategy, campaign_id)
 
@@ -723,6 +732,7 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             and "OFF" not in subject:
         subject = f"{subject}（{int(discount['pct'])}% OFF）"
         strategy["subject"] = subject   # 写回策略 dict，保证下游展示/重编译一致
+    _email_main_next = "n_decision_variant" if _has_variant else _variant_continue
     graph.append(_node(
         "n_email_main", "email.send",
         {
@@ -745,8 +755,43 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             },
             "embed_fields": EMBED_FIELDS,
         },
-        nxt=(fork_ids[0] if fork_ids else ("n_tag" if is_service else "n_wait")),
+        nxt=_email_main_next,
     ))
+
+    if _has_variant:
+        # decision.variant：A/B 分流路由。透明节点（mtype=None）→ Mautic 不建事件，
+        # 但 next 让转换器穿透到主链，避免阻断；if_true/if_false 仅供 PoC 流程图展示分叉。
+        graph.append(_node(
+            "n_decision_variant", "decision.variant",
+            {
+                "signal": "ab.split",
+                "split": _variant_split,
+                "variant_id": cv_spec.get("id") or "v1",
+                "if_true": "n_email_variant",          # 命中分流比例 → 变体路径
+                "if_false": _variant_continue,          # 未命中 → 主邮件路径
+                "next": _variant_continue,              # 透明节点穿透：保证 Mautic 主链不断
+                "note": ("内容变体 A/B 路由：content_variant_spec 已生成且 variant_split>0 时，"
+                         f"按 {int(_variant_split * 100)}% 比例把受众路由到变体"
+                         f" {cv_spec.get('id') or 'v1'}（与主邮件同资产、Mautic A/B 同邮件不同 variant），"
+                         "避免双发。"),
+            },
+        ))
+        # n_email_variant：变体邮件（透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘）。
+        graph.append(_node(
+            "n_email_variant", "email.variant",
+            {
+                "channel": "email",
+                "variant_id": cv_spec.get("id") or "v1",
+                "angle": cv_spec.get("angle", ""),
+                "headline": cv_spec.get("headline", ""),
+                "summary": cv_spec.get("summary", ""),
+                "email_ref": email_ref,
+                "subject": cv_spec.get("headline") or subject,
+                "landing_page_url": cta_url,
+                "note": "变体邮件（A/B）：透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘。",
+            },
+            nxt=_variant_continue,
+        ))
 
     if is_service:
         # service/transactional：单次确认件，不做 wait/观测/兜底促销 follow-up
@@ -1076,6 +1121,9 @@ _MAUTIC_TYPE = {
     "stage.change": "lead.changestage",       # 改阶段（需 stage_id）
     "segment.change": "lead.changelist",      # 加入/移出分组（需 segment_id）
     "form.submit": "form.submit",             # 是否提交该表单（有 form_id 才限定，否则 applyToAny）
+    # ---- 内容变体 A/B 路由（透明：仅流程图展示 + 供审批/复盘，不建真实 Mautic 事件，避免双发）----
+    "decision.variant": None,
+    "email.variant": None,
 }
 
 # Mautic 7 Event.eventType（setEvents 经 ChannelExtractor::setChannel 依赖它，缺失会 500）
