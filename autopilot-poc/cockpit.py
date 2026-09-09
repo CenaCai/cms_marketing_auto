@@ -292,7 +292,7 @@ def _dash_body() -> str:
     if not progs:
         items = "<p class='sub'>暂无 Program。先 <a href='/brief'>填写一份 Brief</a> 发起目标。</p>"
     else:
-        items = "<table><tr><th>Goal</th><th>campaign 数</th><th>各 campaign 状态</th><th></th></tr>"
+        items = "<table><tr><th>Program</th><th>campaign 数</th><th>各 campaign 状态</th><th></th></tr>"
         for p in progs:
             states = " ".join(
                 f"<span class='badge {STATUS.get(c['status'], ('x','b-idle'))[1]}'>"
@@ -2138,21 +2138,25 @@ def _program_body(program: dict, msg: str = "") -> str:
                          f"<input name='approver' placeholder='审批人(真人)' style='width:160px;display:inline-block'>"
                          f"{ack_c}<button class='btn sm' type='submit'>审批通过</button></form>")
         push_f = ""  # 合并到下方 create_f（"创建并推送到 Mautic"），避免与"推送"按钮重复造成混淆
-        # 新阶段创建按钮（#8）：已审批且（首波 / 上一波已完成并回填结果）才可点
+        # 新阶段创建按钮（#8）：首波 / 上一波已完成并回填结果 才可点；
+        # 已审批待执行(approved_idle) 也显示按钮 → 推送失败后可从 UI 重新推送（不再被门禁关在门外）
         create_f = ""
-        if ap and st not in ("executing", "approved_idle", "done_met", "done_below"):
+        if ap and st not in ("executing", "done_met", "done_below"):
+            is_retry = (st == "approved_idle")
             if i == 0:
+                label = "重新推送到 Mautic" if is_retry else "创建并推送到 Mautic"
                 create_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/create' "
                             f"onsubmit='return confirm(\"确认推送到 Mautic（localhost:8080）并发布？\")' "
                             f"style='display:inline;margin-left:6px'>"
-                            f"<button class='btn sm sec' type='submit'>创建并推送到 Mautic</button></form>")
+                            f"<button class='btn sm sec' type='submit'>{label}</button></form>")
             else:
                 prev = campaigns[i - 1]
                 if prev["status"] in ("done_met", "done_below") and prev.get("feedback"):
+                    label = "重新发布下一波 →" if is_retry else "确认开启下一个 →"
                     create_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/create' "
                                 f"onsubmit='return confirm(\"确认推送到 Mautic（localhost:8080）并发布下一波？\")' "
                                 f"style='display:inline;margin-left:6px'>"
-                                f"<button class='btn sm sec' type='submit'>确认开启下一个 →</button></form>")
+                                f"<button class='btn sm sec' type='submit'>{label}</button></form>")
                 else:
                     create_f = "<span class='pill'>（上一波完成并回填结果后才可创建）</span>"
         # deferred 波次：不得到期自动发送，需运营显式启用
