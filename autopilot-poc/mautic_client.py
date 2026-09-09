@@ -126,26 +126,48 @@ def _in_date(s: str, date_str: str) -> bool:
     return dt.strftime("%Y-%m-%d") == date_str
 
 
-def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int = 15) -> str:
-    """OAuth2 client_credentials 换 access_token；失败抛 RuntimeError（带原因）。"""
+# 进程内 access_token 缓存：Mautic 7 的 /oauth/v2/token 偶发超时，
+# 缓存避免每次 push 都重取，也降低抖动导致 dry-run 的概率。Mautic token 默认 3600s 有效。
+_TOKEN_CACHE = {"token": None, "exp": 0.0}
+
+def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int = 20) -> str:
+    """OAuth2 client_credentials 换 access_token；失败抛 RuntimeError（带原因）。
+    带进程内缓存（TTL 3000s）+ 重试（最多 3 次，仅网络超时重试），跨过 token 端点偶发超时。"""
+    import time as _t
+    now = _t.time()
+    if _TOKEN_CACHE["token"] and _TOKEN_CACHE["exp"] > now:
+        return _TOKEN_CACHE["token"]
     url = f"{base_url}/oauth/v2/token"
     body = urllib.parse.urlencode({
         "grant_type": "client_credentials",
         "client_id": client_id,
         "client_secret": client_secret,
     }).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = _safe_json(resp.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"token 获取失败 HTTP {e.code}: {_safe_json(e.read().decode('utf-8', 'replace'))}")
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"token 获取网络错误: {e}")
-    if not isinstance(data, dict) or not data.get("access_token"):
-        raise RuntimeError(f"token 响应异常: {data}")
-    return data["access_token"]
+    last_err = None
+    for _ in range(1, 4):
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = _safe_json(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            last_err = f"token 获取失败 HTTP {e.code}: {_safe_json(e.read().decode('utf-8', 'replace'))}"
+            break  # 凭证错等 HTTP 错误不重试
+        except Exception as e:  # noqa: BLE001
+            last_err = f"token 获取网络错误: {e}"
+            continue  # 网络超时 → 重试
+        if isinstance(data, dict) and data.get("access_token"):
+            tok = data["access_token"]
+            try:
+                ttl = int(data.get("expires_in", 3600))
+            except (TypeError, ValueError):
+                ttl = 3600
+            _TOKEN_CACHE["token"] = tok
+            _TOKEN_CACHE["exp"] = now + max(ttl - 600, 60)
+            return tok
+        last_err = f"token 响应异常: {data}"
+        break
+    raise RuntimeError(last_err or "token 获取失败")
 
 
 def _post(base_url: str, path: str, body: dict, token: str, timeout: int = 15) -> dict:
@@ -296,10 +318,11 @@ def ensure_segment(name: str, env: str = "local", timeout: int = 15) -> dict:
         if existing:
             return {"id": int(existing["id"]), "name": existing.get("name"), "alias": existing.get("alias"), "created": False}
 
-    # 2) 新建（草稿下线）；filters 给基础筛选「email 非空」，替代空 filters（空 filters 会匹配全量且语义模糊）
+    # 2) 新建（草稿下线）。Mautic 7 的 /api/segments/new 表单不接受 filters / isGlobal
+    #    （会报 400: properties: 该表单中不可有额外字段 / operator 无效），故只发最小字段；
+    #    筛选条件若需要，后续用 edit 接口补。空筛选 segment 作为 campaign 联系来源足够。
     alias = _aliasify(name)
-    body = {"name": name, "alias": alias, "isPublished": False, "isGlobal": False,
-            "filters": [{"glue": "and", "field": "email", "operator": "!empty", "filter": "", "display": None}]}
+    body = {"name": name, "alias": alias, "isPublished": False}
     r = _post(base, "/api/segments/new", body, token, timeout=timeout)
     if r["status"] in (200, 201):
         seg = (r["body"] or {}).get("list") or {}
