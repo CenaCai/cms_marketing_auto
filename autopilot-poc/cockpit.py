@@ -1685,25 +1685,39 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
         return ref in name_map or ref in id_map
 
     def _row(kind, ref, mode):
-        if not ref:
+        is_none = not ref
+        if is_none:
             ref = "（无）"
+        ph = isinstance(ref, str) and "PLACEHOLDER" in ref
+        _map = emails if kind == "email" else segs if kind == "分群" else pages
+        resolved = bool(avail and not is_none and _exists(ref, _map, _map))
+        # 结论以「是否真能调用已有」为准，而非盲目信任 mode ——
+        # 防生成器占位 ref（EM_*_PLACEHOLDER / 未推送）被误标「调用已有」却没有外链。
         if mode == "generate":
             concl = "新建"
-        else:
+        elif ph:
+            concl = "待建（占位）"
+        elif resolved:
             concl = "调用已有"
-        if avail and ref not in ("（无）",):
-            real = "✓" if _exists(ref,
-                                  emails if kind == "email" else segs if kind == "分群" else pages,
-                                  emails if kind == "email" else segs if kind == "分群" else pages) \
-                else "✗"
-        elif avail:
-            real = "—"
+        elif mode == "propose":
+            # propose = 有则复用、无则推送时 ensure 创建；未解析时等同于「按需新建」
+            concl = "新建（按需）"
         else:
+            concl = "调用已有（未找到）"
+        if not avail:
             real = "未连"
-        # 可解析为 Mautic 实体 → ref 变成外链
+        elif is_none:
+            real = "—"
+        elif resolved:
+            real = "✓"
+        elif mode == "generate" or ph or mode == "propose":
+            real = "待建"
+        else:
+            real = "✗"
+        # 仅当 ref 真能解析为 Mautic 实体时才渲染外链
         ref_cell = f"<code>{_esc(ref)}</code>"
         lk_kind = {"email": "email", "分群": "segment", "着陆页": "landingpage"}.get(kind)
-        if lk_kind and avail and ref not in ("（无）",):
+        if lk_kind and resolved:
             lk = _mautic_ext_link(lk_kind, ref, idx)
             if lk:
                 ref_cell = f"<code>{_esc(ref)}</code> {lk}"
@@ -1728,7 +1742,7 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
                      "<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
                      "<td>新建</td><td>✗</td></tr>")
     note = ("（未连接 Mautic 或缺少凭证：以下为基于策略规格的预期清单，无外链）" if not avail
-            else "（已连接 Mautic，✓=实存 / ✗=策略引用但 Mautic 中不存在；ref 可点击跳转详情页）")
+            else "（已连接 Mautic，✓=实存 / 待建=推送时自动创建 / ✗=策略声明复用但 Mautic 中不存在；ref 可点击跳转详情页）")
     return (f"<div class='card'><h3>Mautic 资产清单（新建 vs 调用）</h3>"
             f"<p class='note'>{_esc(note)}</p>"
             f"<table><tr><th>类型</th><th>引用(ref)</th><th>模式</th>"
@@ -1793,6 +1807,16 @@ def _mautic_ext_link(kind: str, ref, idx: dict) -> str:
     return ""
 
 
+def _asset_note(kind: str, ref, idx: dict) -> str:
+    """ref 无法解析为 Mautic 资产时的说明文案（区分 未连接 / 占位 / 真缺失）。"""
+    if not idx.get("available"):
+        return "<span class='note'>（未连接 Mautic，无外链）</span>"
+    if "PLACEHOLDER" in str(ref):
+        return "<span class='note'>（占位 ref，推送创建后才有外链）</span>"
+    # 主 segment / email / 落地页在 push() 里都会 ensure，因此不存在时也会自动创建
+    return "<span class='note'>（Mautic 无对应资产，推送时将自动创建）</span>"
+
+
 def _mautic_campaign_name(campaign_id) -> str:
     """返回 Mautic campaign 的实时名字（单个 GET、不缓存，保证改名后同步到 Program 页）；
     失败回退列表缓存；再失败返回空串。"""
@@ -1813,7 +1837,12 @@ def _check_push_result(result: dict):
     if not isinstance(result, dict):
         return (False, "push() 返回结构异常")
     if result.get("dry_run"):
-        return (True, "")  # dry-run 不是失败，只是没真改 Mautic
+        note = result.get("note") or ""
+        # dry-run 通常=未填凭证的正常降级；若 note 表明是 token/凭证获取错误，则是失败，必须如实上报
+        # （否则会被误判为成功、状态谎报为执行中）
+        if ("token" in note) or ("凭证" in note) or ("获取" in note):
+            return (False, note)
+        return (True, "")  # 干净的 dry-run（未填凭证），不算失败
     if result.get("campaign_id"):
         # 即便 campaign_id 存在，仍校验每步 status（publish 步骤也可能 4xx）
         for step in (result.get("steps") or []):
@@ -2114,12 +2143,14 @@ def _program_body(program: dict, msg: str = "") -> str:
         if ap and st not in ("executing", "approved_idle", "done_met", "done_below"):
             if i == 0:
                 create_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/create' "
+                            f"onsubmit='return confirm(\"确认推送到 Mautic（localhost:8080）并发布？\")' "
                             f"style='display:inline;margin-left:6px'>"
                             f"<button class='btn sm sec' type='submit'>创建并推送到 Mautic</button></form>")
             else:
                 prev = campaigns[i - 1]
                 if prev["status"] in ("done_met", "done_below") and prev.get("feedback"):
                     create_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/create' "
+                                f"onsubmit='return confirm(\"确认推送到 Mautic（localhost:8080）并发布下一波？\")' "
                                 f"style='display:inline;margin-left:6px'>"
                                 f"<button class='btn sm sec' type='submit'>确认开启下一个 →</button></form>")
                 else:
@@ -2281,16 +2312,18 @@ def _program_body(program: dict, msg: str = "") -> str:
         _lp_url = c["strategy"].get("landing_page_url", "")
         if _em_ref:
             _lk = _mautic_ext_link("email", _em_ref, idx)
-            ext_bits.append(f"邮件 {_lk if _lk else '<span class=note>（Mautic 无对应，无外链）</span>'}")
+            ext_bits.append(f"邮件 {_lk if _lk else _asset_note('email', _em_ref, idx)}")
         if _seg_ref:
             _lk = _mautic_ext_link("segment", _seg_ref, idx)
-            ext_bits.append(f"分群 {_lk if _lk else '<span class=note>（Mautic 无对应，无外链）</span>'}")
+            ext_bits.append(f"分群 {_lk if _lk else _asset_note('segment', _seg_ref, idx)}")
         if _lp_ref or _lp_url:
             _lk = _mautic_ext_link("landingpage", _lp_ref, idx) if _lp_ref else ""
             if _lk:
                 ext_bits.append(f"落页 {_lk}")
             elif _lp_url:
                 ext_bits.append(f"落页 <a class='ext' href='{_esc(_lp_url)}' target='_blank' rel='noopener'>详情</a>")
+            elif _lp_ref:
+                ext_bits.append(f"落页 {_asset_note('landingpage', _lp_ref, idx)}")
         ext_html = ("<p class='pill'>Mautic 外链：" + " · ".join(ext_bits) + "</p>") if ext_bits else ""
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
@@ -3333,29 +3366,41 @@ class Handler(BaseHTTPRequestHandler):
         _save_program(p)
         result = push(c["proposal"], env="local", approved=True)
         c["proposal"]["deploy_result"] = result
-        # 真实反映 push 结果：失败时回退 status、不置 deployed=True
-        push_ok, push_err = _check_push_result(result)
-        if push_ok:
+        # 诚实反映 push 结果：
+        #  · 只有【真实在 Mautic 创建了 campaign】（dry_run=False 且 campaign_id 非空）才标记「执行中」+ deployed=True
+        #  · dry-run（无论有意未填凭证，还是 token/凭证超时）一律不标记执行中，避免误导
+        #  · 任何失败都保持 approved_idle，并在页面给出失败原因
+        if (not result.get("dry_run")) and result.get("campaign_id"):
             c["proposal"]["deployed"] = True
             c["status"] = "executing"
             _save_program(p)
-            note = "dry-run" if result.get("dry_run") else result.get("env")
-            msg = (f"<div class='card'><p class='b-ok'>{_esc(cid)} 已创建并推送到 Mautic（{_esc(note)}），"
-                   f"状态：执行中。{_esc('（未填凭证，仅 dry-run）' if result.get('dry_run') else '')}</p></div>")
-        else:
-            # 失败：保持 approved_idle，不算 deployed
+            msg = (f"<div class='card'><p class='b-ok'>✅ {_esc(cid)} 已真实推送到 Mautic"
+                   f"（campaign_id={_esc(result.get('campaign_id'))}，env={_esc(result.get('env'))}），状态：执行中。</p></div>")
+        elif result.get("dry_run"):
+            # dry-run：没真改 Mautic，状态保持 approved_idle，绝不谎报执行中
             c["proposal"]["deployed"] = False
-            # status 不动（已设 approved_idle），不强行 executing
+            _save_program(p)
+            note = result.get("note") or ""
+            if ("token" in note) or ("凭证" in note) or ("获取" in note):
+                msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败（dry-run 原因为错误，非成功）：{_esc(note)}</p>"
+                       f"<p class='note'>状态保持「已审批待创建」，未改为执行中。常见：Mautic 不可达 / OAuth token 获取超时。"
+                       f"修复后再次点击「创建并推送到 Mautic」重试。</p></div>")
+            else:
+                msg = (f"<div class='card'><p class='b-warn'>⚠️ {_esc(cid)} 仅 dry-run（未真正创建 campaign）：{_esc(note)}</p>"
+                       f"<p class='note'>状态保持「已审批待创建」。填好 config.json 的 client_id/secret 后重推才会真正落库。</p></div>")
+        else:
+            # 真实推送但 Mautic 未返回 campaign_id（多为 400，如 segment/资产创建被拒）
+            c["proposal"]["deployed"] = False
             _save_program(p)
             mcid = result.get("campaign_id")
             mcid_txt = f"（campaign_id={_esc(mcid)}）" if mcid else ""
-            msg = (f"<div class='card'><p class='b-bad'>{_esc(cid)} 推送失败{mcid_txt}：{_esc(push_err)}</p>"
-                   f"<p class='note'>Mautic 真实响应未创建 campaign。常见原因："
+            push_err = _format_mautic_err(result.get("error")) if result.get("error") else (result.get("note") or "未知错误")
+            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败{mcid_txt}：{_esc(push_err)}</p>"
+                   f"<p class='note'>Mautic 真实响应未创建 campaign。状态保持「已审批待创建」，未改为执行中。常见原因："
                    f"①事件图缺少 contact source（segment list）→ Mautic 7 必填；"
                    f"②email/landing 资产未先在 Mautic 创建（properties.email=0 占位 → 引用不存在的 id）；"
                    f"③campaign 名重复或别名冲突。</p>"
-                   f"<p class='note'>已自动回滚：status 保持 approved_idle，proposal.deployed=False。"
-                   f"修复后可再次点击「创建并推送到 Mautic」重试。</p></div>")
+                   f"<p class='note'>修复后可再次点击「创建并推送到 Mautic」重试。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
     def _handle_program_auto_feedback(self, gid, date_str):
