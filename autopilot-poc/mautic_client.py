@@ -188,6 +188,56 @@ def _post(base_url: str, path: str, body: dict, token: str, timeout: int = 15) -
         return {"url": url, "status": 0, "body": f"网络/连接错误: {e}"}
 
 
+def _basic_header(cfg: dict):
+    """Mautic 7 Projects API(/api/v2/projects) 走 Basic 认证(Mautic 用户账号)，与资产端
+    OAuth2 client_credentials Bearer 不同。从 config 的 basic_user/basic_password 取；
+    缺则返回 None（调用方降级，不建 project）。"""
+    import base64
+    u = (cfg.get("basic_user") or "").strip()
+    p = (cfg.get("basic_password") or "").strip()
+    if not u or not p:
+        return None
+    return "Basic " + base64.b64encode(f"{u}:{p}".encode("utf-8")).decode("ascii")
+
+
+def _v2_req(method: str, base_url: str, path: str, body: dict = None,
+            auth: str = None, timeout: int = 60) -> dict:
+    """Mautic 7 API Platform(/api/v2) 请求，Basic 认证。复用 mautic_client 启动时安装的
+    ProxyHandler({}) opener（绕过沙箱代理），故 localhost 直连可达。返回 {status, body}。"""
+    url = f"{base_url}{path}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    if auth:
+        req.add_header("Authorization", auth)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            try:
+                return {"status": resp.status, "body": json.loads(raw)}
+            except Exception:
+                return {"status": resp.status, "body": raw[:500]}
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        try:
+            b = json.loads(raw)
+        except Exception:
+            b = raw[:500]
+        return {"status": e.code, "body": b}
+    except Exception as e:  # noqa: BLE001
+        return {"status": 0, "body": f"网络/连接错误: {e}"}
+
+
+def _attach_project(base: str, res: str, aid, pid, token: str, timeout: int = 60):
+    """把已存在(reuse)的资产关联到 project（PATCH projects=[pid]）。新建资产在 POST body 已带
+    projects，无需此步。res ∈ segments/emails/pages/forms/campaigns。"""
+    try:
+        _patch(base, f"/api/{res}/{aid}/edit", {"projects": [pid]}, token, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _get(base_url: str, path: str, token: str, timeout: int = 15):
     """GET 读取 Mautic 资源，带 Bearer token；失败/无凭证返回 None（调用方据此判定未连接）。"""
     url = f"{base_url}{path}"
@@ -305,7 +355,7 @@ def _find_by_name(items: list, name: str):
     return None
 
 
-def ensure_segment(name: str, env: str = "local", timeout: int = 15) -> dict:
+def ensure_segment(name: str, env: str = "local", timeout: int = 15, project_id: int = None) -> dict:
     """按 name 找 segment；找不到就 POST 新建；返回 {"id","name","alias","created":bool}。
     失败/无凭证返回 {"id": None, "error": "..."}。"""
     if not name:
@@ -337,6 +387,8 @@ def ensure_segment(name: str, env: str = "local", timeout: int = 15) -> dict:
     #    筛选条件若需要，后续用 edit 接口补。空筛选 segment 作为 campaign 联系来源足够。
     alias = _aliasify(name)
     body = {"name": name, "alias": alias, "isPublished": False}
+    if project_id:
+        body["projects"] = [int(project_id)]
     r = _post(base, "/api/segments/new", body, token, timeout=timeout)
     if r["status"] in (200, 201):
         seg = (r["body"] or {}).get("list") or {}
@@ -346,7 +398,7 @@ def ensure_segment(name: str, env: str = "local", timeout: int = 15) -> dict:
     return {"id": None, "error": f"POST /api/segments/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
-def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int = None, email_type: str = "transactional", timeout: int = 15, custom_html: str = None) -> dict:
+def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int = None, email_type: str = "transactional", timeout: int = 15, custom_html: str = None, project_id: int = None) -> dict:
     """按 name 找 email；找不到就 POST 新建（草稿）；返回 {"id","subject","created":bool,"error"?}。
     subject 仅在新建时使用（已有 email 不会覆盖其内容）。
     custom_html：新建时的正文；缺省用结构化模板（不再生成 <p>主题</p> 空壳）。
@@ -388,6 +440,8 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
     # 只有 list 类型才需要 lists 字段；transactional 不需要
     if email_type == "list" and list_id:
         body["lists"] = [{"id": int(list_id)}]
+    if project_id:
+        body["projects"] = [int(project_id)]
     r = _post(base, "/api/emails/new", body, token, timeout=timeout)
     if r["status"] in (200, 201):
         em = (r["body"] or {}).get("email") or {}
@@ -398,7 +452,7 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
 
 
 def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: int = 15,
-                      custom_html: str = None, form_html: str = None) -> dict:
+                      custom_html: str = None, form_html: str = None, project_id: int = None) -> dict:
     """按 name 找 landing page；找不到就 POST 新建（草稿）；返回 {"id","alias","created":bool,"error"?}。
     正文默认用结构化落地页模板；若给了 url 内嵌 meta-refresh 跳转（mautic_code_mode 标准路径）；
     form_embed 非空时把表单 token 嵌进正文（落地页内嵌表单）。"""
@@ -451,6 +505,8 @@ def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: i
         if url:
             html = html.replace("</head>", f'<meta http-equiv="refresh" content="0;url={url}"></head>')
     body = {"name": name, "alias": alias, "isPublished": False, "customHtml": html, "title": name}
+    if project_id:
+        body["projects"] = [int(project_id)]
     r = _post(base, "/api/pages/new", body, token, timeout=timeout)
     if r["status"] in (200, 201):
         pg = (r["body"] or {}).get("page") or {}
@@ -533,7 +589,7 @@ def ensure_stage(name: str, weight: int = None, env: str = "local", timeout: int
     return {"id": None, "error": f"POST /api/stages/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
-def ensure_form(name: str, env: str = "local", timeout: int = 15, fields: list = None) -> dict:
+def ensure_form(name: str, env: str = "local", timeout: int = 15, fields: list = None, project_id: int = None) -> dict:
     """按 name 找 form；找不到就 POST 新建（草稿）。
 
     fields：表单字段列表（Mautic form field 结构）。缺省为「姓名 + 手机 + 邮箱」
@@ -588,6 +644,8 @@ def ensure_form(name: str, env: str = "local", timeout: int = 15, fields: list =
         "postActionProperty": "感谢提交，我们的商务同事会尽快与您联系。",
         "fields": fields,
     }
+    if project_id:
+        body["projects"] = [int(project_id)]
     r = _post(base, "/api/forms/new", body, token, timeout=timeout)
     if r["status"] in (200, 201):
         fm = (r["body"] or {}).get("form") or {}
@@ -595,6 +653,39 @@ def ensure_form(name: str, env: str = "local", timeout: int = 15, fields: list =
         if new_id:
             return {"id": int(new_id), "name": name, "alias": alias, "created": True}
     return {"id": None, "error": f"POST /api/forms/new HTTP {r['status']}: {_format_err(r['body'])}"}
+
+
+def ensure_project(name: str, env: str = "local", timeout: int = 60) -> int:
+    """按 name 找/建 Mautic project（/api/v2/projects，Basic 认证）。返回 int id 或 None。
+    project 与 cockpit program 一一对应（program 生成时建一个，所有资产挂其下）。
+    名字含 goal_id 保证唯一；同名复用避免重复建。"""
+    if not name:
+        return None
+    try:
+        cfg = load_config(env)
+    except Exception:  # noqa: BLE001
+        return None
+    base = cfg["base_url"]
+    auth = _basic_header(cfg)
+    if not auth:
+        return None
+    # 1) 找现有（列全量按 name 精准匹配；PoC 项目数少，分页足够）
+    try:
+        res = _v2_req("GET", base, "/api/v2/projects?itemsPerPage=200", auth=auth, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        res = None
+    body = (res or {}).get("body") if isinstance(res, dict) else None
+    if isinstance(body, dict):
+        for m in (body.get("member") or []):
+            if isinstance(m, dict) and m.get("id") and m.get("name") == name:
+                return int(m["id"])
+    # 2) 新建
+    r = _v2_req("POST", base, "/api/v2/projects", {"name": name}, auth=auth, timeout=timeout)
+    if r.get("status") == 201:
+        bid = (r.get("body") or {}).get("id")
+        if bid:
+            return int(bid)
+    return None
 
 
 def _format_err(body) -> str:
@@ -676,6 +767,17 @@ def mautic_read_assets(env: str = "local") -> dict:
         _ASSET_CACHE["ts"] = time.time()
         _ASSET_CACHE["data"] = out
     return out
+
+
+def invalidate_asset_cache() -> None:
+    """推送成功后使资产索引缓存失效，让驾驶舱卡片外链立即解析（否则要等 _ASSET_CACHE_TTL）。
+
+    push() 新建/复用 email/segment/landingpage 后，_mautic_asset_index() 仍可能命中 300s 旧缓存，
+    导致刚建出的邮件/落地页 ref 解析不到外链。这里清掉缓存，下次渲染即拉取最新资产列表。
+    锁保护；异常静默。"""
+    with _ASSET_LOCK:
+        _ASSET_CACHE["ts"] = 0.0
+        _ASSET_CACHE["data"] = None
 
 
 def mautic_read_campaigns(env: str = "local") -> dict:
@@ -768,7 +870,7 @@ def _fetch_form_html(base_url: str, form_id, token: str, timeout: int = 60) -> s
         return None
 
 
-def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
+def push(proposal: dict, env: str = "local", approved: bool = False, project_id: int = None) -> dict:
     """
     推送提案到 Mautic。返回结构化结果（含每步状态）。
     凭证缺失/无效 → dry-run，仅回调用清单。
@@ -809,10 +911,13 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         seg_name = ((proposal.get("strategy_ref") or {}).get("segment_ref")
                     or proposal.get("campaign", {}).get("audience_segment") or "")
         if seg_name:
-            rseg = ensure_segment(seg_name, env=env, timeout=60)
+            rseg = ensure_segment(seg_name, env=env, timeout=60, project_id=project_id)
             ensure_log.append({"asset": "segment", "name": seg_name, **rseg})
             if rseg.get("id"):
                 seg_id = rseg["id"]
+                # 已存在(reuse)的 segment 在 POST body 没带 projects → 补关联
+                if project_id and not rseg.get("created"):
+                    _attach_project(base, "segments", seg_id, project_id, token)
                 proposal["mautic_lists"] = [{"id": seg_id}]
             else:
                 return {
@@ -846,10 +951,12 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
     form_html = None
     if _needs_form:
         form_name = f"{campaign_name}-表单"
-        rform = ensure_form(form_name, env=env, timeout=60)
+        rform = ensure_form(form_name, env=env, timeout=60, project_id=project_id)
         ensure_log.append({"asset": "form", "name": form_name, **rform})
         if rform.get("id"):
             form_id = rform["id"]
+            if project_id and not rform.get("created"):
+                _attach_project(base, "forms", form_id, project_id, token)
             # 取表单渲染后的 HTML（cachedHtml）直接内嵌进落地页，规避 {form=alias} token 被 Mautic 剥离。
             # cachedHtml 在新建/已存在表单上均已填充（实测新表单创建后立即可取，长度 ~3k）；
             # 加「发布后重试」兜底，防止个别 Mautic 环境缓存未生成导致 form_html 为空、表单被静默丢弃。
@@ -861,9 +968,11 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
     lp_name = f"{campaign_name}-落地页"
     lp_public_url = ""
     rlp = ensure_landing_page(
-        lp_name, url=lp_url, env=env, timeout=60, form_html=form_html)
+        lp_name, url=lp_url, env=env, timeout=60, form_html=form_html, project_id=project_id)
     ensure_log.append({"asset": "landing_page", "name": lp_name, **rlp})
     if rlp.get("id"):
+        if project_id and not rlp.get("created"):
+            _attach_project(base, "pages", rlp["id"], project_id, token)
         # Mautic 落地页公开 URL：{base}/{alias}（注意：/s/ 是后台(admin)前缀，
         # 公开访问落地页不需要 /s/，否则会落到后台路由返回站点首页而非落地页内容）
         lp_public_url = f"{base}/{rlp.get('alias') or _aliasify(lp_name)}"
@@ -894,8 +1003,11 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         if name in email_id_cache:
             return email_id_cache[name]
         html = _build_email_html(subject, campaign_name, discount, lp_public_url, is_followup)
-        rem = ensure_email(name, subject=subject, env=env, list_id=seg_id, custom_html=html, timeout=60)
+        rem = ensure_email(name, subject=subject, env=env, list_id=seg_id,
+                           custom_html=html, timeout=60, project_id=project_id)
         ensure_log.append({"asset": "email", "name": name, **rem})
+        if rem.get("id") and project_id and not rem.get("created"):
+            _attach_project(base, "emails", rem["id"], project_id, token)
         email_id_cache[name] = rem.get("id")
         return rem.get("id")
 
@@ -960,6 +1072,8 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
 
     # 1) 创建 campaign（默认下线），同时带上 Mautic 7 期望的 events + canvasSettings（+ lists）
     create_body = {"name": goal_name, "isPublished": False}
+    if project_id:
+        create_body["projects"] = [int(project_id)]
     if proposal.get("mautic_events"):
         create_body["events"] = proposal["mautic_events"]
     if proposal.get("mautic_canvas"):

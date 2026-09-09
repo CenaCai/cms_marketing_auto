@@ -36,9 +36,10 @@ from goal_intake import parse_brief, GoalSpec
 from plan_compiler import compile, dump_proposal
 from approval_gate import (bind_and_approve, verify_push, is_valid,
                            ApprovalDecision)
-from mautic_client import (push, load_config, mautic_read_assets,
+from mautic_client import (push, load_config, ensure_project, mautic_read_assets,
                            mautic_read_campaigns, mautic_get_campaign,
-                           auto_feedback_for_campaign)
+                           auto_feedback_for_campaign, _aliasify,
+                           invalidate_asset_cache)
 from adaptive import (build_program, evaluate_and_replan, default_strategies,
                       DEFAULT_N_CAMPAIGNS, derive_plan, _split_windows,
                       ASSUMED_LP_CONV)
@@ -1698,7 +1699,7 @@ def _build_replan_prompt(program: dict, gid: str, cid: str) -> str:
     target_txt = target if target not in (None, 0, 0.0) else "未设置（运营尚未给 R）"
     done = next((c for c in program["campaigns"] if c["cid"] == cid), None)
     lines = []
-    lines.append("你是营销 Agent 的 L1 策略合成器。下面给出一个 Program 的执行结果，请产出「下一阶段策略」的 StrategySpec JSON。")
+    lines.append("你是营销 Agent 的 AI策略合成器。下面给出一个 Program 的执行结果，请产出「下一阶段策略」的 StrategySpec JSON。")
     lines.append("")
     lines.append("## 目标")
     lines.append(f"- goal_id: {gid}")
@@ -2028,6 +2029,25 @@ def _mautic_netloc(env="local"):
     return "127.0.0.1:8080"
 
 
+def _resolve_program_project(p, env="local"):
+    """返回 program 对应的 Mautic project id；没有就现建（/api/v2 Basic 认证）并写回 program 字典。
+    program 名取自 p['goal']['name']，project 名带 goal_id 保证唯一、可复用（改 Brief 覆盖模式复用同名 project）。
+    返回 int id 或 None（Mautic 不可达 / 未配 Basic 凭证时降级为 None，不阻断 program 生成与推送）。"""
+    pid = p.get("mautic_project_id")
+    if pid:
+        return pid
+    try:
+        name = (p.get("goal") or {}).get("name") or p.get("goal_id") or "PROG"
+        gid = p.get("goal_id") or ""
+        pid = ensure_project(f"{name} ({gid})", env)
+    except Exception:  # noqa: BLE001
+        pid = None
+    if pid:
+        p["mautic_project_id"] = pid
+        _save_program(p)
+    return pid
+
+
 def _check_push_result(result: dict):
     """真实判定 push() 返回是否成功。
     - dry_run=True → 算成功（无凭证时正常降级）
@@ -2278,7 +2298,7 @@ def _total_strategy_card(program: dict) -> str:
                f"<p class='note'>设计方向：{_esc(vd.get('design_direction') or '—')}</p>")
 
     return (f"<div class='card'><h3>总策略（画像包 + 策略规划 + 属性）</h3>"
-            f"<p class='note'>总策略 = 按目标人群特点推断的画像包（内容/视觉/频次方向） + L1 策略规划 + 运营填写的人群属性；以下只读。</p>"
+            f"<p class='note'>总策略 = 按目标人群特点推断的画像包（内容/视觉/频次方向） + AI策略规划 + 运营填写的人群属性；以下只读。</p>"
             f"<h4 style='margin:10px 0 4px'>① 画像包（系统推断）</h4>{pkg_html}"
             f"<h4 style='margin:10px 0 4px'>② 目标人群属性（运营填写）</h4>"
             f"<table class='kv'>{rows}</table>"
@@ -2482,10 +2502,10 @@ def _program_body(program: dict, msg: str = "") -> str:
                       f"<input name='conversion' placeholder='达成率0~1（留空用回填）' style='width:150px;display:inline-block'>"
                       f"<input name='unsub' placeholder='退订率0~1' style='width:120px;display:inline-block'>"
                       f"<button class='btn sm ghost' type='submit'>标记完成并回写达成 → 改写下游</button></form>")
-        # L1 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成下一阶段策略，贴回后确认应用
+        # AI策略 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成下一阶段策略，贴回后确认应用
         replan_ui = (
             f"<div style='margin-top:10px;border-top:1px dashed var(--line);padding-top:8px'>"
-            f"<p class='note'>L1 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成下一阶段策略，贴回后确认应用。</p>"
+            f"<p class='note'>AI策略 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成下一阶段策略，贴回后确认应用。</p>"
             f"<button type='button' class='btn sm sec' "
             f"onclick=\"copyReplanPrompt('{_esc(gid)}','{_esc(c['cid'])}')\">"
             f"📋 复制信息（去 WorkBuddy 生成）</button>"
@@ -2496,7 +2516,7 @@ def _program_body(program: dict, msg: str = "") -> str:
             f"<input name='unsub' placeholder='退订率0~1' style='width:120px;display:inline-block'>"
             f"<textarea name='strategy_spec' placeholder='粘贴 WorkBuddy 返回的策略 JSON（StrategySpec）' "
             f"style='width:100%;height:84px;margin-top:6px;display:block'></textarea>"
-            f"<button class='btn sm' type='submit'>确认下阶段策略（应用 L1）</button></form></div>"
+            f"<button class='btn sm' type='submit'>确认下阶段策略（应用 AI策略）</button></form></div>"
         )
         result_txt = ""
         if c.get("result"):
@@ -2615,7 +2635,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                     extra.append(f"新增分支：{_esc('；'.join(e['added']))}")
                 lines = "".join(f"<li>{x}</li>" for x in extra) or "<li>（仅标记完成，无下游改写）</li>"
             clog += (f"<p><strong>上游 {_esc(e['completed_cid'])} 完成</strong>"
-                     + (" <span class='badge b-gov'>L1 策略</span>" if e.get("source") == "l1_workbuddy" else "")
+                     + (" <span class='badge b-gov'>AI策略</span>" if e.get("source") == "l1_workbuddy" else "")
                      + f" · 达成率 "
                      f"{_esc('未设置（R 未给）' if e.get('target_unset') else e.get('ratio'))} · "
                      f"结果 {_esc(e['result'])}</p><ul>{lines}</ul>")
@@ -3199,6 +3219,12 @@ class Handler(BaseHTTPRequestHandler):
             if existing and ref_goal_id:
                 program["goal_id"] = ref_goal_id
                 goal.goal_id = ref_goal_id
+            # 生成 program 时同步在 Mautic 建一个 project（program = project），所有资产挂其下；
+            # Mautic 不可达 / 未配 Basic 凭证时降级为 None，不阻断生成（推送时再惰性补建）。
+            try:
+                _resolve_program_project(program, "local")
+            except Exception:  # noqa: BLE001
+                pass
             _save_program(program)
             # Location 响应头按 latin-1 编码：goal_id 含中文（slug 保留中文，属 isalnum）时
             # 直接拼会抛 UnicodeEncodeError，必须先百分号编码（路由侧 do_GET 已 unquote 配对）。
@@ -3246,7 +3272,7 @@ class Handler(BaseHTTPRequestHandler):
         # 无外部端点：直连 DeepSeek 合成（复用 deepseek key + build_strategy_prompt）
         try:
             content = _deepseek_completion(
-                "你是营销 Agent 的 L1 策略合成器。只输出严格 JSON，不要解释文字、"
+                "你是营销 Agent 的 AI策略合成器。只输出严格 JSON，不要解释文字、"
                 "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
                 prompt)
             spec = _extract_strategy_spec(content)
@@ -3432,7 +3458,7 @@ class Handler(BaseHTTPRequestHandler):
                 brief = _brief_from_parsed(out, objective)
                 prompt = _build_strategy_prompt_from_brief(brief)
                 content = _deepseek_completion(
-                    "你是营销 Agent 的 L1 策略合成器。只输出严格 JSON，不要解释文字、"
+                    "你是营销 Agent 的 AI策略合成器。只输出严格 JSON，不要解释文字、"
                     "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
                     prompt)
                 spec = _extract_strategy_spec(content)
@@ -3492,6 +3518,63 @@ class Handler(BaseHTTPRequestHandler):
                f"{_esc(decision.reason)}</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
+def _sync_resolved_assets_to_strategy(c, result):
+    """push() 已用派生名把真实资产建好（邮件=campaign_name / 落地页=campaign_name-落地页 /
+    表单=campaign_name-表单）并把 id 写进 proposal.mautic_events，但从不回写 strategy 的展示字段，
+    导致卡片永远显「[待生成]」占位、落地页无外链。
+
+    这里从 push 的 ensure_log 取回真实资产名/alias，回填到 strategy，并翻转 email_mode/
+    email_pending（消除 [待生成]）；同时使资产索引缓存失效，让卡片外链立即解析而非等 TTL(300s)。
+    c 可以是 campaign 或 service 序列：两者都有 c["strategy"] 与 c["proposal"]。"""
+    s = c.get("strategy")
+    if not isinstance(s, dict):
+        return
+    prop = c.get("proposal") or {}
+    cname = ((prop.get("campaign") or {}).get("name")
+             or s.get("campaign_name") or c.get("cid"))
+    if not cname:
+        return
+    log = (result or {}).get("ensure_log") or []
+    by_name = {}
+    for it in log:
+        nm = it.get("name")
+        if nm and it.get("id") is not None:
+            by_name[nm] = it
+    base = _mautic_base()
+
+    # 邮件：主邮件名 = campaign_name；提醒 = campaign_name-提醒（与 push() 派生名一致）
+    main = by_name.get(cname) or {}
+    if main.get("id") is not None:
+        s["email_ref"] = cname
+        s["email_id"] = main.get("id")
+    follow = by_name.get(f"{cname}-提醒") or {}
+    if follow.get("id") is not None:
+        s["email_followup_ref"] = f"{cname}-提醒"
+        s["email_followup_id"] = follow.get("id")
+    # 落地页
+    lp = by_name.get(f"{cname}-落地页") or {}
+    if lp.get("id") is not None:
+        s["landing_page_ref"] = f"{cname}-落地页"
+        s["landing_page_id"] = lp.get("id")
+        _alias = lp.get("alias") or _aliasify(f"{cname}-落地页")
+        if _alias:
+            s["landing_page_url"] = f"{base}/{_alias}"
+    # 表单（随所属 campaign 显示，见展示一致性改造；此处先把真实 ref/id 落盘备显示）
+    form = by_name.get(f"{cname}-表单") or {}
+    if form.get("id") is not None:
+        s["form_ref"] = f"{cname}-表单"
+        s["form_id"] = form.get("id")
+    # 翻转占位状态：卡片不再显「[待生成]」
+    if s.get("email_mode") == "generate":
+        s["email_mode"] = "reuse"
+    s["email_pending"] = False
+    # 资产已写入 Mautic：刷新索引缓存，让卡片外链立即解析
+    try:
+        invalidate_asset_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
     def _handle_service_push(self, gid, sid):
         p = _load_program(gid)
         if not p:
@@ -3509,11 +3592,14 @@ class Handler(BaseHTTPRequestHandler):
             msg = (f"<div class='card'><p class='b-bad'>❌ 服务序列 {_esc(sid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。序列未真正创建，可重试。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
-        result = push(s["proposal"], env="local", approved=True)
+        pid = _resolve_program_project(p, "local")
+        result = push(s["proposal"], env="local", approved=True, project_id=pid)
         s["proposal"]["deploy_result"] = result
         push_ok, push_err = _check_push_result(result)
         if push_ok:
             s["proposal"]["deployed"] = True
+            # 回写解析出的真实资产 ref（修 [待生成]/无链接 bug，对齐 _handle_campaign_push）
+            _sync_resolved_assets_to_strategy(s, result)
             _save_program(p)
             msg = (f"<div class='card'><p class='b-ok'>服务序列已提交推送"
                    f"（{_esc('dry-run' if result.get('dry_run') else result.get('env'))}）：{_esc(reason)}</p></div>")
@@ -3545,8 +3631,10 @@ class Handler(BaseHTTPRequestHandler):
             msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。campaign 未真正创建，状态保持原样，可重试。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
+        # 解析 program 对应的 Mautic project（没有则现建），把所有资产挂其下
+        pid = _resolve_program_project(p, "local")
         try:
-            result = push(c["proposal"], env="local", approved=True)
+            result = push(c["proposal"], env="local", approved=True, project_id=pid)
         except Exception as exc:
             result = {"dry_run": False, "campaign_id": None,
                       "note": f"push 执行异常：{type(exc).__name__}: {exc}",
@@ -3556,6 +3644,10 @@ class Handler(BaseHTTPRequestHandler):
         push_ok, push_err = _check_push_result(result)
         if push_ok:
             c["proposal"]["deployed"] = True
+            # —— 回写解析出的真实资产 ref（修 Q2 显示 bug：push 建资产用派生名并把 id 写进
+            #     proposal.mautic_events，但从不回写 strategy.email_ref/landing_page_url，
+            #     导致卡片永远显示「[待生成]」占位、无外链）——
+            _sync_resolved_assets_to_strategy(c, result)
             _save_program(p)
             note = "dry-run" if result.get("dry_run") else result.get("env")
             msg = f"<div class='card'><p class='b-ok'>已提交推送（{_esc(note)}）：{_esc(reason or '已上线')}</p></div>"
@@ -3632,8 +3724,10 @@ class Handler(BaseHTTPRequestHandler):
             msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。未真正创建 campaign，状态保持「已审批待创建」。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
+        # 解析 program 对应的 Mautic project（没有则现建），把所有资产挂其下
+        pid = _resolve_program_project(p, "local")
         try:
-            result = push(c["proposal"], env="local", approved=True)
+            result = push(c["proposal"], env="local", approved=True, project_id=pid)
         except Exception as exc:
             result = {"dry_run": False, "campaign_id": None,
                       "note": f"push 执行异常：{type(exc).__name__}: {exc}",
@@ -4062,7 +4156,7 @@ class Handler(BaseHTTPRequestHandler):
             "source": "l1_workbuddy", "at": time.time(),
         })
         _save_program(p)
-        msg = (f"<div class='card'><p class='b-ok'>上游 {_esc(cid)} 完成（L1 策略已应用）· "
+        msg = (f"<div class='card'><p class='b-ok'>上游 {_esc(cid)} 完成（AI策略已应用）· "
                f"达成率 {result['conversion']} · 退订率 {result['unsub']}<br>"
                f"改写下游：{_esc('；'.join(applied) or '无匹配下游')}<br>"
                f"新增分支：{_esc('；'.join(added) or '无')}</p></div>")
@@ -4093,7 +4187,7 @@ class Handler(BaseHTTPRequestHandler):
             msg = (f"<div class='card'><p class='b-bad'>❌ 提案 {_esc(gid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。提案未真正创建，可重试。</p></div>")
             return self._send(200, _page("提案", _proposal_body(d, msg)))
-        result = push(d, env="local", approved=True)
+        result = push(d, env="local", approved=True, project_id=d.get("mautic_project_id"))
         d["deployed"] = True
         d["deploy_result"] = result
         dump_proposal(d, os.path.join(OUT_DIR, f"proposal_{gid}.json"))

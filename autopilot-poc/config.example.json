@@ -2,12 +2,16 @@
   "local": {
     "base_url": "http://localhost:8080",
     "client_id": "",
-    "client_secret": ""
+    "client_secret": "",
+    "basic_user": "",
+    "basic_password": ""
   },
   "prod": {
     "base_url": "https://your-mautic.example.com",
     "client_id": "",
-    "client_secret": ""
+    "client_secret": "",
+    "basic_user": "",
+    "basic_password": ""
   },
   "deepseek": {
     "api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
