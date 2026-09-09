@@ -31,6 +31,38 @@ Schema（见 strategies/example_strategy.json）：
                           "quiet_hours": "22:00-09:00"},
       "tags_to_write": ["……"],
       "success_criteria": {"metric": "……", "threshold": "……"}
+
+      // ---- 分叉 / 终点 / 阶段升降级 / 主流程收口（规则 4）----
+      "branches": [
+        {
+          "id": "clicked",
+          "note": "点击后的处理（note 里的「打标/阶段/分组/邮件/落地页/表单」等词会参与动作判定）",
+          "when": {"signal": "email.click|email.open|page.hit|form.submit",
+                   "op": ">=|exists", "value": 1},
+          // endpoint 列出「这个分支可用的终点类型」（候选集）。
+          // ⚠️ 列了几个 ≠ 触发几个：真正触发哪个由下面 actions 决定。
+          "endpoint": {
+            "tags": ["clicked"],
+            "stage": "engaged",           // 阶段名，由代码解析成 stage_id
+            "segment": "SEG_HOT",         // 分组名/ref，解析成 segment_id（"action":"remove" = 移出）
+            "email": "EM_FOLLOWUP",
+            "landing_page": "LP_MAIN",
+            "form": "FORM_SIGNUP",        // 表单名，解析成 form_id
+            "terminal": false
+          },
+          // actions：Agent 判定「这次到底触发哪几个」。不写 → 代码按分支语义推断 1 个，
+          // 并在 compile_warnings 里写明忽略了哪些（不会静默丢需求）。
+          "actions": ["tags"],
+          "next": "ucl2028_c2"           // 可选：下游 campaign 的 cid
+        }
+      ],
+      "stage_rules": [
+        {"from": "lead", "to": "mql", "when": {"signal": "form.submit"}, "direction": "up|down"}
+      ],
+      "main_endpoint": {
+        "tags": ["converted"], "stage": "customer", "terminal": true,
+        "judgment": {"signal": "page.hit", "op": ">=", "value": 2}
+      }
     }
   ]
 }
@@ -497,9 +529,15 @@ _ENDPOINT_KEYS = {
     "landing_page": ("landing_page", "landing_page_ref", "lp", "page", "lp_ref"),
     "form": ("form", "form_ref", "form_id"),
     "terminal": ("terminal", "is_terminal", "end", "is_end"),
+    # actions：本次终点「真正要触发哪几个动作」。声明了字段 ≠ 全部触发，
+    # 没写时由 plan_compiler 按分支语义推断一个。例：{"tags": [...], "stage": "x", "actions": ["tags","stage"]}
+    # ⚠️ 不收 "action"：那是 segment 的 add/remove（{"segment":"X","action":"remove"}），
+    #    混进来会把 "remove" 当动作名解析，导致整个终点被清空。
+    "actions": ("actions", "do", "fire", "emit", "run", "触发"),
 }
 EMPTY_ENDPOINT = {"tags": [], "stage": None, "segment": None, "email": None,
-                  "landing_page": None, "form": None, "terminal": False}
+                  "landing_page": None, "form": None, "terminal": False, "actions": [],
+                  "note": "", "action": "add"}
 
 
 def normalize_endpoint(raw, terminal_default: bool = False):
@@ -517,7 +555,7 @@ def normalize_endpoint(raw, terminal_default: bool = False):
         return dict(EMPTY_ENDPOINT, terminal=bool(terminal_default))
     out = dict(EMPTY_ENDPOINT)
     for key, aliases in _ENDPOINT_KEYS.items():
-        if key == "terminal":
+        if key in ("terminal", "actions"):
             continue
         v = _pick(raw, aliases)
         if key == "tags":
@@ -529,6 +567,14 @@ def normalize_endpoint(raw, terminal_default: bool = False):
             out[key] = str(v).strip() if v not in (None, "") else None
         else:
             out[key] = str(v).strip() if v not in (None, "") else None
+    acts = _pick(raw, _ENDPOINT_KEYS["actions"])
+    out["actions"] = [str(a) for a in _as_list(acts) if str(a or "").strip()] \
+        if acts not in (None, "", [], {}) else []
+    # note/desc 是给「该触发哪个动作」的推断提供文案线索的（也是审批人看的说明）
+    out["note"] = str(_pick(raw, ("note", "desc", "description")) or "")
+    # action：分组终点的 add / remove（"移出 SEG_PROMO" 也是合法终点语义）
+    act = str(_pick(raw, ("action", "segment_action")) or "").strip().lower()
+    out["action"] = "remove" if act in ("remove", "rm", "delete", "移出", "移除") else "add"
     term = _pick(raw, _ENDPOINT_KEYS["terminal"])
     out["terminal"] = bool(term) if term is not None else bool(terminal_default)
     return out
@@ -561,6 +607,12 @@ def normalize_branches(raw) -> list:
         cond = normalize_condition(cond_src if cond_src is not None else item)
         ep_src = _pick(item, ("endpoint", "then", "to", "target", "outcome"))
         endpoint = normalize_endpoint(ep_src if ep_src is not None else inner)
+        # actions 写在分支层（endpoint 的兄弟键）也算数——那是更自然的写法：
+        # {"id":"clicked","actions":["tags","stage"],"endpoint":{...}}
+        if not endpoint.get("actions"):
+            bacts = _pick(item, _ENDPOINT_KEYS["actions"])
+            if bacts not in (None, "", [], {}):
+                endpoint["actions"] = [str(a) for a in _as_list(bacts) if str(a or "").strip()]
         btype = str(_pick(item, ("type", "kind"), "") or "").strip().lower()
         if btype not in ("decision", "condition"):
             btype = "condition" if cond else "decision"
@@ -573,6 +625,8 @@ def normalize_branches(raw) -> list:
             "condition": cond,
             "endpoint": endpoint,
             "next": str(nxt).strip() if nxt not in (None, "") else None,
+            # note/label 保留：既是审批说明，也是「该触发哪个终点动作」的推断线索
+            "note": str(_pick(item, ("note", "desc", "description", "label")) or ""),
         })
     return out
 

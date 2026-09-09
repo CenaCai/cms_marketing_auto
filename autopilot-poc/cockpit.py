@@ -88,7 +88,15 @@ def _yesterday_str() -> str:
 def _load_program(gid: str):
     p = _program_path(gid)
     if not os.path.exists(p):
-        return None
+        # 兜底：curl / 定时任务若不百分号编码直接发原始 UTF-8 字节，
+        # http.server 会按 iso-8859-1 解码成乱码，这里还原一次再查（如 /program/中文/auto-feedback）。
+        try:
+            alt = gid.encode("latin-1", "strict").decode("utf-8", "strict")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return None
+        if alt == gid or not os.path.exists(_program_path(alt)):
+            return None
+        p = _program_path(alt)
     with open(p, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -663,6 +671,31 @@ def _log_ai_error(msg: str) -> None:
         pass
 
 
+def _age_buckets_from_range(rng: str) -> str:
+    """
+    "0-40" / "50-" 这样的数值年龄范围 → 覆盖的档位串（规则同前端 matchAgeBuckets：按交集算）。
+    用途：DeepSeek 只回了 audience_age_range 时，audience_age 档位由服务端兜底算出——
+    策略合成 / 画像推断都消费档位，不能因为新增 range 字段就断供。
+    """
+    s = (rng or "").strip()
+    if "-" not in s:
+        return ""
+    lo_s, hi_s = (x.strip() for x in s.split("-", 1))
+    lo = int(lo_s) if lo_s.isdigit() else None
+    hi = int(hi_s) if hi_s.isdigit() else None
+    if lo is None and hi is None:
+        return ""
+    buckets = [(18, 24), (25, 34), (35, 44), (45, 54), (55, None)]
+    out = []
+    for b_lo, b_hi in buckets:
+        if lo is not None and b_hi is not None and b_hi < lo:
+            continue
+        if hi is not None and b_lo > hi:
+            continue
+        out.append(f"{b_lo}-{b_hi}" if b_hi else f"{b_lo}+")
+    return ",".join(out)
+
+
 # 「营销目标 → AI 意图识别」按钮逻辑（DeepSeek）：读取目标文本，回填简称/日期/年龄/性别/收入/渠道来源等字段。
 AI_PARSE_JS = """
 (function(){
@@ -698,7 +731,7 @@ function setVal(name, val){
   if(el.dispatchEvent){ el.dispatchEvent(new Event('change', {bubbles:true})); }
   if(el.dispatchEvent){ el.dispatchEvent(new Event('input', {bubbles:true})); }
 }
-function aiCacheKey(obj){ return 'brief_aiparse_' + (obj||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
+function aiCacheKey(obj){ return 'brief_aiparse_v2_' + (obj||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
 function aiCacheGet(key){ try{ var v=sessionStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){ return null; } }
 function aiCacheSet(key,val){ try{ sessionStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
 function matchAgeBuckets(minRaw, maxRaw){
@@ -747,7 +780,16 @@ function fillParse(j){
   setVal('budget', j.budget);
   setVal('locale', j.locale);
   setVal('audience_age', j.audience_age);
-  fillAgeFromBuckets(j.audience_age);
+  if(j.audience_age_range){
+    var _p=String(j.audience_age_range).split('-');
+    var _lo=parseInt(_p[0],10), _hi=(_p.length>1)?parseInt(_p[1],10):NaN;
+    var _imn=document.querySelector('[name=audience_age_min]'), _imx=document.querySelector('[name=audience_age_max]');
+    if(_imn && !isNaN(_lo)) _imn.value=_lo;
+    if(_imx) _imx.value = isNaN(_hi) ? '' : _hi;
+    updateAgeMatch();
+  } else {
+    fillAgeFromBuckets(j.audience_age);
+  }
   setVal('audience_gender', j.audience_gender);
   setVal('audience_income', j.audience_income);
   setVal('audience_source', j.audience_source);
@@ -851,6 +893,50 @@ OBJ_HISTORY_JS = """
 """
 
 
+def campaign_count(start_date: str, end_date: str, overall_conv: str) -> dict:
+    """
+    campaign（波次）数量：只由「活动周期 D」与「预期转化率 C」决定，画像包不参与。
+    服务端算好后硬塞进提示词——实测让模型自己算 D/C 不可靠（60 天 + 10% 仍只出 3 波）。
+    返回 {n, days, conv, reason}；days 为 None 表示日期缺失/不可解析。
+    """
+    from datetime import date as _date
+    days = None
+    try:
+        _s = _date.fromisoformat((start_date or "").strip())
+        _e = _date.fromisoformat((end_date or "").strip())
+        days = (_e - _s).days + 1
+        if days < 1:
+            days = None
+    except Exception:  # noqa: BLE001
+        days = None
+    conv = None
+    try:
+        _c = (overall_conv or "").strip()
+        if _c:
+            conv = float(_c)
+    except Exception:  # noqa: BLE001
+        conv = None
+    if days is None:
+        base, base_txt = 3, "周期未知 → 基准 3"
+    elif days <= 14:
+        base, base_txt = 2, "D≤14 天 → 基准 2"
+    elif days <= 45:
+        base, base_txt = 3, "15≤D≤45 天 → 基准 3"
+    elif days <= 90:
+        base, base_txt = 4, "46≤D≤90 天 → 基准 4"
+    else:
+        base, base_txt = 5, "D>90 天 → 基准 5"
+    if conv is not None and conv >= 0.10:
+        adj, adj_txt = 1, "C≥10% → +1"
+    elif conv is None or conv <= 0.02:
+        adj, adj_txt = -1, "C 未设置或 ≤2% → −1"
+    else:
+        adj, adj_txt = 0, "2%<C<10% → ±0"
+    n = max(1, min(5, base + adj))
+    return {"n": n, "days": days, "conv": conv,
+            "reason": f"{base_txt}；{adj_txt}；夹取 [1,5] → {n}"}
+
+
 def build_strategy_prompt(brief: dict) -> str:
     """把 Brief 上下文拼成自包含提示词，交给 WorkBuddy（小腾）生成 StrategySpec JSON。"""
     oc = (brief.get("overall_conv") or "").strip()
@@ -901,6 +987,12 @@ def build_strategy_prompt(brief: dict) -> str:
             "内容 levers / CTA 取并集（各画像包 levers 全部覆盖）、文案融合多画像调性；"
             "不允许只用最高分画像覆盖其余画像。\n"
         )
+    # campaign 数量：服务端按「周期 + 转化率」算好后硬塞进提示词（画像包不参与）
+    _cc = campaign_count(start_date, end_date, oc)
+    d_txt = str(_cc["days"]) if _cc["days"] is not None else "未知"
+    c_txt = f"{_cc['conv']:.0%}" if _cc["conv"] is not None else "未设置"
+    n_campaigns = _cc["n"]
+    cid_list = "、".join(f"c{i}" for i in range(1, n_campaigns + 1))
     tpl = (
         "你是营销 Agent 的 L1 策略合成角色。请基于以下 Brief 生成一份 StrategySpec JSON"
         "（严格 JSON，不要解释文字、不要 markdown 代码块包裹，只输出可被 json.loads 解析的对象），"
@@ -920,13 +1012,25 @@ def build_strategy_prompt(brief: dict) -> str:
         "1. 选画像包（GENERIC / HNW_FAMILY / YOUNG_TREND / PARENT_FAM / CORP_GRP / DORMANT）必须先查本项目的画像包参数表"
         "（项目内路径 references/audience-content-map.json，与 cockpit.py 同级目录下），"
         "按打分公式 score = Σ weight×match / Σ weight（阈值 0.6）匹配接触人字段。命中 ≥2 个时按分数降序列候选交运营选。\n"
-        "2. 命中画像包后，频次 max_per_24h/max_per_7d、静默窗、触达时段、文案调性、画面调性、CTA 模板**必须**沿用该包 strategy；不允许凭感觉改写。\n"
+        "2. 命中画像包后，频次 max_per_24h/max_per_7d、静默窗、触达时段、文案调性、画面调性、CTA 模板**必须**沿用该包 strategy；不允许凭感觉改写。"
+        "注意：画像包只决定每一波的**内容与触达参数**，**不决定 campaign 数量**（数量见下方【campaign 数量规则】）。\n"
         "3. 命中 0 个（且不为 GENERIC）：用 GENERIC 兜底。{multi_pkg}\n"
         "4. 输出的 audience_package 必须与上方「目标画像包 {aud_pkg}」**回显一致**（不要自创 code、不要改写大小写）；"
         "服务端会用它为该包 strategy 的默认值兜底，并在 Program 页展示。\n"
         "5. business_topic（业务主题，如「UCL2028 门票预售 / 跨年演唱会 / 早鸟优惠」）必须在顶层写明，"
         "并贯穿 objective、campaign name、subject_examples、CTA 与落地页文案——"
         "本系统不会替你猜主题，主题不清的文案一律按不可用处理。\n"
+        "【campaign 数量规则（与画像包解耦）】\n"
+        "1. campaign 数量 N **只**由「活动周期 D」与「预期转化率 C」决定；画像包、受众字段、预算、语言均不参与。\n"
+        "2. 基准（D = 开始日期~结束日期含首尾的天数）：D≤14 → 2 个；15≤D≤45 → 3 个；46≤D≤90 → 4 个；D>90 → 5 个。\n"
+        "3. 调整：C≥0.10 → +1（预期转化高，值得分波培育）；C 为空或 ≤0.02（仅曝光 / 无营收目标）→ −1。\n"
+        "4. 夹取：N 下限 1、上限 5。\n"
+        "5. 画像包只改变每一波讲什么、怎么讲（content_emphasis / levers / tone / CTA / 视觉 / 合规口径）；"
+        "命中不同画像包**不得**增减波数。\n"
+        "6. 若 Brief 原文已明确指定波次数（如「分 3 波」），以运营显式指定为准，本规则只作为未指定时的默认值。\n"
+        "7. 本次 Brief 的服务端已算好：活动周期 D={d_txt} 天、预期转化率 C={c_txt}（{count_reason}）→ "
+        "**必须生成恰好 {n_campaigns} 个 campaign**，cid 依次为 {cid_list}。"
+        "这是硬约束：除 Brief 原文明确指定过波次数外，不得增减，也不得因画像包不同而改变。\n"
         "【国际化与落地页规则】\n"
         "1. 语言优先级先由 audience_region 判断：\n"
         "   · 若 audience_region 不含「中国大陆」（包括仅港澳台、仅海外、港澳台+海外、未选），无论 locale 是否包含 zh_CN，都只生成英文 campaign，不生成中文翻译稿；\n"
@@ -968,7 +1072,9 @@ def build_strategy_prompt(brief: dict) -> str:
                       oc=oc, lang_label=lang_label, locale=locale, budget=budget,
                       is_revenue=str(is_revenue).lower(), cons=cons,
                       aud_pkg=aud_pkg, aud_block=aud_block, oc_json=oc_json,
-                      multi_pkg=multi_pkg_txt)
+                      multi_pkg=multi_pkg_txt,
+                      d_txt=d_txt, c_txt=c_txt, count_reason=_cc["reason"],
+                      n_campaigns=n_campaigns, cid_list=cid_list)
 
 
 def _extract_strategy_spec(raw: str):
@@ -1376,38 +1482,57 @@ def _service_preview_html(service_spec: list) -> str:
             f"服务序列（service · 不进 promo Program · 共 {len(service_spec)} 条）</h4>" + rows)
 
 
-# 画像包 → 策略取向（只读展示；不随左侧受众字段切换）
+# 画像包 → 内容取向（只读展示；不随左侧受众字段切换）
+#
+# 设计约束（重要）：画像包**只决定内容**——每波讲什么、怎么讲（价值主张 / 角度 / 调性 / CTA /
+# 视觉 / 合规口径）。campaign（波次）数量由活动周期 + 预期转化率单独决定，与画像包无关，
+# 所以这里任何一行都不得出现 c1/c2/…/「N 波」这类数量描述。
 _PERSONA_STRATEGY_ROWS = [
     ("家庭（HNW_FAMILY）",
-     "以观赛家庭 / 亲子场景切入，CTA 主打「家庭优先购买资格」。沿用本地方案的种子验证→全量扩量骨架："
-     "先用曾购票 / 高意向切片小批量验证（c1），通过后再扩全量（c2）；到过 LP 未提交者做一次异议回收（c3），"
-     "始终未达 LP 者换标题 / 换角度复投一次（c4），host 官宣时借权威事件收口（c5）。登记即停促销、转服务确认。"),
+     "内容切入：观赛家庭 / 亲子场景，CTA 主打「家庭优先购买资格」。"
+     "角度取深度价值 / 数据对比 / 长期主义，语气理性克制、报告感，"
+     "禁用「低价 / 限时 / 拼团 / 秒杀 / 仅剩」；视觉大留白 + 高端实景，单一克制 CTA。"
+     "登记后即停促销、转服务确认。"),
     ("年轻人（YOUNG_TREND）",
-     "走氛围与稀缺感角度（决赛唯一候选 / 优先资格），弱化条款、强化「第一时间拿到资格」。"
-     "首波小批量验证后放量；c3 对到过 LP 未提交者降摩擦（表单减字段），c4 对零打开者换角度；同样 ≤3 触、免打扰与护栏约束。"),
+     "内容切入：氛围与稀缺感（决赛唯一候选 / 优先资格），弱化条款、强化「第一时间拿到资格」。"
+     "语气口语化、短句、可用 emoji，引用 UGC 与限量信息；视觉高饱和撞色、人物特写，CTA 用「抢 / 速戳 / 蹲一个」。"
+     "单波触达受该包频次上限与免打扰约束。"),
     ("父母辈（PARENT_FAM）",
-     "主打「带孩子看决赛」的价值主张与确定性信息（日期 / 场馆表述须按合规口径：host 待官宣前不得写成已确认）。"
-     "按 5 波节奏执行；触达理由不足时不强行加波，宁用内容变体区分，避免频次堆叠。"),
+     "内容切入：「带孩子看决赛」的价值主张 + 确定性信息。合规口径：日期 / 场馆在 host 官宣前不得写成已确认。"
+     "语气温和具体、攻略感，突出安全细节与同行案例；视觉暖色卡片式 + 真实家庭合影，CTA 指向亲子版行程 / 安全保障。"),
     ("公司客户（CORP_GRP）",
-     "以 Hospitality 包厢 / 企业观赛权益为主线，收入档 L4/L5。可纳入高意向种子切片直连 c1→c2；"
-     "c5 借 host 确认事件做权威性收口，适合转客户经理跟进而非纯邮件触达。"),
+     "内容切入：Hospitality 包厢 / 企业观赛权益，收入档 L4/L5。语气商务简洁、表格化呈现权益与议程，"
+     "展示真实企业 logo，CTA 为「获取团购方案 / 联系企业顾问」；更适合转客户经理跟进而非纯邮件触达。"),
     ("沉默客户激活（DORMANT）",
-     "以外部权威事件（host 确认）或新权益作为重启理由，避免「纯提醒式」唤醒。"
-     "归入差异化复投波（c4 / c5）；仍无互动者走抑制名单 / 清洗，不追加频次。"),
+     "内容切入：以外部权威事件（host 确认）或新权益作为重启理由，避免「纯提醒式」唤醒。"
+     "语气怀旧口语、像朋友来信，只讲一个全新变化、不堆栈优惠；视觉低饱和复古 + 人物背影。"
+     "仍无互动者走抑制名单 / 清洗，不追加频次。"),
     ("GENERIC 通用兜底",
-     "未命中任一画像包时走默认递进策略（分波递进：延迟递增、变体递增），"
-     "发送受频次闸门 1/24h·3/7d、退订熔断 0.3% 与抑制名单护栏约束。"),
+     "未命中任一画像包时的中性内容取向：客观陈述事实 + 2-3 条通用卖点 + 单一 CTA"
+     "（查看详情 / 了解活动），不挑人、不挑场景，中性配色与通用实景图。"),
 ]
+
+# campaign 数量规则（与画像包解耦，页面只读展示，供运营核对 Agent 产出）
+_CAMPAIGN_COUNT_RULE = (
+    "campaign 数量 N 只由「活动周期 D」与「预期转化率 C」决定，画像包、受众字段、预算均不参与："
+    "① 按周期定基准：D≤14 天 → 2；15~45 天 → 3；46~90 天 → 4；&gt;90 天 → 5；"
+    "② 按转化率调整：C≥10% → +1（预期高，值得分波培育）；C 未设置或 ≤2%（纯曝光 / 低预期）→ −1；"
+    "③ 夹取：下限 1、上限 5。"
+)
 
 
 def _audience_plan_html() -> str:
-    """② 区只读块：画像包 → 策略取向（内置文案映射）。"""
-    head = "<h4 style='margin:12px 0 6px'>画像包 → 策略取向</h4>"
+    """② 区只读块：画像包 → 内容取向（内置文案映射）+ campaign 数量规则。"""
+    head = ("<h4 style='margin:12px 0 6px'>画像包 → 内容取向"
+            "<span class='note' style='font-weight:400'>（只影响内容，不决定 campaign 数量）</span></h4>")
     rows = "".join(
         f"<div style='border-top:1px dashed #cfe3b7;padding:7px 0'>"
         f"<div><strong>{_esc(name)}</strong></div><div class='note'>{_esc(txt)}</div></div>"
         for name, txt in _PERSONA_STRATEGY_ROWS)
-    return head + rows
+    rule = (f"<div style='border-top:1px dashed #cfe3b7;padding:7px 0'>"
+            f"<div><strong>campaign 数量规则</strong></div>"
+            f"<div class='note'>{_CAMPAIGN_COUNT_RULE}</div></div>")
+    return head + rows + rule
 
 
 def _build_replan_prompt(program: dict, gid: str, cid: str) -> str:
@@ -1770,6 +1895,52 @@ def _provenance_line(s: dict) -> str:
             f"<span class='note' style='margin-left:6px'>（规格=策略写死 · 画像包=包默认值 · 红线=约束优先 · 默认=系统兜底）</span></p>")
 
 
+_ASSET_LABEL = {"stage": "阶段", "segment": "分组", "form": "表单"}
+
+
+def _compile_notes_html(prop: dict) -> str:
+    """
+    编译期说明卡片：终点判定告警（声明了 N 类只触发 X 类）+ 资产解析台账。
+    两件事都必须让运营看见：
+      - 「声明了 4 类终点、只触发了打标」如果静默发生，等于悄悄丢了需求；
+      - 「自动建了 stage 草稿」如果不提示，Mautic 里会多一个没人认领的未上线资产。
+    """
+    if not isinstance(prop, dict):
+        return ""
+    warns = prop.get("compile_warnings") or []
+    assets = prop.get("asset_resolution") or []
+    if not warns and not assets:
+        return ""
+    out = []
+    if warns:
+        items = "".join(f"<li>{_esc(w)}</li>" for w in warns)
+        out.append(
+            "<details open><summary class='pill b-warn' style='cursor:pointer'>"
+            f"编译提示 {len(warns)} 条（终点判定/信号回落/资产解析）</summary>"
+            f"<ul style='margin:6px 0 0 18px;padding:0;font-size:12px;line-height:1.7'>{items}</ul>"
+            "</details>")
+    if assets:
+        rows = []
+        for a in assets:
+            st = a.get("status") or ""
+            badge = ("<span class='pill b-warn'>自动建草稿</span>" if st == "created"
+                     else "<span class='pill ok'>复用已有</span>" if st in ("reused", "id_ref", "inline_id")
+                     else "<span class='pill b-warn'>未解析</span>")
+            rows.append(
+                f"<tr><td>{_esc(_ASSET_LABEL.get(a.get('kind'), a.get('kind', '')))}</td>"
+                f"<td><code>{_esc(str(a.get('name') or ''))}</code></td>"
+                f"<td>{_esc(str(a.get('id') if a.get('id') is not None else '—'))}</td>"
+                f"<td>{badge}</td></tr>")
+        out.append(
+            "<details><summary class='pill' style='cursor:pointer'>"
+            f"资产解析台账 {len(assets)} 项（stage/segment/form 名称 → Mautic ID）</summary>"
+            "<table style='margin-top:6px;font-size:12px;border-collapse:collapse'>"
+            "<tr style='color:var(--muted)'><th align=left>类型</th><th align=left>声明名</th>"
+            "<th align=left>ID</th><th align=left>结果</th></tr>"
+            + "".join(rows) + "</table></details>")
+    return "".join(out)
+
+
 def _total_strategy_card(program: dict) -> str:
     """
     总策略 = 画像包（含内容/视觉方向）+ 策略规划 + 人群属性。
@@ -2125,6 +2296,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
                   f"<p style='margin:8px 0'>{_strategy_summary(c['strategy'])}</p>"
                   f"{_provenance_line(c['strategy'])}"
+                  f"{_compile_notes_html(prop)}"
                   f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap_txt} {result_txt}</p>"
                   f"{goals_txt}{fb_txt}{ext_html}"
                   f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
@@ -2463,7 +2635,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
-        path = self.path.split("?")[0]
+        # URL 解码：goal_id 可能是中文（slug 只剔非字母数字，中文属于 isalnum），
+        # 浏览器会把 /program/中文 百分号编码后发回来，不解码就匹配不到 Program。
+        path = urllib.parse.unquote(self.path.split("?")[0])
         if path in ("/", ""):
             return self._send(200, _page("驾驶舱", _dash_body()))
         if path == "/brief":
@@ -2529,7 +2703,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, _page("404", "<p>未知路径</p>"))
 
     def do_POST(self):
-        path = self.path.split("?")[0]
+        # 同 do_GET：中文 goal_id 会被浏览器百分号编码，需解码后再匹配 Program
+        path = urllib.parse.unquote(self.path.split("?")[0])
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode("utf-8")
         ctype = self.headers.get("Content-Type", "")
@@ -2751,8 +2926,11 @@ class Handler(BaseHTTPRequestHandler):
             program["constraints"] = constraints
             program["plan"] = plan
             _save_program(program)
+            # Location 响应头按 latin-1 编码：goal_id 含中文（slug 保留中文，属 isalnum）时
+            # 直接拼会抛 UnicodeEncodeError，必须先百分号编码（路由侧 do_GET 已 unquote 配对）。
             self.send_response(302)
-            self.send_header("Location", f"/program/{goal.goal_id}")
+            self.send_header("Location",
+                             "/program/" + urllib.parse.quote(str(goal.goal_id), safe=""))
             self.end_headers()
         except Exception as e:  # noqa: BLE001
             self._send(200, _page("Brief 错误", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/brief'>返回</a></p>"))
@@ -2864,13 +3042,17 @@ class Handler(BaseHTTPRequestHandler):
             "例：起 2027-01-01、为期两个月 → 2027-02-28；"
             "「2010 年万圣节结束后一周」→ \"2010-11-07\"。跨年正确进位。"
             "否则 \"\"。\n"
+            "- audience_age_range: 字符串 \"min-max\"（纯数字年龄界限，精确到描述给出的数值，"
+            "不要折算成档位）。下限未提及填 0，上限未提及留空：\n"
+            "  · \"40 岁以下\" → \"0-40\"；\"18~34 岁\"、\"18-34 岁\" → \"18-34\"；\n"
+            "  · \"30-45\" → \"30-45\"；\"50 岁以上\"、\"60 岁以上\" → \"50-\"/\"60-\"。\n"
+            "  未给出数值界限（如「年轻人」「中年」「20 出头」）则 \"\"。\n"
             "- audience_age: 枚举字符串或多值（多个值用英文逗号分隔，不要空格，如 \"18-24,25-34\"）。"
             "可取值：\"\" / \"18-24\" / \"25-34\" / \"35-44\" / \"45-54\" / \"55+\"。"
-            "把年龄描述映射到覆盖该范围的所有档位：\n"
-            "  · \"18~34 岁\"、\"18-34 岁\"、\"18 到 34 岁\" → \"18-24,25-34\"；\n"
-            "  · \"18-30\" → \"18-24,25-34\"；\"30-40\" → \"35-44\"；\"40-50\" → \"45-54\"；\n"
-            "  · \"40 岁以下\"、\"35 岁及以下\" → \"18-24,25-34\"（若强调「20 出头」「年轻」则 \"18-24\"）；\n"
-            "  · \"50 岁以上\"、\"60 岁以上\" → \"55+\"；\"中年\"、\"35 岁以上\" → \"35-44,45-54\"。未提及年龄则 \"\"。\n"
+            "仅当无法给出 audience_age_range（模糊描述）时才按档位填写：\n"
+            "  · \"年轻人\"、\"20 出头\" → \"18-24\"；\"中年\" → \"35-44,45-54\"。\n"
+            "  若 audience_age_range 非空，此项必须填 \"\"（前端会按精确范围自动算档位，"
+            "禁止两处同时给值）。未提及年龄则两者都 \"\"。\n"
             "- audience_gender: 枚举 \"\" / \"男\" / \"女\" / \"未知\"。仅当描述指明性别时填写。\n"
             "- audience_income: 枚举字符串，必须取其一：\"\" / \"L1\" / \"L2\" / \"L3\" / \"L4\" / \"L5\"。"
             "档位含义：L1=<3k，L2=3k~8k，L3=8k~20k，L4=20k~50k，L5=>50k（单位人民币/月）。"
@@ -2941,14 +3123,14 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             return self._send_json({"ok": False, "error": f"DeepSeek 返回解析失败：{e}；原文：{raw[:500]}"})
         fields = ("goal_name", "start_date", "end_date", "overall_conv", "is_revenue",
-                  "budget", "locale", "audience_age", "audience_gender",
+                  "budget", "locale", "audience_age_range", "audience_age", "audience_gender",
                   "audience_income", "audience_source", "audience_education",
                   "audience_industry", "audience_region", "constraints", "strategy_spec")
         # 中文标签（前端 filled 提示用）
         field_label = {
             "goal_name": "活动简称", "start_date": "开始日期", "end_date": "结束日期",
             "overall_conv": "转化率", "is_revenue": "是否营收", "budget": "预算", "locale": "语言",
-            "audience_age": "年龄", "audience_gender": "性别", "audience_income": "收入",
+            "audience_age_range": "年龄范围", "audience_age": "年龄", "audience_gender": "性别", "audience_income": "收入",
             "audience_source": "渠道来源", "audience_education": "教育", "audience_industry": "行业",
             "audience_region": "地区", "constraints": "约束", "strategy_spec": "策略",
         }
@@ -2961,6 +3143,11 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 v = "" if v in (None, False) else str(v)
             out[f] = v
+            if f == "audience_age" and not v:
+                # DeepSeek 只给了精确范围（audience_age_range）时，档位由服务端兜底算出，
+                # 策略合成 / 画像推断继续吃档位，不会断供。
+                v = _age_buckets_from_range(out.get("audience_age_range") or "")
+                out[f] = v
             if v:
                 filled.append(field_label.get(f, f))
 

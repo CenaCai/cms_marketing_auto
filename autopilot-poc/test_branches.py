@@ -133,8 +133,8 @@ check(s4b["main_endpoint"]["judgment"] is None, "未写判断 → judgment=None"
 s4c = normalize_campaign({"cid": "c4c"}, 0)
 check(s4c["main_endpoint"] == {"tags": [], "stage": None, "segment": None, "email": None,
                                "landing_page": None, "form": None, "terminal": True,
-                               "judgment": None},
-      "无任何终点声明 → 全空但结构完整")
+                               "judgment": None, "actions": [], "note": "", "action": "add"},
+      "无任何终点声明 → 全空但结构完整（含 actions/note 两个新键的缺省）")
 
 print("\n=== 5. 老 spec 回归（旧键一个不少、值不变）===")
 OLD_C = {

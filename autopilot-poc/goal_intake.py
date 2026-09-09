@@ -142,6 +142,7 @@ def infer_audience_package(profile) -> dict:
       matches     list  所有 ≥ 阈值画像包的 [{code,label,score,evidence}]（降序，多画像）
       alternatives list 除最高分外其它命中包（兼容旧字段，同 matches[1:]）
       fallback    bool  是否走 GENERIC 兜底
+      near_miss   dict  仅兜底时出现：最接近但未达阈值的包 {code,label,score,evidence}；无候选时为 None
     """
     if not isinstance(profile, dict):
         profile = {}
@@ -169,10 +170,14 @@ def infer_audience_package(profile) -> dict:
     top = matched[0] if matched else None
     alts = matched[1:]
     if not top:
+        # 兜底：保留真实算出的证据（原先硬编码 [] 会把证据丢掉，UI 上只剩一个不可解释的 GENERIC）
+        # near_miss = 最接近但未达阈值的包，供 UI 提示「最接近 YOUNG_TREND 0.375，差 0.225」
         return {
             "code": "GENERIC", "codes": [], "label": "通用兜底",
             "score": rows[0]["score"] if rows else 0.0,
-            "evidence": [], "matches": [], "alternatives": alts, "fallback": True,
+            "evidence": rows[0]["evidence"] if rows else [],
+            "near_miss": rows[0] if rows else None,
+            "matches": [], "alternatives": alts, "fallback": True,
         }
     return {
         **top,

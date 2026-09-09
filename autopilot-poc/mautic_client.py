@@ -205,6 +205,56 @@ def _aliasify(name: str) -> str:
     return (s or "asset")[:50]
 
 
+def _build_email_html(subject: str, activity: str = "", discount: dict = None,
+                      landing_page_url: str = "", is_followup: bool = False) -> str:
+    """生成结构化营销邮件正文（内联样式，邮件客户端兼容）。
+    替代旧的 <p>主题</p> 空壳——至少是可发出去的完整邮件。"""
+    act = activity or subject
+    discount_html = ""
+    if isinstance(discount, dict) and discount.get("enabled") and discount.get("pct"):
+        discount_html = (
+            f'<p style="margin:12px 0;font-size:16px;color:#b12704;font-weight:bold">'
+            f'专属优惠：{int(discount["pct"])}% OFF</p>'
+        )
+    intro = "这封是补发提醒，别错过你的专属权益。" if is_followup else "这是为你准备的活动专属信息，敬请查收。"
+    cta = ""
+    if landing_page_url:
+        cta = (
+            '<a href="' + landing_page_url + '" '
+            'style="display:inline-block;margin:16px 0;padding:12px 28px;background:#b12704;'
+            'color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px">查看 / 购票</a>'
+        )
+    return (
+        '<div style="max-width:600px;margin:0 auto;font-family:-apple-system,\'PingFang SC\','
+        '\'Microsoft YaHei\',sans-serif;color:#222;line-height:1.7">'
+        f'<h1 style="font-size:20px;margin:0 0 10px;color:#111">{act}</h1>'
+        '<p style="margin:0 0 8px;color:#444">亲爱的用户，您好：</p>'
+        f'<p style="margin:0 0 8px;color:#444">{intro}</p>'
+        f'{discount_html}'
+        f'{cta}'
+        '<p style="margin:24px 0 0;font-size:12px;color:#999">如不希望再收到此类邮件，可点击退订。</p>'
+        '</div>'
+    )
+
+
+def _build_landing_page_html(activity: str, cta_label: str = "立即购票") -> str:
+    """生成结构化落地页（替代旧 <p>名字</p> 占位）。"""
+    return (
+        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+        f'<title>{activity}</title></head>'
+        '<body style="font-family:-apple-system,\'PingFang SC\',sans-serif;background:#f7f7f5;'
+        'margin:0;padding:40px">'
+        '<div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:8px;'
+        'padding:40px 32px">'
+        f'<h1 style="font-size:24px;margin:0 0 12px">{activity}</h1>'
+        '<p style="color:#555;line-height:1.7">活动详情与购票入口即将开放，敬请期待。</p>'
+        '<a href="#" style="display:inline-block;margin-top:16px;padding:12px 28px;'
+        'background:#b12704;color:#ffffff;text-decoration:none;border-radius:4px">'
+        f'{cta_label}</a>'
+        '</div></body></html>'
+    )
+
+
 def _find_by_name(items: list, name: str):
     """从 [{id,name,alias}, ...] 列表里按 name（精确）或 alias（精确）找资产。"""
     if not name or not items:
@@ -246,9 +296,10 @@ def ensure_segment(name: str, env: str = "local", timeout: int = 15) -> dict:
         if existing:
             return {"id": int(existing["id"]), "name": existing.get("name"), "alias": existing.get("alias"), "created": False}
 
-    # 2) 新建（草稿下线）
+    # 2) 新建（草稿下线）；filters 给基础筛选「email 非空」，替代空 filters（空 filters 会匹配全量且语义模糊）
     alias = _aliasify(name)
-    body = {"name": name, "alias": alias, "isPublished": False, "isGlobal": False, "filters": []}
+    body = {"name": name, "alias": alias, "isPublished": False, "isGlobal": False,
+            "filters": [{"glue": "and", "field": "email", "operator": "!empty", "filter": "", "display": None}]}
     r = _post(base, "/api/segments/new", body, token, timeout=timeout)
     if r["status"] in (200, 201):
         seg = (r["body"] or {}).get("list") or {}
@@ -258,9 +309,10 @@ def ensure_segment(name: str, env: str = "local", timeout: int = 15) -> dict:
     return {"id": None, "error": f"POST /api/segments/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
-def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int = None, email_type: str = "transactional", timeout: int = 15) -> dict:
+def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int = None, email_type: str = "transactional", timeout: int = 15, custom_html: str = None) -> dict:
     """按 name 找 email；找不到就 POST 新建（草稿）；返回 {"id","subject","created":bool,"error"?}。
     subject 仅在新建时使用（已有 email 不会覆盖其内容）。
+    custom_html：新建时的正文；缺省用结构化模板（不再生成 <p>主题</p> 空壳）。
     email_type: 默认 "transactional"（campaign events 用的就是 transactional，无需挂 list）；
                 "list" 时 Mautic 要求 lists，但 segment id 通常不被接受（"所选的选项无效"）。
     """
@@ -294,7 +346,7 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
         "subject": subject or name,
         "isPublished": False,
         "emailType": email_type,
-        "customHtml": f"<p>{subject or name}</p>",
+        "customHtml": custom_html if custom_html else _build_email_html(subject or name, name),
     }
     # 只有 list 类型才需要 lists 字段；transactional 不需要
     if email_type == "list" and list_id:
@@ -308,9 +360,9 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
     return {"id": None, "error": f"POST /api/emails/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
-def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: int = 15) -> dict:
-    """按 name 找 landing page；找不到就 POST 新建（草稿）；返回 {"id","created":bool,"error"?}。
-    若给了 url 用 redirect（meta-refresh 兜底），否则占位 HTML。"""
+def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: int = 15, custom_html: str = None) -> dict:
+    """按 name 找 landing page；找不到就 POST 新建（草稿）；返回 {"id","alias","created":bool,"error"?}。
+    正文默认用结构化落地页模板；若给了 url 内嵌 meta-refresh 跳转（mautic_code_mode 标准路径）。"""
     if not name:
         return {"id": None, "error": "name 为空"}
     try:
@@ -330,20 +382,167 @@ def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: i
     if isinstance(res, dict):
         bucket = res.get("pages") or []
         items = bucket if isinstance(bucket, list) else (list(bucket.values()) if isinstance(bucket, dict) else [])
-        existing = _find_by_name(items, name)
+        # 落地页 API 返回 title（name 为 None），故按 title/alias 查重
+        alias = _aliasify(name)
+        existing = None
+        for it in items:
+            if isinstance(it, dict) and it.get("id"):
+                if (it.get("title") == name) or (it.get("alias") == alias):
+                    existing = it
+                    break
         if existing:
-            return {"id": int(existing["id"]), "name": existing.get("name"), "created": False}
+            return {"id": int(existing["id"]), "name": existing.get("title") or existing.get("name"),
+                    "alias": existing.get("alias"), "created": False}
 
     alias = _aliasify(name)
-    html = f'<html><body><p>{name}</p>{"<meta http-equiv=\"refresh\" content=\"0;url=" + url + "\">" if url else ""}</body></html>'
+    if custom_html:
+        html = custom_html
+    else:
+        html = _build_landing_page_html(name)
+        if url:
+            html = html.replace("</head>", f'<meta http-equiv="refresh" content="0;url={url}"></head>')
     body = {"name": name, "alias": alias, "isPublished": False, "customHtml": html, "title": name}
     r = _post(base, "/api/pages/new", body, token, timeout=timeout)
     if r["status"] in (200, 201):
         pg = (r["body"] or {}).get("page") or {}
         new_id = pg.get("id")
         if new_id:
-            return {"id": int(new_id), "name": name, "created": True}
+            return {"id": int(new_id), "name": name, "alias": alias, "created": True}
     return {"id": None, "error": f"POST /api/pages/new HTTP {r['status']}: {_format_err(r['body'])}"}
+
+
+# =====================================================================
+# stage / form 资产：find-or-create（与 segment/email/page 同一套模式）
+# ---------------------------------------------------------------------
+# 为什么需要：策略规格声明的终点/阶段规则用的是「名称」（如 "engaged"、"SEG_COLD"），
+# 而 Mautic 的 lead.changestage / lead.changelist / form.submit 事件要的是资产 ID。
+# 没有这层解析，这些终点只能当审计节点透传，永远落不到 Mautic 画布上。
+# =====================================================================
+def _bucket_items(res: dict, *keys) -> list:
+    """Mautic 各 API 返回形态不一（{"stages": {id:obj}} / {"forms":[...]} / 裸 dict），统一成 list。"""
+    if not isinstance(res, dict):
+        return []
+    bucket = None
+    for k in keys:
+        if res.get(k):
+            bucket = res[k]
+            break
+    if bucket is None:
+        bucket = res
+    if isinstance(bucket, dict):
+        return [v for v in bucket.values() if isinstance(v, dict)]
+    if isinstance(bucket, list):
+        return [v for v in bucket if isinstance(v, dict)]
+    return []
+
+
+def ensure_stage(name: str, weight: int = None, env: str = "local", timeout: int = 15) -> dict:
+    """按 name 找 stage；找不到就 POST 新建（草稿）。返回 {"id","name","created","error"?}。
+
+    Mautic stage 没有 alias 字段，查重只按 name（精确 + 大小写不敏感）。
+    新建时 weight 必填（Mautic stage 排序权重），缺省取现有最大 weight + 1，无现有则从 1 起。
+    """
+    if not name:
+        return {"id": None, "error": "name 为空"}
+    try:
+        cfg = load_config(env)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"load_config: {e}"}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {"id": None, "error": "未配置 OAuth client_id/secret"}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"token 获取失败: {e}"}
+
+    res = _get(base, f"/api/stages?search={urllib.parse.quote(name)}&limit=50", token, timeout)
+    items = _bucket_items(res, "stages")
+    if items:
+        target = str(name).strip().lower()
+        for it in items:
+            if str(it.get("name") or "").strip().lower() == target:
+                return {"id": int(it["id"]), "name": it.get("name"), "created": False}
+        # 没搜到就拉全量再比对一次（search 对中文/部分字段不生效）
+        res_all = _get(base, "/api/stages?limit=200", token, timeout)
+        for it in _bucket_items(res_all, "stages"):
+            if str(it.get("name") or "").strip().lower() == target and it.get("id"):
+                return {"id": int(it["id"]), "name": it.get("name"), "created": False}
+        if weight is None:
+            weight = max([int(it.get("weight") or 0) for it in items if it.get("id")] or [0]) + 1
+
+    if weight is None:
+        weight = 1
+    body = {"name": name, "weight": int(weight), "isPublished": True, "description": ""}
+    r = _post(base, "/api/stages/new", body, token, timeout=timeout)
+    if r["status"] in (200, 201):
+        st = (r["body"] or {}).get("stage") or {}
+        new_id = st.get("id")
+        if new_id:
+            return {"id": int(new_id), "name": name, "created": True}
+    return {"id": None, "error": f"POST /api/stages/new HTTP {r['status']}: {_format_err(r['body'])}"}
+
+
+def ensure_form(name: str, env: str = "local", timeout: int = 15) -> dict:
+    """按 name 找 form；找不到就 POST 新建（草稿，含一个必填 email 字段）。
+
+    新建的表单只带 email 一个字段：策略声明「终点是某表单」时通常只是要一个可提交入口，
+    字段本体由运营在 Mautic 补；这里不猜业务字段，避免写出错误映射。
+    """
+    if not name:
+        return {"id": None, "error": "name 为空"}
+    try:
+        cfg = load_config(env)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"load_config: {e}"}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {"id": None, "error": "未配置 OAuth client_id/secret"}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"token 获取失败: {e}"}
+
+    alias = _aliasify(name)
+    res = _get(base, f"/api/forms?search={urllib.parse.quote(name)}&limit=50", token, timeout)
+    items = _bucket_items(res, "forms")
+    if items:
+        existing = None
+        for it in items:
+            if it.get("id") and (str(it.get("name") or "").strip() == str(name).strip()
+                                 or it.get("alias") == alias):
+                existing = it
+                break
+        if existing:
+            return {"id": int(existing["id"]), "name": existing.get("name"),
+                    "alias": existing.get("alias"), "created": False}
+
+    body = {
+        "name": name,
+        "alias": alias,
+        "formType": "standalone",
+        "isPublished": False,          # 草稿：等运营补字段/确认后再上线
+        "postAction": "return",
+        "postActionProperty": "",
+        "fields": [{
+            "label": "邮箱",
+            "alias": "email",
+            "type": "email",
+            "isRequired": True,
+            "mappedField": "email",
+            "mappedObject": "contact",
+            "order": 1,
+        }],
+    }
+    r = _post(base, "/api/forms/new", body, token, timeout=timeout)
+    if r["status"] in (200, 201):
+        fm = (r["body"] or {}).get("form") or {}
+        new_id = fm.get("id")
+        if new_id:
+            return {"id": int(new_id), "name": name, "alias": alias, "created": True}
+    return {"id": None, "error": f"POST /api/forms/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
 def _format_err(body) -> str:
@@ -522,6 +721,8 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         return {"dry_run": True, "note": f"凭证无效/无法获取 token: {e}", "calls": proposal.get("api_calls") or []}
 
     goal_cid = proposal["campaign"]["goal_id"]
+    # 优先用结构化中文名（活动名-波次意图-票种），缺省回落内部 cid
+    goal_name = (proposal.get("campaign") or {}).get("name") or goal_cid
     steps = []
 
     # ===== 0) 依赖资产 ensure：Mautic 7 campaign 必须有 contact source（segment），否则 400；
@@ -553,19 +754,33 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         except (TypeError, ValueError, IndexError):
             seg_id = None
 
-    # 0.2 email（events[].properties.email == 0 时按 strategy_ref.email_ref 自动建）
+    # 0.2 落地页 + 邮件资产 ensure（真实内容，替代 EM_cX_PLACEHOLDER 空壳）
     str_ref = proposal.get("strategy_ref") or {}
-    main_email_name = str_ref.get("email_ref") or ""
-    followup_email_name = str_ref.get("email_followup_ref") or ""
-    # 已解析 email id 缓存（避免同一 email 被 ensure 多次）
+    campaign_name = (proposal.get("campaign") or {}).get("name") or goal_cid
+    lp_url = (proposal.get("campaign") or {}).get("landing_page_url") or ""
+    discount = str_ref.get("discount")
+
+    # 0.2.1 落地页：结构化 HTML + 可选 meta-refresh 跳转；邮件 CTA 指向它
+    lp_name = f"{campaign_name}-落地页"
+    lp_public_url = ""
+    rlp = ensure_landing_page(lp_name, url=lp_url, env=env)
+    ensure_log.append({"asset": "landing_page", "name": lp_name, **rlp})
+    if rlp.get("id"):
+        # Mautic 落地页公开 URL：{base}/s/{alias}
+        lp_public_url = f"{base}/s/{rlp.get('alias') or _aliasify(lp_name)}"
+
+    # 0.2.2 邮件：主 / 提醒各一封（结构化名 + 真实正文 + CTA 指向落地页）
+    main_email_name = campaign_name
+    followup_email_name = f"{campaign_name}-提醒"
     email_id_cache: dict = {}
 
-    def _resolve_email_id(name: str, subject: str):
+    def _resolve_email_id(name: str, subject: str, is_followup: bool):
         if not name:
             return None
         if name in email_id_cache:
             return email_id_cache[name]
-        rem = ensure_email(name, subject=subject, env=env, list_id=seg_id)
+        html = _build_email_html(subject, campaign_name, discount, lp_public_url, is_followup)
+        rem = ensure_email(name, subject=subject, env=env, list_id=seg_id, custom_html=html)
         ensure_log.append({"asset": "email", "name": name, **rem})
         email_id_cache[name] = rem.get("id")
         return rem.get("id")
@@ -574,16 +789,33 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         for ev in proposal["mautic_events"]:
             props = ev.get("properties") or {}
             if ev.get("type") == "email.send" and (props.get("email") in (0, None, "")):
-                # 主邮件 vs 兜底邮件：用 subject 含「提醒」判定走 followup_ref，否则走 main
+                # 主邮件 vs 提醒邮件：用 subject 含「提醒」判定，各建一封独立邮件
                 subject = (ev.get("name") or "").replace("发送邮件：", "")
-                if followup_email_name and ("提醒" in subject or "followup" in subject.lower()):
-                    name = followup_email_name
-                else:
-                    name = main_email_name
-                eid = _resolve_email_id(name, subject)
+                is_followup = ("提醒" in subject) or ("followup" in subject.lower())
+                name = followup_email_name if is_followup else main_email_name
+                eid = _resolve_email_id(name, subject, is_followup)
                 if eid:
                     props["email"] = eid
             ev["properties"] = props
+
+    # 0.2.3 email.click 决策回填：绑定其父 email.send 的邮件 id。
+    # plan_compiler 里 email.click 的 email 取自 strategy.email_ref（占位字符串 → int 失败 → 0），
+    # 不回填会导致 Mautic UI 里「决策：是否点击」显示未绑邮件、点击分支不工作。
+    if isinstance(proposal.get("mautic_events"), list):
+        ev_email = {}
+        for ev in proposal["mautic_events"]:
+            if ev.get("type") == "email.send":
+                ev_email[ev.get("id")] = (ev.get("properties") or {}).get("email")
+        for ev in proposal["mautic_events"]:
+            if ev.get("type") != "email.click":
+                continue
+            props = ev.get("properties") or {}
+            if props.get("email") in (0, None, ""):
+                parent = ev.get("parent")
+                pid = parent if not isinstance(parent, dict) else (parent or {}).get("id")
+                if pid and ev_email.get(pid):
+                    props["email"] = ev_email[pid]
+                    ev["properties"] = props
 
     # 0.3 关键：plan 阶段若 strategy.segment_id 缺失 → mautic_canvas.connections 没有
     #     「lists → 根事件」连线，导致 Mautic 报「orphan events」无法发布。
@@ -613,7 +845,7 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         proposal["mautic_canvas"] = canvas
 
     # 1) 创建 campaign（默认下线），同时带上 Mautic 7 期望的 events + canvasSettings（+ lists）
-    create_body = {"name": goal_cid, "isPublished": False}
+    create_body = {"name": goal_name, "isPublished": False}
     if proposal.get("mautic_events"):
         create_body["events"] = proposal["mautic_events"]
     if proposal.get("mautic_canvas"):
@@ -626,15 +858,31 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
     if isinstance(r1["body"], dict):
         new_id = (r1["body"].get("campaign") or {}).get("id")
 
-    # 2) 审批通过后上线
+    # 2) 审批通过后上线：campaign + 依赖资产（email / landing_page）一并发布
     if new_id and approved:
+        publish_log = []
+        # 2.1 依赖资产先发布（草稿 → 上线，否则 campaign 上线但引用的是草稿资产）
+        for item in ensure_log:
+            aid = item.get("id")
+            asset = item.get("asset")
+            if not aid:
+                continue
+            if asset == "email":
+                r = _patch(base, f"/api/emails/{aid}/edit", {"isPublished": True}, token)
+            elif asset == "landing_page":
+                r = _patch(base, f"/api/pages/{aid}/edit", {"isPublished": True}, token)
+            else:
+                continue
+            publish_log.append({"asset": asset, "id": aid, **r})
+        # 2.2 campaign 上线
         # Mautic 7：发布用 PATCH /api/campaigns/{id}/edit（POST/404，PUT/500，PATCH 才能正确处理）
         try:
             r3 = _patch(base, f"/api/campaigns/{new_id}/edit",
                         {"isPublished": True}, token)
-            steps.append({"step": "publish", **r3})
+            steps.append({"step": "publish_campaign", **r3})
         except Exception as e:  # noqa: BLE001
-            steps.append({"step": "publish", "status": 0, "body": f"网络/连接错误: {e}"})
+            steps.append({"step": "publish_campaign", "status": 0, "body": f"网络/连接错误: {e}"})
+        steps.append({"step": "publish_assets", "log": publish_log})
 
     return {
         "dry_run": False, "env": env, "campaign_id": new_id,

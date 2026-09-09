@@ -40,10 +40,16 @@ def check(cond, msg):
 
 
 def strat(campaign: dict, **spec_top) -> dict:
-    """一个 campaign 的 spec → 归一化后的 strategy dict（走真实归一化通路）。"""
+    """一个 campaign 的 spec → 归一化后的 strategy dict（走真实归一化通路）。
+
+    默认 asset_resolve=False：单测不碰 Mautic（资产解析有专门的注入用例），
+    这样「终点节点长什么样」的断言不会被本机 Mautic 上有没有同名资产所左右。
+    """
     spec = dict(spec_top)
     spec["campaigns"] = [campaign]
-    return compose_final_strategy(spec, GOAL)[0]
+    s = compose_final_strategy(spec, GOAL)[0]
+    s.setdefault("asset_resolve", False)
+    return s
 
 
 def by_id(graph):
@@ -109,15 +115,41 @@ check(fp.get("if_false") == "n_tag", "未命中 → 汇入主流程（n_tag）")
 check(g1.get("n_fork_clicked_tag", {}).get("type") == "tag.write", "终点 tags → tag.write 节点")
 check(g1.get("n_fork_clicked_tag", {}).get("params", {}).get("tags") == ["clicked"],
       "终点 tag 内容来自 spec")
-check(g1.get("n_fork_clicked_stage", {}).get("type") == "stage.change",
-      "终点 stage → stage.change 节点")
-check(g1["n_fork_clicked_stage"]["params"]["stage"] == "engaged", "终点阶段名来自 spec")
-check(g1["n_fork_clicked_tag"].get("next") == "n_fork_clicked_stage",
-      "终点节点按 tags→stage→segment→email→lp→form 顺序串联")
-check(g1["n_fork_clicked_stage"].get("next") == "n_tag",
+# 关键语义：声明了 tags + stage 两个字段 ≠ 触发两个动作。
+# email.click 的语义优先级是「落地页 → 表单 → 邮件 → 打标 → 分组 → 阶段」，
+# 本分支没声明落地页/表单/邮件，故判定为只打标。
+check("n_fork_clicked_stage" not in g1,
+      "声明了 stage 但判定只触发打标 → 不生成 stage 节点（不是三类都触发）")
+check(len([n for n in p1["graph"] if n["id"].startswith("n_fork_clicked_")]) == 1,
+      "一个分支只出 1 个终点动作节点")
+check(any("只触发" in w and "忽略" in w for w in p1.get("compile_warnings", [])),
+      f"推断只触发一个 → 记 compile_warning 说明忽略了什么（{p1.get('compile_warnings')}）")
+check(g1["n_fork_clicked_tag"].get("next") == "n_tag",
       "非 terminal 分支 → 汇入公共落库（n_tag）")
 check("n_branch" not in g1 and "n_lp" not in g1 and "n_followup" not in g1,
       "声明了分叉 → 不再套用模板里的硬编码点击分支（分叉数 = 声明数）")
+
+print("\n=== a2. 显式 actions → 一个分支可以触发多个（Agent 判定几个就是几个）===")
+S1B = strat({
+    "cid": "c1b",
+    "branches": [{"id": "clicked",
+                  "condition": {"signal": "email.click", "op": ">=", "value": 1},
+                  "endpoint": {"tags": ["clicked"], "stage": "engaged",
+                               "landing_page": "LP_B", "terminal": True},
+                  "actions": ["tags", "stage"]}],
+})
+p1b = compile(GOAL, S1B)
+g1b = by_id(p1b["graph"])
+b_ep = [n["id"] for n in p1b["graph"] if n["id"].startswith("n_fork_clicked_")]
+check(b_ep == ["n_fork_clicked_tag", "n_fork_clicked_stage"],
+      f"显式 actions=['tags','stage'] → 两个节点都出，落地页不触发（{b_ep}）")
+check([g1b[i]["type"] for i in b_ep] == ["tag.write", "stage.change"], "类型正确")
+check(g1b["n_fork_clicked_tag"]["next"] == "n_fork_clicked_stage",
+      "多动作按 tags→stage→segment→email→lp→form 顺序串联")
+check("next" not in g1b["n_fork_clicked_stage"], "terminal=True → 分支在此收口")
+check("n_fork_clicked_lp" not in g1b, "actions 没列 landing_page → 不触发")
+check(not [w for w in p1b.get("compile_warnings", []) if "只触发" in w],
+      "显式声明 actions → 不再产生「只触发一个」的推断 warning")
 
 print("\n=== b. 3 个分叉 → 3 个决策节点，顺序/id 与声明一致 ===")
 S3 = strat({
@@ -151,7 +183,7 @@ check(g3["n_fork_opened"]["params"]["op"] == ">=" and g3["n_fork_opened"]["param
 check(g3["n_fork_no_open"]["params"]["op"] == "exists",
       "只有 signal 的条件 → op=exists")
 
-print("\n=== c. 终点 tags + stage + landing_page → 三类节点都在 ===")
+print("\n=== c. 终点 tags + stage + landing_page：推断只触发打标（观测型排最后）===")
 S4 = strat({
     "cid": "c4",
     "branches": [{"id": "b1", "condition": {"signal": "email.click"},
@@ -161,11 +193,47 @@ S4 = strat({
 p4 = compile(GOAL, S4)
 g4 = by_id(p4["graph"])
 b1 = [n["id"] for n in p4["graph"] if n["id"].startswith("n_fork_b1_")]
-check(b1 == ["n_fork_b1_tag", "n_fork_b1_stage", "n_fork_b1_lp"], f"终点节点齐全且有序（{b1}）")
-check([g4[i]["type"] for i in b1] == ["tag.write", "stage.change", "page.hit"],
-      "tags→tag.write / stage→stage.change / landing_page→page.hit")
-check(g4["n_fork_b1_lp"]["params"]["landing_page_ref"] == "LP_B", "落地页 ref 来自 spec")
-check("next" not in g4["n_fork_b1_lp"], "terminal=True → 该分支到此为止（无 next）")
+check(b1 == ["n_fork_b1_tag"], f"email.click → 只触发打标（{b1}）")
+check([g4[i]["type"] for i in b1] == ["tag.write"], "tags → tag.write（Mautic 真能执行）")
+check(g4["n_fork_b1_tag"]["params"]["tags"] == ["clicked"], "打标内容来自 spec")
+check("next" not in g4["n_fork_b1_tag"], "terminal=True → 该分支到此为止（无 next）")
+check(any("忽略「阶段、落地页」" in w for w in p4.get("compile_warnings", [])),
+      f"warning 列明被忽略的两类（{p4.get('compile_warnings')}）")
+
+print("\n=== c1b. 只声明观测型落地页（没有可动作类型）→ 仍出落地页节点 ===")
+S4D = strat({
+    "cid": "c4d",
+    "branches": [{"id": "b4", "condition": {"signal": "email.click"},
+                  "endpoint": {"landing_page": "LP_ONLY"}}],
+})
+p4d = compile(GOAL, S4D)
+b4 = [n["id"] for n in p4d["graph"] if n["id"].startswith("n_fork_b4_")]
+check(b4 == ["n_fork_b4_lp"], f"只有落地页可声明 → 就出落地页（{b4}）")
+check(by_id(p4d["graph"])["n_fork_b4_lp"]["params"]["landing_page_ref"] == "LP_ONLY",
+      "落地页 ref 来自 spec")
+
+print("\n=== c2. 文案线索优先：分支描述写「打标并升阶段」→ 触发阶段 ===")
+S4B = strat({
+    "cid": "c4b",
+    "branches": [{"id": "b2", "note": "点击后升级到 engaged 阶段",
+                  "condition": {"signal": "email.click"},
+                  "endpoint": {"tags": ["clicked"], "stage": "engaged"}}],
+})
+p4b = compile(GOAL, S4B)
+b2 = [n["id"] for n in p4b["graph"] if n["id"].startswith("n_fork_b2_")]
+check(b2 == ["n_fork_b2_stage"], f"note 里的「阶段」线索命中 → 只触发阶段（{b2}）")
+
+print("\n=== c3. actions 里写了没声明内容的类型 → 跳过并记 warning ===")
+S4C = strat({
+    "cid": "c4c",
+    "branches": [{"id": "b3", "condition": {"signal": "email.click"},
+                  "endpoint": {"tags": ["clicked"], "actions": ["tags", "email"]}}],
+})
+p4c = compile(GOAL, S4C)
+b3 = [n["id"] for n in p4c["graph"] if n["id"].startswith("n_fork_b3_")]
+check(b3 == ["n_fork_b3_tag"], f"actions 要 email 但终点没声明 email → 只打标（{b3}）")
+check(any("email" in w and "没声明" in w for w in p4c.get("compile_warnings", [])),
+      f"记 warning 说明跳过了什么（{p4c.get('compile_warnings')}）")
 
 print("\n=== d. stage_rules：升级 / 降级 ===")
 S5 = strat({
@@ -203,9 +271,11 @@ jp = g6["n_main_judge"]["params"]
 check(jp["op"] == ">=" and jp["value"] == 2, "终点判断的 op/value 来自 spec")
 check(jp["if_true"] == "n_main_ep_tag" and jp["if_false"] == "n_log",
       "命中 → 主流程终点；未命中 → 记账结束")
+# 主流程终点也走同一套判定：page.hit 语义优先级是「表单 → 打标 → 分组 → …」，
+# 没声明表单 → 判定只打标（不再 tags+stage 一起触发）
 check([n["type"] for n in p6["graph"] if n["id"].startswith("n_main_ep_")] ==
-      ["tag.write", "stage.change"], "主流程终点节点 = tags + stage")
-check("next" not in g6["n_main_ep_stage"], "terminal=True → 主流程在此收口（无 next）")
+      ["tag.write"], "主流程终点只触发判定出来的那一个动作（打标）")
+check("next" not in g6["n_main_ep_tag"], "terminal=True → 主流程在此收口（无 next）")
 check(g6["n_tag"]["next"] == "n_main_judge", "落库 tag 后进入主流程终点判断")
 
 print("\n=== f. 老 spec（无 branches）→ 输出与改动前一致 ===")
