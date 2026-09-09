@@ -25,11 +25,22 @@ import html
 import json
 import os
 import time
+import traceback
 import urllib.parse
 import urllib.request
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# --------------------------- 开发日志（仅本地驾驶舱可见） ---------------------------
+COCKPIT_LOG = deque(maxlen=200)
+
+
+def cockpit_log(level: str, msg: str) -> None:
+    """记录一条开发日志（INFO / WARN / ERROR / OK）。level 用于面板配色。"""
+    ts = time.strftime("%H:%M:%S")
+    COCKPIT_LOG.append((ts, level, msg))
 OUT_DIR = os.path.join(HERE, "output")
 
 from goal_intake import parse_brief, GoalSpec
@@ -244,6 +255,17 @@ a{color:var(--brand);text-decoration:none} a:hover{text-decoration:underline}
 .agent .row{display:flex;flex-wrap:wrap;gap:7px}
 .note{font-size:12px;color:var(--muted);margin-top:6px}
 .pill{font-size:11px;color:var(--muted)}
+/* 开发日志面板：仅本地驾驶舱可见，方便开发看发生了什么/哪里报错 */
+.devlog{margin-top:28px;border:1px solid var(--line);border-radius:12px;background:#0e1726;color:#cfe0f2;overflow:hidden}
+.devlog>summary{cursor:pointer;padding:11px 16px;font-size:13px;font-weight:600;color:#cfe0f2;background:#13203a;user-select:none;list-style:decimal inside}
+.devlog>summary::-webkit-details-marker{color:#7fa7d8}
+.dl-box{max-height:340px;overflow:auto;padding:10px 14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5}
+.dl-row{display:flex;gap:10px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.06);flex-wrap:wrap}
+.dl-ts{color:#7fa7d8;flex:0 0 auto}
+.dl-lvl{flex:0 0 52px;font-weight:700;text-align:center;border-radius:5px;font-size:11px;padding:0 4px;height:18px;line-height:18px}
+.dl-error .dl-lvl{background:#5a2418;color:#ff8a6a} .dl-warn .dl-lvl{background:#5a4518;color:#ffd479}
+.dl-info .dl-lvl{background:#16344f;color:#9ad0ff} .dl-ok .dl-lvl{background:#16402c;color:#7ee0b0}
+.dl-msg{color:#d7e6f7;flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}
 """
 
 PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -254,7 +276,28 @@ PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 
 
 def _page(title: str, body: str) -> str:
-    return PAGE.format(title=_esc(title), css=CSS, body=body)
+    return PAGE.format(title=_esc(title), css=CSS, body=body + _dev_log_panel())
+
+
+def _dev_log_panel() -> str:
+    """页面底部「开发日志」折叠面板：渲染模块级 COCKPIT_LOG（跨请求持久）。
+
+    始终渲染（即便为空也显示空状态），方便开发随时看到面板位置。
+    """
+    if not COCKPIT_LOG:
+        return ("<details class='devlog'><summary>🛠 开发日志（最近 0 条 · 仅本地可见）</summary>"
+                "<div class='dl-box'><div class='dl-row dl-info'>"
+                "<span class='dl-ts'></span><span class='dl-lvl'>INFO</span>"
+                "<span class='dl-msg'>暂无日志，操作后将在此显示（发生了什么 / 哪里报错）。</span></div></div></details>")
+    rows = []
+    for ts, level, msg in reversed(COCKPIT_LOG):
+        rows.append(
+            f"<div class='dl-row dl-{level.lower()}'>"
+            f"<span class='dl-ts'>{_esc(ts)}</span>"
+            f"<span class='dl-lvl'>{_esc(level)}</span>"
+            f"<span class='dl-msg'>{_esc(msg)}</span></div>")
+    return (f"<details class='devlog'><summary>🛠 开发日志（最近 {len(COCKPIT_LOG)} 条 · 仅本地可见）</summary>"
+            f"<div class='dl-box'>{''.join(rows)}</div></details>")
 
 
 # --------------------------- 页面 ---------------------------
@@ -3008,6 +3051,23 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _guard(self, label, fn, *args, **kwargs):
+        """包裹写操作：未捕获异常记入开发日志并渲染带日志面板的 500 页。"""
+        try:
+            return fn(*args, **kwargs)
+        except Exception:  # noqa: BLE001
+            tb = traceback.format_exc()
+            cockpit_log("ERROR", f"{label} 未捕获异常:\n{tb}")
+            try:
+                self._send(500, _page(
+                    f"500 · {label}",
+                    f"<div class='card'><p class='b-bad'>处理「{_esc(label)}」时抛出未捕获异常：</p>"
+                    f"<pre class='pre'>{_esc(tb)}</pre>"
+                    f"<p class='note'>完整上下文见页面底部「开发日志」面板。</p></div>"))
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+
     def _send(self, code, body, headers=None):
         payload = body.encode("utf-8")
         self.send_response(code)
@@ -3031,8 +3091,9 @@ class Handler(BaseHTTPRequestHandler):
         # URL 解码：goal_id 可能是中文（slug 只剔非字母数字，中文属于 isalnum），
         # 浏览器会把 /program/中文 百分号编码后发回来，不解码就匹配不到 Program。
         path = urllib.parse.unquote(self.path.split("?")[0])
+        cockpit_log("INFO", f"GET {path}")
         if path in ("/", ""):
-            return self._send(200, _page("驾驶舱", _dash_body()))
+            return self._guard("dashboard", lambda: self._send(200, _page("驾驶舱", _dash_body())))
         if path == "/brief":
             # 支持 /brief?spec=<StrategySpec 文件路径> 预览 Agent 策略（只读）
             # 支持 /brief?goal_id=<id> 预填已存在 Program 的字段（"改 Brief" 回链用）
@@ -3086,18 +3147,19 @@ class Handler(BaseHTTPRequestHandler):
             p = _load_program(gid)
             if not p:
                 return self._send(404, _page("未找到", "<p class='b-bad'>Program 不存在</p>"))
-            return self._send(200, _page("Program", _program_body(p)))
+            return self._guard("program-view", lambda: self._send(200, _page("Program", _program_body(p))))
         if path.startswith("/proposal/"):
             gid = path[len("/proposal/"):]
             d = _load_proposal(gid)
             if not d:
                 return self._send(404, _page("未找到", "<p>提案不存在</p>"))
-            return self._send(200, _page("提案", _proposal_body(d)))
+            return self._guard("proposal-view", lambda: self._send(200, _page("提案", _proposal_body(d))))
         return self._send(404, _page("404", "<p>未知路径</p>"))
 
     def do_POST(self):
         # 同 do_GET：中文 goal_id 会被浏览器百分号编码，需解码后再匹配 Program
         path = urllib.parse.unquote(self.path.split("?")[0])
+        cockpit_log("INFO", f"POST {path}")
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode("utf-8")
         ctype = self.headers.get("Content-Type", "")
@@ -3117,59 +3179,59 @@ class Handler(BaseHTTPRequestHandler):
                     jsbody[_k] = _v[0]
 
         if path == "/brief":
-            return self._handle_brief(jsbody)
+            return self._guard("brief", self._handle_brief, jsbody)
         if path == "/brief/generate-strategy":
-            return self._handle_generate_strategy(jsbody)
+            return self._guard("generate-strategy", self._handle_generate_strategy, jsbody)
         if path == "/brief/ai-parse":
-            return self._handle_ai_parse(jsbody)
+            return self._guard("ai-parse", self._handle_ai_parse, jsbody)
         if path == "/brief/strategy-prompt":
-            return self._handle_strategy_prompt(jsbody)
+            return self._guard("strategy-prompt", self._handle_strategy_prompt, jsbody)
         if path.endswith("/approve") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_approve(gid, cid, jsbody)
+            return self._guard("campaign-approve", self._handle_campaign_approve, gid, cid, jsbody)
         if path.endswith("/push") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_push(gid, cid)
+            return self._guard("campaign-push", self._handle_campaign_push, gid, cid)
         if path.endswith("/activate") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_activate(gid, cid)
+            return self._guard("campaign-activate", self._handle_campaign_activate, gid, cid)
         if path.endswith("/goals") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_goals(gid, cid, jsbody)
+            return self._guard("campaign-goals", self._handle_campaign_goals, gid, cid, jsbody)
         if path.endswith("/create") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_create(gid, cid)
+            return self._guard("campaign-create", self._handle_campaign_create, gid, cid)
         if path.endswith("/auto-feedback"):
             gid = path.split("/")[2] if path.startswith("/program/") else ""
             qs = dict(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query))
             date_str = (qs.get("date") or [_yesterday_str()])[0]
-            return self._handle_program_auto_feedback(gid, date_str)
+            return self._guard("program-auto-feedback", self._handle_program_auto_feedback, gid, date_str)
         if path.endswith("/delete") and path.startswith("/program/"):
             gid = path.split("/")[2]
-            return self._handle_program_delete(gid)
+            return self._guard("program-delete", self._handle_program_delete, gid)
         if path.endswith("/feedback") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
-            return self._handle_campaign_feedback(gid, cid, jsbody)
+            return self._guard("campaign-feedback", self._handle_campaign_feedback, gid, cid, jsbody)
         if path.endswith("/complete"):
-            return self._handle_complete(jsbody)
+            return self._guard("complete", self._handle_complete, jsbody)
         if path.endswith("/replan-prompt") and "/campaign/" in path:
             _parts = [x for x in path.split("/") if x]
             if len(_parts) == 5 and _parts[2] == "campaign" and _parts[4] == "replan-prompt":
-                return self._handle_replan_prompt(_parts[1], _parts[3], jsbody)
+                return self._guard("replan-prompt", self._handle_replan_prompt, _parts[1], _parts[3], jsbody)
         if path.endswith("/confirm-strategy"):
-            return self._handle_confirm_strategy(jsbody)
+            return self._guard("confirm-strategy", self._handle_confirm_strategy, jsbody)
         if path.endswith("/approve") and "/service/" in path:
             parts = [x for x in path.split("/") if x]
-            return self._handle_service_approve(parts[1], parts[3], jsbody)
+            return self._guard("service-approve", self._handle_service_approve, parts[1], parts[3], jsbody)
         if path.endswith("/push") and "/service/" in path:
             parts = [x for x in path.split("/") if x]
-            return self._handle_service_push(parts[1], parts[3])
+            return self._guard("service-push", self._handle_service_push, parts[1], parts[3])
         if path.endswith("/approve"):
             gid = path.split("/")[-2]
-            return self._handle_legacy_approve(gid, jsbody)
+            return self._guard("legacy-approve", self._handle_legacy_approve, gid, jsbody)
         if path.endswith("/push"):
             gid = path.split("/")[-2]
-            return self._handle_legacy_push(gid)
+            return self._guard("legacy-push", self._handle_legacy_push, gid)
         return self._send(404, _page("404", "<p>未知路径</p>"))
 
     @staticmethod
@@ -3347,9 +3409,10 @@ class Handler(BaseHTTPRequestHandler):
             # Mautic 不可达 / 未配 Basic 凭证时降级为 None，不阻断生成（推送时再惰性补建）。
             try:
                 _resolve_program_project(program, "local")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _pe:  # noqa: BLE001
+                cockpit_log("WARN", f"brief 建 Mautic project 失败（降级 None，推送时惰性补建）：{type(_pe).__name__}: {_pe}")
             _save_program(program)
+            cockpit_log("OK", f"brief 已生成 Program：goal_id={program.get('goal_id')} · mautic_project_id={program.get('mautic_project_id')} · campaigns={len(program.get('campaigns', []))}")
             # Location 响应头按 latin-1 编码：goal_id 含中文（slug 保留中文，属 isalnum）时
             # 直接拼会抛 UnicodeEncodeError，必须先百分号编码（路由侧 do_GET 已 unquote 配对）。
             self.send_response(302)
@@ -3641,64 +3704,6 @@ class Handler(BaseHTTPRequestHandler):
                f"服务序列审批：{_esc(decision.status)}/{_esc(decision.level)} — "
                f"{_esc(decision.reason)}</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
-def _sync_resolved_assets_to_strategy(c, result):
-    """push() 已用派生名把真实资产建好（邮件=campaign_name / 落地页=campaign_name-落地页 /
-    表单=campaign_name-表单）并把 id 写进 proposal.mautic_events，但从不回写 strategy 的展示字段，
-    导致卡片永远显「[待生成]」占位、落地页无外链。
-
-    这里从 push 的 ensure_log 取回真实资产名/alias，回填到 strategy，并翻转 email_mode/
-    email_pending（消除 [待生成]）；同时使资产索引缓存失效，让卡片外链立即解析而非等 TTL(300s)。
-    c 可以是 campaign 或 service 序列：两者都有 c["strategy"] 与 c["proposal"]。"""
-    s = c.get("strategy")
-    if not isinstance(s, dict):
-        return
-    prop = c.get("proposal") or {}
-    cname = ((prop.get("campaign") or {}).get("name")
-             or s.get("campaign_name") or c.get("cid"))
-    if not cname:
-        return
-    log = (result or {}).get("ensure_log") or []
-    by_name = {}
-    for it in log:
-        nm = it.get("name")
-        if nm and it.get("id") is not None:
-            by_name[nm] = it
-    base = _mautic_base()
-
-    # 邮件：主邮件名 = campaign_name；提醒 = campaign_name-提醒（与 push() 派生名一致）
-    main = by_name.get(cname) or {}
-    if main.get("id") is not None:
-        s["email_ref"] = cname
-        s["email_id"] = main.get("id")
-    follow = by_name.get(f"{cname}-提醒") or {}
-    if follow.get("id") is not None:
-        s["email_followup_ref"] = f"{cname}-提醒"
-        s["email_followup_id"] = follow.get("id")
-    # 落地页
-    lp = by_name.get(f"{cname}-落地页") or {}
-    if lp.get("id") is not None:
-        s["landing_page_ref"] = f"{cname}-落地页"
-        s["landing_page_id"] = lp.get("id")
-        _alias = lp.get("alias") or _aliasify(f"{cname}-落地页")
-        if _alias:
-            s["landing_page_url"] = f"{base}/{_alias}"
-    # 表单（随所属 campaign 显示，见展示一致性改造；此处先把真实 ref/id 落盘备显示）
-    form = by_name.get(f"{cname}-表单") or {}
-    if form.get("id") is not None:
-        s["form_ref"] = f"{cname}-表单"
-        s["form_id"] = form.get("id")
-    # 翻转占位状态：卡片不再显「[待生成]」
-    if s.get("email_mode") == "generate":
-        s["email_mode"] = "reuse"
-    s["email_pending"] = False
-    # 资产已写入 Mautic：刷新索引缓存，让卡片外链立即解析
-    try:
-        invalidate_asset_cache()
-    except Exception:  # noqa: BLE001
-        pass
-
-
     def _handle_service_push(self, gid, sid):
         p = _load_program(gid)
         if not p:
@@ -3706,6 +3711,7 @@ def _sync_resolved_assets_to_strategy(c, result):
         s = next((x for x in p.get("service_sequences", []) if x["sid"] == sid), None)
         if not s:
             return self._send(404, _page("未找到", "<p>service 序列不存在</p>"))
+        cockpit_log("INFO", f"service_push {sid}：开始（program={gid}，已审批校验）")
         ok, reason = verify_push(s["proposal"], s["proposal"].get("approval"))
         if not ok:
             msg = f"<div class='card'><p class='b-bad'>推送被拒：{_esc(reason)}</p></div>"
@@ -3725,15 +3731,16 @@ def _sync_resolved_assets_to_strategy(c, result):
             # 回写解析出的真实资产 ref（修 [待生成]/无链接 bug，对齐 _handle_campaign_push）
             _sync_resolved_assets_to_strategy(s, result)
             _save_program(p)
+            cockpit_log("OK", f"service_push {sid}：推送成功（{'dry-run' if result.get('dry_run') else result.get('env')}）")
             msg = (f"<div class='card'><p class='b-ok'>服务序列已提交推送"
                    f"（{_esc('dry-run' if result.get('dry_run') else result.get('env'))}）：{_esc(reason)}</p></div>")
         else:
             s["proposal"]["deployed"] = False
             _save_program(p)
+            cockpit_log("ERROR", f"service_push {sid}：推送失败 {push_err}")
             msg = (f"<div class='card'><p class='b-bad'>服务序列推送失败（已回滚 deployed）：{_esc(push_err)}</p>"
                    f"<p class='note'>可再次点击「推送」重试。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_campaign_push(self, gid, cid):
         p = _load_program(gid)
         if not p:
@@ -3741,6 +3748,7 @@ def _sync_resolved_assets_to_strategy(c, result):
         c = next((x for x in p["campaigns"] if x["cid"] == cid), None)
         if not c:
             return self._send(404, _page("未找到", "<p>campaign 不存在</p>"))
+        cockpit_log("INFO", f"campaign_push {cid}：开始（program={gid}，已审批校验）")
         ok, reason = verify_push(c["proposal"], c["proposal"].get("approval"))
         if not ok:
             msg = f"<div class='card'><p class='b-bad'>推送被拒：{_esc(reason)}</p></div>"
@@ -3774,17 +3782,18 @@ def _sync_resolved_assets_to_strategy(c, result):
             _sync_resolved_assets_to_strategy(c, result)
             _save_program(p)
             note = "dry-run" if result.get("dry_run") else result.get("env")
+            cockpit_log("OK", f"campaign_push {cid}：推送成功（{note}）")
             msg = f"<div class='card'><p class='b-ok'>已提交推送（{_esc(note)}）：{_esc(reason or '已上线')}</p></div>"
         else:
             c["proposal"]["deployed"] = False
             _save_program(p)
+            cockpit_log("ERROR", f"campaign_push {cid}：推送失败 {push_err}")
             msg = (f"<div class='card'><p class='b-bad'>推送失败（已回滚 status）：{_esc(push_err)}</p>"
                    f"<p class='note'>Mautic 返回了错误，campaign 未真正创建。常见原因："
                    f"①事件图缺少 contact source（segment list）→ Mautic 7 必填；"
                    f"②email/landing 资产未先创建（properties.email=0 等占位）；"
                    f"③campaign 名冲突。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_campaign_activate(self, gid, cid):
         """运营启用 deferred 波次（外部事件已确认）→ 转 unreviewed 回到标准审批/执行通道。"""
         p = _load_program(gid)
@@ -3801,7 +3810,6 @@ def _sync_resolved_assets_to_strategy(c, result):
         msg = (f"<div class='card'><p class='b-ok'>{_esc(cid)} 已启用（外部事件已确认），回到未审核状态；"
                f"仍需审批 → 创建 → 执行</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_campaign_goals(self, gid, cid, form):
         """保存单个 campaign 的可编辑目标（转化目标/退订上限/执行窗口）。"""
         p = _load_program(gid)
@@ -3823,7 +3831,6 @@ def _sync_resolved_assets_to_strategy(c, result):
         _save_program(p)
         msg = f"<div class='card'><p class='b-ok'>{_esc(cid)} 目标已保存（转化目标 {c.get('conv_target')} · 执行窗口 {c.get('exec_start')}~{c.get('exec_end')}）</p></div>"
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_campaign_create(self, gid, cid):
         """分阶段创建：仅把该 campaign 推到 Mautic（approved=True → 创建草稿并发布）。"""
         p = _load_program(gid)
@@ -3836,6 +3843,7 @@ def _sync_resolved_assets_to_strategy(c, result):
             msg = f"<div class='card'><p class='b-bad'>{_esc(cid)} 尚未审批，不能创建（审批门是硬约束）</p></div>"
             return self._send(200, _page("Program", _program_body(p, msg)))
         # 推之前先记 approved_idle（避免直接跳 executing 之后再被回滚显得反复）
+        cockpit_log("INFO", f"campaign_create {cid}：开始创建并推送（program={gid}）")
         c["status"] = "approved_idle"
         _save_program(p)
         # 推之前先探活：Mautic 没启动就直接报「不可达」，不要去撞 segment/form 的误导错误
@@ -3865,6 +3873,7 @@ def _sync_resolved_assets_to_strategy(c, result):
             c["proposal"]["deployed"] = True
             c["status"] = "executing"
             _save_program(p)
+            cockpit_log("OK", f"campaign_create {cid}：已真实推送（campaign_id={result.get('campaign_id')}）")
             msg = (f"<div class='card'><p class='b-ok'>✅ {_esc(cid)} 已真实推送到 Mautic"
                    f"（campaign_id={_esc(result.get('campaign_id'))}，env={_esc(result.get('env'))}），状态：执行中。</p></div>")
         elif result.get("dry_run"):
@@ -3877,7 +3886,8 @@ def _sync_resolved_assets_to_strategy(c, result):
                        f"<p class='note'>状态保持「已审批待创建」，未改为执行中。常见：Mautic 不可达 / OAuth token 获取超时。"
                        f"修复后再次点击「创建并推送到 Mautic」重试。</p></div>")
             else:
-                msg = (f"<div class='card'><p class='b-warn'>⚠️ {_esc(cid)} 仅 dry-run（未真正创建 campaign）：{_esc(note)}</p>"
+                cockpit_log("WARN", f"campaign_create {cid}：仅 dry-run（{note}）")
+            msg = (f"<div class='card'><p class='b-warn'>⚠️ {_esc(cid)} 仅 dry-run（未真正创建 campaign）：{_esc(note)}</p>"
                        f"<p class='note'>状态保持「已审批待创建」。填好 config.json 的 client_id/secret 后重推才会真正落库。</p></div>")
         else:
             # 真实推送但 Mautic 未返回 campaign_id（多为 400，如 segment/资产创建被拒）
@@ -3886,6 +3896,7 @@ def _sync_resolved_assets_to_strategy(c, result):
             mcid = result.get("campaign_id")
             mcid_txt = f"（campaign_id={_esc(mcid)}）" if mcid else ""
             push_err = _format_mautic_err(result.get("error")) if result.get("error") else (result.get("note") or "未知错误")
+            cockpit_log("ERROR", f"campaign_create {cid}：推送失败{mcid_txt}：{push_err}")
             msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败{mcid_txt}：{_esc(push_err)}</p>"
                    f"<p class='note'>Mautic 真实响应未创建 campaign。状态保持「已审批待创建」，未改为执行中。常见原因："
                    f"①事件图缺少 contact source（segment list）→ Mautic 7 必填；"
@@ -3893,7 +3904,6 @@ def _sync_resolved_assets_to_strategy(c, result):
                    f"③campaign 名重复或别名冲突。</p>"
                    f"<p class='note'>修复后可再次点击「创建并推送到 Mautic」重试。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_program_auto_feedback(self, gid, date_str):
         """手动触发某 program 的 auto-feedback：拉取 Mautic 真实数写入 feedback_auto[date_str]。"""
         import datetime as _dt
@@ -3964,7 +3974,6 @@ def _sync_resolved_assets_to_strategy(c, result):
         body.append("</table></div>")
         msg = "".join(body)
         self._send(200, _page("Auto-Feedback", _program_body(p, msg)))
-
     def _handle_campaign_feedback_autofill(self, gid, cid, date_str):
         """Plan 2：拉 Mautic 最新数据预填表单（Plan 2 = 单击按钮一键预填）。
 
@@ -4032,7 +4041,6 @@ def _sync_resolved_assets_to_strategy(c, result):
         rows.append("</div>")
         msg = "".join(rows)
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_campaign_optimize(self, gid, cid, date_str):
         """Plan 1→优化预判：从 feedback_auto[date] 载入，预判是否需要方案优化（只读，不改 program）。
 
@@ -4100,7 +4108,6 @@ def _sync_resolved_assets_to_strategy(c, result):
         _save_program(p)
         msg = (f"<div class='card'><p class='b-ok'>已载入 {_esc(cid)} 自动回填 {_esc(date_str)} 做优化预判。</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_campaign_feedback(self, gid, cid, form):
         """人工回填某 campaign 的执行结果（发送/打开/转化/退订计数），计算各率。"""
         p = _load_program(gid)
@@ -4131,7 +4138,6 @@ def _sync_resolved_assets_to_strategy(c, result):
         msg = (f"<div class='card'><p class='b-ok'>{_esc(cid)} 执行结果已回填："
                f"达成率 {feedback['conv_rate']} · 退订率 {feedback['unsub_rate']}（不自动推进，需运营标记完成）</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_program_delete(self, gid):
         """删除 Program：仅移除驾驶舱本地记录（output/program_<gid>.json），
         绝不动 Mautic（:8080）已生成的活动/邮件/落地页。需前端二次确认（confirm）后才 POST 到此。"""
@@ -4149,7 +4155,6 @@ def _sync_resolved_assets_to_strategy(c, result):
             self.end_headers()
         except Exception as e:  # noqa: BLE001
             self._send(200, _page("删除失败", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/'>返回</a></p>"))
-
     def _handle_complete(self, form):
         # path 形如 /program/<gid>/complete
         gid = self.path.split("/")[2] if self.path.startswith("/program/") else ""
@@ -4168,11 +4173,14 @@ def _sync_resolved_assets_to_strategy(c, result):
         if not unsub_raw and c.get("feedback"):
             unsub_raw = c["feedback"].get("unsub_rate", 0)
         result = {"conversion": float(conv_raw or 0), "unsub": float(unsub_raw or 0)}
+        cockpit_log("INFO", f"complete {cid}：evaluate_and_replan 开始（conv={result['conversion']}, unsub={result['unsub']}）")
         out = evaluate_and_replan(p, cid, result)
         if "error" in out:
+            cockpit_log("ERROR", f"complete {cid} 失败：{out['error']}")
             msg = f"<div class='card'><p class='b-bad'>{_esc(out['error'])}</p></div>"
             return self._send(200, _page("Program", _program_body(p, msg)))
         _save_program(p)
+        cockpit_log("OK", f"complete {cid}：verdict={out.get('verdict')} · changes={len(out.get('changes', []))} · new={len(out.get('new_campaigns', []))} · pruned={len(out.get('pruned_campaigns', []))}")
         changed = "; ".join(f"{ch['cid']}:{'/'.join(ch['notes'])}" for ch in out["changes"]) or "无下游待改写"
         ratio_txt = ("未设置（KPI 目标 R 未给，不做达成率改写）" if out.get("target_unset")
                      else str(out["ratio"]))
@@ -4189,7 +4197,6 @@ def _sync_resolved_assets_to_strategy(c, result):
                f"判定 <b>{_esc(verdict_lbl or '—')}</b>，达成率 {_esc(ratio_txt)}<br>"
                f"下游改写：{_esc(changed)}{branch_txt}</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_replan_prompt(self, gid, cid, body):
         """构建「下一阶段策略」自包含提示词，供运营复制到 WorkBuddy 生成后贴回。返回 JSON。"""
         p = _load_program(gid)
@@ -4200,7 +4207,6 @@ def _sync_resolved_assets_to_strategy(c, result):
         except Exception as e:  # noqa: BLE001
             return self._send_json({"ok": False, "error": f"构建提示词失败：{e}"})
         return self._send_json({"ok": True, "prompt": prompt})
-
     def _handle_confirm_strategy(self, form):
         """L1 辅助路径（替代启发式）：粘贴 WorkBuddy 返回的策略 JSON，标记上游完成并应用到下游。"""
         gid = self.path.split("/")[2] if self.path.startswith("/program/") else ""
@@ -4285,7 +4291,6 @@ def _sync_resolved_assets_to_strategy(c, result):
                f"改写下游：{_esc('；'.join(applied) or '无匹配下游')}<br>"
                f"新增分支：{_esc('；'.join(added) or '无')}</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
-
     def _handle_legacy_approve(self, gid, form):
         d = _load_proposal(gid)
         if not d:
@@ -4296,11 +4301,11 @@ def _sync_resolved_assets_to_strategy(c, result):
         dump_proposal(d, os.path.join(OUT_DIR, f"proposal_{gid}.json"))
         msg = f"<div class='card'><p class='{'b-ok' if decision.status=='APPROVED' else 'b-bad'}'>{_esc(decision.status)}/{_esc(decision.level)} — {_esc(decision.reason)}</p></div>"
         self._send(200, _page("提案", _proposal_body(d, msg)))
-
     def _handle_legacy_push(self, gid):
         d = _load_proposal(gid)
         if not d:
             return self._send(404, _page("未找到", "<p>提案不存在</p>"))
+        cockpit_log("INFO", f"legacy_push {gid}：开始（提案校验）")
         ok, reason = verify_push(d, d.get("approval"))
         if not ok:
             msg = f"<div class='card'><p class='b-bad'>推送被拒：{_esc(reason)}</p></div>"
@@ -4315,8 +4320,68 @@ def _sync_resolved_assets_to_strategy(c, result):
         d["deployed"] = True
         d["deploy_result"] = result
         dump_proposal(d, os.path.join(OUT_DIR, f"proposal_{gid}.json"))
+        cockpit_log("OK", f"legacy_push {gid}：推送成功（{'dry-run' if result.get('dry_run') else result.get('env')}）")
         msg = f"<div class='card'><p class='b-ok'>已提交推送（{_esc('dry-run' if result.get('dry_run') else result.get('env'))}）：{_esc(reason)}</p></div>"
         self._send(200, _page("提案", _program_body(d, msg)))
+
+
+def _sync_resolved_assets_to_strategy(c, result):
+    """push() 已用派生名把真实资产建好（邮件=campaign_name / 落地页=campaign_name-落地页 /
+    表单=campaign_name-表单）并把 id 写进 proposal.mautic_events，但从不回写 strategy 的展示字段，
+    导致卡片永远显「[待生成]」占位、落地页无外链。
+
+    这里从 push 的 ensure_log 取回真实资产名/alias，回填到 strategy，并翻转 email_mode/
+    email_pending（消除 [待生成]）；同时使资产索引缓存失效，让卡片外链立即解析而非等 TTL(300s)。
+    c 可以是 campaign 或 service 序列：两者都有 c["strategy"] 与 c["proposal"]。"""
+    s = c.get("strategy")
+    if not isinstance(s, dict):
+        return
+    prop = c.get("proposal") or {}
+    cname = ((prop.get("campaign") or {}).get("name")
+             or s.get("campaign_name") or c.get("cid"))
+    if not cname:
+        return
+    log = (result or {}).get("ensure_log") or []
+    by_name = {}
+    for it in log:
+        nm = it.get("name")
+        if nm and it.get("id") is not None:
+            by_name[nm] = it
+    base = _mautic_base()
+
+    # 邮件：主邮件名 = campaign_name；提醒 = campaign_name-提醒（与 push() 派生名一致）
+    main = by_name.get(cname) or {}
+    if main.get("id") is not None:
+        s["email_ref"] = cname
+        s["email_id"] = main.get("id")
+    follow = by_name.get(f"{cname}-提醒") or {}
+    if follow.get("id") is not None:
+        s["email_followup_ref"] = f"{cname}-提醒"
+        s["email_followup_id"] = follow.get("id")
+    # 落地页
+    lp = by_name.get(f"{cname}-落地页") or {}
+    if lp.get("id") is not None:
+        s["landing_page_ref"] = f"{cname}-落地页"
+        s["landing_page_id"] = lp.get("id")
+        _alias = lp.get("alias") or _aliasify(f"{cname}-落地页")
+        if _alias:
+            s["landing_page_url"] = f"{base}/{_alias}"
+    # 表单（随所属 campaign 显示，见展示一致性改造；此处先把真实 ref/id 落盘备显示）
+    form = by_name.get(f"{cname}-表单") or {}
+    if form.get("id") is not None:
+        s["form_ref"] = f"{cname}-表单"
+        s["form_id"] = form.get("id")
+    # 翻转占位状态：卡片不再显「[待生成]」
+    if s.get("email_mode") == "generate":
+        s["email_mode"] = "reuse"
+    s["email_pending"] = False
+    # 资产已写入 Mautic：刷新索引缓存，让卡片外链立即解析
+    try:
+        invalidate_asset_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 
 
 def main():
