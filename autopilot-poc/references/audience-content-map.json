@@ -1,0 +1,281 @@
+{
+  "$schema": "audience-content-map/v2-scoring",
+  "version": "2026-09-07",
+  "last_updated": "2026-09-07",
+  "_source": "C:/Users/cenacai/.workbuddy/plugins/cache/my-experts/growth-ops/1.0.0/skills/mautic-growth-ops/references/audience-content-map.json",
+  "_poc_note": "本文件由专家包缓存副本落库到仓库，作为「画像包 → 内容/视觉参数」的唯一可校验数据源。除下列 PoC 扩展项外，其余内容与专家源表逐字一致：strategy.visual.palette / strategy.visual.design_direction / strategy.visual.imagery / strategy.content_direction。专家原表只有一句描述性 visual 字符串，没有配色 token、设计方向、配图方向与结构化文案方向；这四项均由专家原文（visual 文案 / tone / levers / subject_examples / cta_templates）投影推导而来，未引入任何新数值或新主张。其中 content_direction.angles 逐字取自 strategy.levers，content_direction.claims 逐字取自 strategy.subject_examples。修改后请同步回专家源包 references/ 目录。",
+  "_poc_extensions": [
+    "strategy.visual.palette",
+    "strategy.visual.design_direction",
+    "strategy.visual.imagery",
+    "strategy.content_direction"
+  ],
+  "scoring": {
+    "threshold": 0.6,
+    "default_weights": {
+      "age": 0.20,
+      "gender": 0.10,
+      "income": 0.25,
+      "education": 0.15,
+      "industry": 0.15,
+      "source": 0.10,
+      "region": 0.05
+    },
+    "field_buckets": {
+      "age":       ["18-24", "25-34", "35-44", "45-54", "55+"],
+      "gender":    ["男", "女", "未知"],
+      "income":    ["L1", "L2", "L3", "L4", "L5"],
+      "education": ["名校", "MBA", "211", "985", "QS100", "普通本科", "其他"],
+      "industry":  ["IT", "制造", "金融", "旅游", "教育", "医疗", "零售", "其他"],
+      "source":    ["CTL", "CSTS", "SPORT", "爬虫", "其他", "手动输入"],
+      "region":    ["中国大陆", "港澳台", "海外"]
+    }
+  },
+  "packages": [
+    {
+      "code": "HNW_FAMILY",
+      "label_zh": "高净值家庭客",
+      "is_fallback": false,
+      "match": {
+        "age":       ["35-44", "45-54"],
+        "gender":    ["男"],
+        "income":    ["L4", "L5"],
+        "education": ["名校", "MBA", "QS100"],
+        "industry":  ["IT", "金融", "旅游", "其他"]
+      },
+      "strategy": {
+        "frequency":  {"max_per_24h": 1, "max_per_7d": 2},
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"],
+        "levers": ["深度价值", "数据对比", "长期主义"],
+        "forbidden_phrases": ["低价", "限时", "拼团", "秒杀", "仅剩"],
+        "tone": "理性、克制、报告感。≤200字，不超过2段",
+        "visual": {
+          "summary": "单色 + 高端实景照（无人物或背影）/ 不堆 CTA",
+          "palette": {
+            "primary": "#1F2A37",
+            "secondary": "#8A7A5C",
+            "accent": "#C9BFA8",
+            "bg": "#FBFAF7",
+            "text": "#1F2A37"
+          },
+          "design_direction": "大留白单列布局；顶部一张高端实景大图，正文≤2段；CTA 只放一个且置于内容末尾；衬线标题 + 无衬线正文，字号克制，不放价格锚点。",
+          "imagery": "高端实景大图（建筑 / 空间 / 自然），不出现人物正脸，可用背影；单色低饱和，禁止促销标签、价格贴片与拼贴素材。"
+        },
+        "content_direction": {
+          "angles": ["深度价值", "数据对比", "长期主义"],
+          "claims": ["{目的地} 七日深度行程 · 三组家庭实测反馈"],
+          "hero_points": [
+            "首屏只讲一条深度价值主张（≤200字、不超过 2 段）",
+            "用可核验的数据与横向对比做佐证",
+            "结尾放单一克制 CTA：查看完整行程 / 下载 PDF 攻略"
+          ]
+        },
+        "cta_templates": ["查看完整行程", "下载 PDF 攻略"],
+        "subject_examples": ["{目的地} 七日深度行程 · 三组家庭实测反馈"]
+      }
+    },
+    {
+      "code": "YOUNG_TREND",
+      "label_zh": "年轻潮流客",
+      "is_fallback": false,
+      "match": {
+        "age":       ["18-24", "25-34"],
+        "gender":    ["男", "女"],
+        "income":    ["L1", "L2"],
+        "education": ["普通本科", "其他"],
+        "source":    ["CSTS", "爬虫", "其他", "手动输入"]
+      },
+      "strategy": {
+        "frequency":  {"max_per_24h": 2, "max_per_7d": 4},
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["12:00-14:00", "20:00-22:00"],
+        "levers": ["UGC 引用", "限量稀缺", "限时体验"],
+        "forbidden_phrases": ["权威", "白皮书", "报告"],
+        "tone": "口语化、emoji、1 行 1 段。≤80字",
+        "visual": {
+          "summary": "高饱和、强对比、人物特写、9:16 竖版截图",
+          "palette": {
+            "primary": "#FF3B5C",
+            "secondary": "#00D1B2",
+            "accent": "#FFD400",
+            "bg": "#FFFFFF",
+            "text": "#12141A"
+          },
+          "design_direction": "高饱和撞色、首屏即 CTA；9:16 竖版截图或人物特写满幅；短句分屏滚动；无衬线粗体、字号大，强调稀缺与限时。",
+          "imagery": "人物特写或 9:16 竖版真实截图 / UGC 截图满幅；允许强饱和滤镜与贴纸，避免商务图库风与空场景。"
+        },
+        "content_direction": {
+          "angles": ["UGC 引用", "限量稀缺", "限时体验"],
+          "claims": ["姐妹们 这个真的可以冲"],
+          "hero_points": [
+            "首屏一句口语化种草（≤80字、1 行 1 段，可用 emoji）",
+            "引用真实 UGC 截图或他人评价做背书",
+            "限量 / 限时信息前置，CTA 用口语词：抢 / 薅 / 速戳 / +1 / 蹲一个"
+          ]
+        },
+        "cta_templates": ["抢", "薅", "速戳", "+1", "蹲一个"],
+        "subject_examples": ["姐妹们 这个真的可以冲"]
+      }
+    },
+    {
+      "code": "PARENT_FAM",
+      "label_zh": "亲子家庭客",
+      "is_fallback": false,
+      "match": {
+        "age":       ["25-34", "35-44"],
+        "gender":    ["女"],
+        "income":    ["L3", "L4"],
+        "education": ["211", "985", "普通本科", "其他"],
+        "industry":  ["教育", "医疗", "其他"]
+      },
+      "strategy": {
+        "frequency":  {"max_per_24h": 1, "max_per_7d": 3},
+        "quiet_hours": "21:00-08:00",
+        "send_window": ["09:00-11:00", "20:00-21:00"],
+        "levers": ["安全保障", "同行案例", "季节性"],
+        "forbidden_phrases": ["刺激", "上头", "爆款"],
+        "tone": "温和、具体、攻略感。≤150字，含「孩子」「家庭」关键词",
+        "visual": {
+          "summary": "温馨、孩子笑脸、家庭合影（避免辣眼睛特效）",
+          "palette": {
+            "primary": "#E8834A",
+            "secondary": "#F6C96B",
+            "accent": "#4FA3A5",
+            "bg": "#FFF9F2",
+            "text": "#3A2E28"
+          },
+          "design_direction": "暖色调卡片式分区（行程 / 安全保障 / 同行案例）；多用真实家庭合影；CTA 居中且文案具体；圆角、柔和阴影，避免过度特效。",
+          "imagery": "真实家庭合影与孩子笑脸实拍（圆角、柔光）；避免辣眼睛特效、夸张贴纸与惊吓类画面。"
+        },
+        "content_direction": {
+          "angles": ["安全保障", "同行案例", "季节性"],
+          "claims": ["暑期带娃 {目的地} · 5 个安全细节已为您确认"],
+          "hero_points": [
+            "首屏点明「孩子 / 家庭」与具体场景（≤150字）",
+            "列出可核验的安全细节（条列式，写清条数）",
+            "给一个亲子同行案例，CTA 指向亲子版行程 / 安全保障"
+          ]
+        },
+        "cta_templates": ["查看亲子版行程", "查看安全保障"],
+        "subject_examples": ["暑期带娃 {目的地} · 5 个安全细节已为您确认"]
+      }
+    },
+    {
+      "code": "CORP_GRP",
+      "label_zh": "企业团购客",
+      "is_fallback": false,
+      "match": {
+        "income":    ["L4", "L5"],
+        "industry":  ["IT", "金融", "制造", "零售", "教育", "医疗"]
+      },
+      "strategy": {
+        "frequency":  {"max_per_24h": 1, "max_per_7d": 2},
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["09:00-18:00"],
+        "levers": ["团体价格", "议程建议", "真实企业 logo"],
+        "forbidden_phrases": ["亲", "宝宝", "秒杀"],
+        "tone": "商务、简洁、表格化。≤250字",
+        "visual": {
+          "summary": "商务深色（藏青/墨绿）、logo 墙、无人物",
+          "palette": {
+            "primary": "#12304F",
+            "secondary": "#14532D",
+            "accent": "#C8A24A",
+            "bg": "#F5F7FA",
+            "text": "#0F172A"
+          },
+          "design_direction": "商务深色风；首屏放企业 logo 墙 + 一句价值主张；方案用表格化对比呈现；CTA 为表单入口（获取团购方案）；无人物、无装饰插画。",
+          "imagery": "无人物：企业 logo 墙 + 会议室 / 团队场景实拍；商务深色底，禁用插画、卡通与促销贴片素材。"
+        },
+        "content_direction": {
+          "angles": ["团体价格", "议程建议", "真实企业 logo"],
+          "claims": ["{公司名} 团建方案 · 6 人成团价已生成"],
+          "hero_points": [
+            "首屏一句商务价值主张（≤250字，表格化呈现）",
+            "用表格给出成团价与议程对比",
+            "展示真实企业 logo，CTA 为获取团购方案 / 联系企业顾问"
+          ]
+        },
+        "cta_templates": ["获取团购方案", "联系企业顾问"],
+        "subject_examples": ["{公司名} 团建方案 · 6 人成团价已生成"]
+      }
+    },
+    {
+      "code": "DORMANT",
+      "label_zh": "沉睡流失客",
+      "is_fallback": false,
+      "match": {},
+      "match_note": "由 runtime 规则命中：last_active ≤ today-30d 且 points>0 且 ∃eng_* tag 且 ∉suppress_all（不打分；前置规则命中即可）",
+      "strategy": {
+        "frequency":  {"max_per_24h": 1, "max_per_7d": 1},
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"],
+        "levers": ["回归邀请", "全新内容", "一次性优惠（不堆栈）"],
+        "forbidden_phrases": ["催", "再不", "最后"],
+        "tone": "怀旧、口语、像朋友来信。≤120字",
+        "visual": {
+          "summary": "低饱和、轻度复古、人物背影",
+          "palette": {
+            "primary": "#6B7280",
+            "secondary": "#9AA0A6",
+            "accent": "#B08D57",
+            "bg": "#F3F1EC",
+            "text": "#33383D"
+          },
+          "design_direction": "低饱和复古配色；首屏一句问候 + 人物背影或场景旧照；内容短、单一 CTA；避免催促与过度营销感。",
+          "imagery": "人物背影或泛黄旧照，低饱和轻度复古；不使用倒计时、催促类文案素材。"
+        },
+        "content_direction": {
+          "angles": ["回归邀请", "全新内容", "一次性优惠（不堆栈）"],
+          "claims": ["{first_name}，好久不见"],
+          "hero_points": [
+            "首屏一句问候式回归邀请（≤120字，像朋友来信）",
+            "只讲一个「全新变化」或一次回归福利，不堆栈优惠",
+            "单一 CTA：看看我们又去了哪些地方 / 领取回归专属福利"
+          ]
+        },
+        "cta_templates": ["看看我们又去了哪些地方", "领取回归专属福利"],
+        "subject_examples": ["{first_name}，好久不见"]
+      }
+    },
+    {
+      "code": "GENERIC",
+      "label_zh": "通用兜底",
+      "is_fallback": true,
+      "match": {},
+      "match_note": "当所有具名包 score<0.6 时使用，strategy 是保守默认（不挑人、不挑场景）",
+      "strategy": {
+        "frequency":  {"max_per_24h": 1, "max_per_7d": 2},
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"],
+        "levers": ["中性价值", "不过度修饰"],
+        "forbidden_phrases": ["限时", "秒杀", "拼团", "刺激", "上头"],
+        "tone": "客观、温和、不带强烈情绪。≤150字",
+        "visual": {
+          "summary": "中性色彩 + 通用实景图 / 单一 CTA",
+          "palette": {
+            "primary": "#37474F",
+            "secondary": "#546E7A",
+            "accent": "#78909C",
+            "bg": "#FAFAFA",
+            "text": "#263238"
+          },
+          "design_direction": "中性配色 + 通用实景图；标准单列布局（标题 + 正文 + 单一 CTA）；无强视觉风格倾向，保证可读性优先。",
+          "imagery": "通用实景图（目的地 / 场景），中性色彩；不使用强风格化素材与促销贴片。"
+        },
+        "content_direction": {
+          "angles": ["中性价值", "不过度修饰"],
+          "claims": ["{目的地} 活动邀请"],
+          "hero_points": [
+            "首屏一句客观事实陈述（≤150字，不带强烈情绪）",
+            "中性列举 2-3 条通用卖点，不过度修饰",
+            "单一 CTA：查看详情 / 了解活动"
+          ]
+        },
+        "cta_templates": ["查看详情", "了解活动"],
+        "subject_examples": ["{目的地} 活动邀请"]
+      }
+    }
+  ]
+}

@@ -67,6 +67,8 @@ STATUS = {
 from strategy_spec import (parse_strategy_spec, strategies_from_spec,
                            service_sequences_from_spec, spec_goal_defaults,
                            email_display)
+# 一致性校验：StrategySpec 与 Brief 基础信息冲突 → 阻断（不自动纠正、不静默生成）
+from spec_validation import validate_spec, format_conflicts
 
 
 # --------------------------- 工具 ---------------------------
@@ -646,6 +648,21 @@ def _deepseek_completion(system_prompt: str, user_content: str, temperature: flo
     return content
 
 
+def _log_ai_error(msg: str) -> None:
+    """
+    把 AI 识别链路的异常落到 ai_error.log（追加）。
+    存在意义：Handler 里未捕获的异常只会让 Python 掐断连接，
+    浏览器端表现为无响应的 `TypeError: Failed to fetch`，控制台不会留痕，
+    没有这个日志就永远查不到真实原因。
+    """
+    try:
+        import datetime as _dt
+        with open(os.path.join(HERE, "ai_error.log"), "a", encoding="utf-8") as f:
+            f.write(f"[{_dt.datetime.now().isoformat(timespec='seconds')}] {msg}\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # 「营销目标 → AI 意图识别」按钮逻辑（DeepSeek）：读取目标文本，回填简称/日期/年龄/性别/收入/渠道来源等字段。
 AI_PARSE_JS = """
 (function(){
@@ -705,7 +722,7 @@ function updateAgeMatch(){
   var hid=document.querySelector('[name=audience_age]');
   if(hid) hid.value=bks.join(',');
   var disp=document.getElementById('audience_age_match_disp');
-  if(disp) disp.textContent = bks.length ? ('匹配档位：'+bks.join('、')) : '（请填写起始/结束年龄，系统自动匹配档位）';
+  if(disp) disp.textContent = bks.length ? ('匹配档位：'+bks.join('、')) : '';
 }
 function fillAgeFromBuckets(str){
   if(!str) return;
@@ -900,9 +917,16 @@ def build_strategy_prompt(brief: dict) -> str:
         "- 目标人群特点：{aud_block}\n"
         "- 约束/红线：{cons}\n\n"
         "【画像包与内容侧重】\n"
-        "1. 选画像包（GENERIC / HNW_FAMILY / YOUNG_TREND / PARENT_FAM / CORP_GRP / DORMANT）必须先在专家库查表（references/audience-content-map.json），按打分公式 score = Σ weight×match / Σ weight（阈值 0.6）匹配接触人字段。命中 ≥2 个时按分数降序列候选交运营选。\n"
+        "1. 选画像包（GENERIC / HNW_FAMILY / YOUNG_TREND / PARENT_FAM / CORP_GRP / DORMANT）必须先查本项目的画像包参数表"
+        "（项目内路径 references/audience-content-map.json，与 cockpit.py 同级目录下），"
+        "按打分公式 score = Σ weight×match / Σ weight（阈值 0.6）匹配接触人字段。命中 ≥2 个时按分数降序列候选交运营选。\n"
         "2. 命中画像包后，频次 max_per_24h/max_per_7d、静默窗、触达时段、文案调性、画面调性、CTA 模板**必须**沿用该包 strategy；不允许凭感觉改写。\n"
         "3. 命中 0 个（且不为 GENERIC）：用 GENERIC 兜底。{multi_pkg}\n"
+        "4. 输出的 audience_package 必须与上方「目标画像包 {aud_pkg}」**回显一致**（不要自创 code、不要改写大小写）；"
+        "服务端会用它为该包 strategy 的默认值兜底，并在 Program 页展示。\n"
+        "5. business_topic（业务主题，如「UCL2028 门票预售 / 跨年演唱会 / 早鸟优惠」）必须在顶层写明，"
+        "并贯穿 objective、campaign name、subject_examples、CTA 与落地页文案——"
+        "本系统不会替你猜主题，主题不清的文案一律按不可用处理。\n"
         "【国际化与落地页规则】\n"
         "1. 语言优先级先由 audience_region 判断：\n"
         "   · 若 audience_region 不含「中国大陆」（包括仅港澳台、仅海外、港澳台+海外、未选），无论 locale 是否包含 zh_CN，都只生成英文 campaign，不生成中文翻译稿；\n"
@@ -918,8 +942,9 @@ def build_strategy_prompt(brief: dict) -> str:
         "   同一 campaign 的所有落地页链接必须一致，不要全部复用 c1。\n"
         "3. 分群命名体现 region+locale，如 SEG_{goal_id}_CN_ZH、SEG_{goal_id}_GLOBAL_EN。\n"
         "【输出要求】\n"
-        "1. 顶层：goal_id（slug）、objective、kpi（{{\"metric\":\"conversion\",\"target\":{oc_json}}}）、"
-        "locale（[\"{locale}\"]）、audience_package（{aud_pkg}）、audience_profile（按目标人群特点字段填入）、"
+        "1. 顶层：goal_id（slug）、objective、business_topic（业务主题，一句话）、"
+        "kpi（{{\"metric\":\"conversion\",\"target\":{oc_json}}}）、"
+        "locale（[\"{locale}\"]）、audience_package（{aud_pkg}，回显上方目标画像包）、audience_profile（按目标人群特点字段填入）、"
         "campaigns（数组）、service_sequences（数组，可选）。\n"
         "2. 每个 campaign：{{\"cid\",\"name\",\"content_brief\":\"一句话说清这批人现在缺什么信息\","
         "\"content_emphasis\":[...画像包 strategy.levers...]，"
@@ -1046,23 +1071,30 @@ def _should_synthesize_strategy(parsed: dict) -> bool:
 
 
 def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict = None,
-                service_spec: list = None, prefill: dict = None) -> str:
+                service_spec: list = None, prefill: dict = None,
+                conflicts: list = None) -> str:
     """
     运营只填「目标 + 约束」；分群/落库 tag/内容/频次等策略由 Agent 产出 StrategySpec。
     strategy_spec 非空时，右侧只读展示逐条策略摘要（供提交前确认）。
-    prefill: 可选 dict（来自 /brief?goal_id=<id>），覆盖 ex 默认值。
+    prefill: 可选 dict（来自 /brief?goal_id=<id> 或提交被阻断时的回显），覆盖 ex 默认值。
              含 ref_goal_id 时，标题改为「改 Brief」+ 顶部 banner 提示。
+    conflicts: validate_spec 返回的冲突列表；非空时在页面顶部渲染阻断卡片（未生成 Program）。
     """
     ex = {"objective": "", "locale": "zh_CN", "budget": "0", "is_revenue": "0",
           "audience_age": "", "audience_gender": "", "audience_income": "",
           "audience_education": "", "audience_industry": "", "audience_source": "",
           "audience_region": "",
           "start_date": "2028-05-01", "end_date": "2028-07-09", "overall_conv": "",
-          "goal_name": ""}
+          "goal_name": "", "constraints": "", "strategy_spec": ""}
     if prefill:
         for k, v in prefill.items():
             if k in ex and v not in (None, ""):
-                ex[k] = str(v)
+                # 多选字段（age/gender/.../locale）保留 list，供 _sel 正确勾选
+                ex[k] = v if isinstance(v, (list, tuple, set)) else str(v)
+    # audience_age 是隐藏输入（逗号串），多值 list 需拼回字符串：
+    # _age_minmax / 回显文案都按字符串解析（保持与表单提交格式一致）
+    if isinstance(ex.get("audience_age"), (list, tuple, set)):
+        ex["audience_age"] = ",".join(str(x) for x in ex["audience_age"] if str(x))
     _is_prefill = bool(prefill and prefill.get("ref_goal_id"))
     _strategy_gen_on = load_strategy_gen_config()["enabled"]
     _deepseek_on = load_deepseek_config()["enabled"]
@@ -1134,12 +1166,14 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<p class='note'>填入受众字段后，系统按打分公式自动匹配画像包（家庭 / 年轻人 / 父母辈 / 公司客户 / 沉默客户激活）；无匹配则用 GENERIC 兜底。</p>"
                 f"<div class='grid2'>"
                 f"<label>年龄段（输入起止年龄，自动匹配档位）</label>"
+                f"<div>"
                 f"<div class='grid2' style='gap:8px'>"
                 f"<div><span class='opt'>起始年龄</span><br><input type='number' name='audience_age_min' min='0' max='120' value='{_age_minmax(ex['audience_age'])[0]}' style='width:100%' oninput='updateAgeMatch()'></div>"
                 f"<div><span class='opt'>结束年龄</span><br><input type='number' name='audience_age_max' min='0' max='120' value='{_age_minmax(ex['audience_age'])[1]}' style='width:100%' oninput='updateAgeMatch()'></div></div>"
                 f"<input type='hidden' name='audience_age' value='{_esc(ex['audience_age'])}'>"
-                f"<p class='note' id='audience_age_match_disp'>{'匹配档位：' + ex['audience_age'] if ex['audience_age'] else '（请填写起始/结束年龄，系统自动匹配档位）'}</p>"
-                f"{_sel('audience_gender','性别（多选）',ex['audience_gender'],gender_opts,multiple=True)}</div>"
+                f"<p class='note' id='audience_age_match_disp'>{'匹配档位：' + ex['audience_age'] if ex['audience_age'] else ''}</p>"
+                f"</div></div>"
+                f"<div class='grid2'>{_sel('audience_gender','性别（多选）',ex['audience_gender'],gender_opts,multiple=True)}</div>"
                 f"<div class='grid2'>"
                 f"{_sel('audience_income','月收入档*RMB（多选；<3k=L1, 3-8k=L2, 8-20k=L3, 20-50k=L4, >50k=L5）',ex['audience_income'],income_opts,multiple=True)}"
                 f"{_sel('audience_education','教育经历（多选）',ex['audience_education'],edu_opts,multiple=True)}</div>"
@@ -1169,7 +1203,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<p class='note'>无营收走 T2 人工审批（门槛最低）；涉营收走 T4 高级审批人（更严格）。</p>"
 
                 f"<label>约束（红线 / 免打扰 / 合规要求，一行一条）</label>"
-                f"<textarea name='constraints' placeholder='例：22:00-09:00 免打扰&#10;不得对已购票用户重复触达'></textarea>"
+                f"<textarea name='constraints' placeholder='例：22:00-09:00 免打扰&#10;不得对已购票用户重复触达'>{_esc(ex['constraints'])}</textarea>"
                 f"<label>策略规格（Agent 产出，可选）</label>"
                 f"<div class='note'><ul>"
                 f"<li>这是什么：由 Agent 根据目标产出的多波次策略文件，包含分群 / 邮件 / 频次 / 落库 tag。</li>"
@@ -1178,7 +1212,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<li>留空 = 使用默认递进策略（分波延迟递增、内容变体递增）。</li>"
                 f"</ul></div>"
                 f"<textarea name='strategy_spec' placeholder='strategies/ucl2028_send_strategy.json, strategies/ucl2028_content_map.json'>"
-                f"{_esc('strategies/example_strategy.json' if strategy_spec else '')}</textarea>"
+                f"{_esc(ex['strategy_spec'] or ('strategies/example_strategy.json' if strategy_spec else ''))}</textarea>"
                 f"<div style='margin-top:8px;display:flex;gap:8px;flex-wrap:wrap'>"
                 f"<button id='gen-strategy-btn' class='btn sec' type='button'>✨ 自动生成策略</button>"
                 f"<button id='copy-prompt-btn' class='btn ghost' type='button'>📋 复制基础信息（去 WorkBuddy 生成）</button>"
@@ -1236,8 +1270,14 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"  box.innerHTML='命中 '+matched.length+' 个画像包：'+badges"
                 f"    +'<div class=\"note\" style=\"margin-top:4px\">命中证据：'+ev+'</div>'+multiTxt;}}"
                 f"['age','gender','income','education','industry','source','region'].forEach(function(k){{"
-                f"  var el=document.querySelector('[name=audience_'+k+']');"
-                f"  if(el) el.addEventListener('change',_updateMatch);}});"
+                f"  document.querySelectorAll('input[name=audience_'+k+']').forEach(function(el){{"
+                f"    el.addEventListener('change',_updateMatch);}});}});"
+                f"var _ageMinEl=document.querySelector('[name=audience_age_min]');"
+                f"var _ageMaxEl=document.querySelector('[name=audience_age_max]');"
+                f"if(_ageMinEl) _ageMinEl.addEventListener('input',_updateMatch);"
+                f"if(_ageMaxEl) _ageMaxEl.addEventListener('input',_updateMatch);"
+                f"if(typeof updateAgeMatch==='function'){{var _origAge=updateAgeMatch; updateAgeMatch=function(){{_origAge(); if(typeof _updateMatch==='function') _updateMatch(); }};}}"
+                f"if(typeof fillParse==='function'){{var _origFill=fillParse; fillParse=function(j){{_origFill(j); if(typeof _updateMatch==='function') _updateMatch(); }};}}"
                 f"_updateMatch();"
                 f"</script>"
 
@@ -1265,6 +1305,12 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     _title = "改 Brief" if _is_prefill else "新建 Brief"
     _banner = (f"<p class='b-warn' style='margin:4px 0 12px'>📝 改 Brief 模式：已预填原 Program <code>{_esc(prefill.get('ref_goal_id',''))}</code> 的字段。"
                f"提交后将生成新的 Program（不会修改原 Program）。</p>") if _is_prefill else ""
+    # 冲突阻断：StrategySpec 与上方基础信息不一致 → 未生成 Program，逐条列出冲突
+    if conflicts:
+        _banner += _conflicts_card_html(
+            conflicts,
+            title="策略规格与基础信息冲突，未生成 Program",
+            note="请修正 StrategySpec 或上方基础信息后重新提交（下方已保留你填的内容）。")
     return (f"<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px'>"
             f"<h1 style='margin:0'>{_title}</h1>"
             f"<a class='btn sec' href='/' style='white-space:nowrap'>← 取消并返回列表</a>"
@@ -1687,6 +1733,159 @@ def _format_mautic_err(body) -> str:
     return str(body)[:300]
 
 
+# --------------------------- 总策略展示（画像包 + 内容/视觉方向 + 来源） ---------------------------
+# 频次 / 静默窗 / 触达时段的取值来源 → 中文徽章（strategy.strategy_provenance）
+_PROV_LABELS = {"spec": "规格", "package": "画像包",
+                "red_line": "红线", "default": "默认"}
+
+
+def _prov_badge(src) -> str:
+    """来源徽章：spec / package / red_line / default → 规格 / 画像包 / 红线 / 默认。"""
+    lbl = _PROV_LABELS.get(str(src or "").strip(), "默认")
+    cls = {"规格": "b-gov", "画像包": "b-gov", "红线": "b-warn"}.get(lbl, "b-idle")
+    return f"<span class='badge {cls}'>{_esc(lbl)}</span>"
+
+
+def _provenance_line(s: dict) -> str:
+    """每 campaign 的 频次 / 静默窗 / 触达时段 + 来源徽章（值从哪来：规格 / 画像包 / 红线 / 默认）。"""
+    s = s or {}
+    sc = s.get("send_conditions") or {}
+    prov = s.get("strategy_provenance") or {}
+    win = s.get("send_window") or sc.get("send_window") or ""
+    if isinstance(win, (list, tuple)):
+        win = "、".join(str(x) for x in win)
+    elif isinstance(win, dict):
+        win = "、".join(f"{k}:{v}" for k, v in win.items())
+    bits = []
+    for lbl, val, key in (("频次/24h", sc.get("max_per_24h"), "max_per_24h"),
+                          ("频次/7d", sc.get("max_per_7d"), "max_per_7d"),
+                          ("免打扰", sc.get("quiet_hours"), "quiet_hours"),
+                          ("触达时段", win, "send_window")):
+        if val in (None, ""):
+            continue
+        bits.append(f"{lbl} <code>{_esc(val)}</code>{_prov_badge(prov.get(key))}")
+    if not bits:
+        return ""
+    return (f"<p class='pill'>取值来源：{' · '.join(bits)}"
+            f"<span class='note' style='margin-left:6px'>（规格=策略写死 · 画像包=包默认值 · 红线=约束优先 · 默认=系统兜底）</span></p>")
+
+
+def _total_strategy_card(program: dict) -> str:
+    """
+    总策略 = 画像包（含内容/视觉方向）+ 策略规划 + 人群属性。
+
+    数据优先用策略里落库的值（normalize_campaign 注入 content_direction / visual_direction），
+    缺失时回查 audience_map（按 pkg_code），两者都没有就显示「—」，不抛异常。
+    """
+    g = program.get("goal") or {}
+    meta = g.get("meta") or {}
+    pkg_code = meta.get("audience_package") or g.get("audience_package") or "GENERIC"
+    match = meta.get("audience_match") or g.get("audience_match") or {}
+    prof = g.get("audience_profile") or {}
+    # audience_map 是画像包参数表的唯一真源；导入失败（文件缺失）也要能渲染页面
+    try:
+        import audience_map as _am  # noqa: F401
+    except Exception:  # noqa: BLE001
+        _am = None
+
+    def _from_map(fn, default):
+        if _am is None:
+            return default
+        try:
+            return getattr(_am, fn)(pkg_code) or default
+        except Exception:  # noqa: BLE001
+            return default
+
+    def _join(x, dash="—"):
+        if isinstance(x, (list, tuple, set)):
+            return "、".join(str(i) for i in x if str(i)) or dash
+        return str(x) if x not in (None, "") else dash
+
+    # 策略里落库的方向优先（含画像包融合结果），但必须是同一个包：
+    # 策略沿用了别的包（如旧 Program / 兜底 GENERIC）时回查 audience_map，避免展示错包的方向
+    st0 = {}
+    for c in program.get("campaigns", []):
+        s = c.get("strategy") or {}
+        if str(s.get("audience_package") or "").strip().upper() == str(pkg_code).strip().upper():
+            st0 = s
+            break
+    cd = st0.get("content_direction") or _from_map("content_direction", {})
+    vd = st0.get("visual_direction") or _from_map("visual_direction", {})
+
+    # ① 画像包
+    label = match.get("label") or _from_map("label_for", "") or pkg_code
+    score = match.get("score")
+    score_txt = f"{score:.3f}" if isinstance(score, (int, float)) else "—"
+    # evidence 形如 "age=['18-24']"：去掉引号/括号再转义，避免页面上出现 &#x27;
+    ev = "；".join(str(x).replace("'", "").replace("[", "").replace("]", "")
+                   for x in (match.get("evidence") or [])) or "（无具体字段命中）"
+    pkg_html = (f"<p class='pill'>画像包 <code>{_esc(pkg_code)}</code> · {_esc(label)}"
+                f" · score <b>{_esc(score_txt)}</b></p>"
+                f"<p class='note'>命中证据：{_esc(ev)}</p>")
+    matches = match.get("matches") or []
+    if len(matches) > 1:
+        pkg_html += ("<p class='note'>命中多个画像包："
+                     + _esc("；".join(f"{m.get('code')} {m.get('label','')} {m.get('score')}"
+                                      for m in matches))
+                     + "（策略取各包最大值）</p>")
+    if match.get("fallback"):
+        nm = match.get("near_miss") or {}
+        thr = 0.6
+        if _am is not None:
+            try:
+                thr = float((_am.thresholds() or {}).get("threshold") or 0.6)
+            except Exception:  # noqa: BLE001
+                pass
+        gap = None
+        try:
+            gap = round(float(thr) - float(nm.get("score") or 0), 3)
+        except (TypeError, ValueError):
+            gap = None
+        pkg_html += (f"<p class='b-warn'>未达阈值 {_esc(thr)}，已用 GENERIC 兜底"
+                     + (f"：最接近 {_esc(nm.get('code') or '—')} {_esc(nm.get('score'))}"
+                        f"，差 {_esc(gap)}" if nm else "")
+                     + "</p>")
+
+    # ② 目标人群属性（7 字段）
+    rows = "".join(
+        f"<tr><th>{_esc(lbl)}</th><td>{_esc(_join(prof.get(k)))}</td></tr>"
+        for k, lbl in (("age", "年龄段"), ("gender", "性别"), ("income", "月收入档"),
+                       ("education", "教育经历"), ("industry", "行业"),
+                       ("source", "首选来源"), ("region", "国家/地区")))
+
+    # ③ 内容方向
+    cd_html = (f"<p class='note'>levers / 内容角度：{_esc(_join(cd.get('levers') or cd.get('angles')))}</p>"
+               f"<p class='note'>调性 tone：{_esc(cd.get('tone') or '—')}</p>"
+               f"<p class='note'>禁用词：{_esc(_join(cd.get('forbidden_phrases')))}</p>"
+               f"<p class='note'>CTA 模板：{_esc(_join(cd.get('cta_templates')))}</p>"
+               f"<p class='note'>主题示例：{_esc(_join(cd.get('subject_examples') or cd.get('claims')))}</p>")
+
+    # ④ 视觉方向（palette 渲染成小色块）
+    import re as _re
+    pal = vd.get("palette") or {}
+    swatches, pal_txt = [], []
+    for k, v in pal.items():
+        v_s = str(v)
+        pal_txt.append(f"{k}={v_s}")
+        if _re.fullmatch(r"#[0-9a-fA-F]{3,8}", v_s.strip()):
+            swatches.append(
+                f"<span title='{_esc(k)} {_esc(v_s)}' style='display:inline-block;width:22px;"
+                f"height:22px;border-radius:4px;background:{_esc(v_s.strip())};"
+                f"border:1px solid #ccc;vertical-align:middle;margin-right:2px'></span>")
+    vd_html = (f"<p class='note'>画面调性：{_esc(vd.get('visual') or '—')}</p>"
+               f"<p class='note'>配色：{''.join(swatches) or '—'} "
+               f"<span class='pill'>{_esc(' '.join(pal_txt) or '—')}</span></p>"
+               f"<p class='note'>设计方向：{_esc(vd.get('design_direction') or '—')}</p>")
+
+    return (f"<div class='card'><h3>总策略（画像包 + 策略规划 + 属性）</h3>"
+            f"<p class='note'>总策略 = 按目标人群特点推断的画像包（内容/视觉/频次方向） + L1 策略规划 + 运营填写的人群属性；以下只读。</p>"
+            f"<h4 style='margin:10px 0 4px'>① 画像包（系统推断）</h4>{pkg_html}"
+            f"<h4 style='margin:10px 0 4px'>② 目标人群属性（运营填写）</h4>"
+            f"<table class='kv'>{rows}</table>"
+            f"<h4 style='margin:10px 0 4px'>③ 内容方向</h4>{cd_html}"
+            f"<h4 style='margin:10px 0 4px'>④ 视觉方向</h4>{vd_html}</div>")
+
+
 def _program_body(program: dict, msg: str = "") -> str:
     gid = program["goal_id"]
     goal = program["goal"]
@@ -1925,6 +2124,7 @@ def _program_body(program: dict, msg: str = "") -> str:
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
                   f"<p style='margin:8px 0'>{_strategy_summary(c['strategy'])}</p>"
+                  f"{_provenance_line(c['strategy'])}"
                   f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap_txt} {result_txt}</p>"
                   f"{goals_txt}{fb_txt}{ext_html}"
                   f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
@@ -2092,8 +2292,9 @@ def _program_body(program: dict, msg: str = "") -> str:
         "};"
         "})();</script>"
     )
+    total_html = _total_strategy_card(program)
     return (f"{msg}{header_html}"
-            f"{plan_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}{click_guard_js}{replan_js}")
+            f"{plan_html}{total_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}{click_guard_js}{replan_js}")
 
 
 def _proposal_body(d: dict, msg: str = "") -> str:
@@ -2137,18 +2338,104 @@ def _proposal_body(d: dict, msg: str = "") -> str:
             f"<div class='card'><h3>推送</h3>{push_box}</div>")
 
 
-def _resolve_strategy_spec(src: str):
-    """解析 StrategySpec（文件路径或 JSON 文本）→ (campaigns, service_sequences, err, meta)。"""
+def _resolve_strategy_spec_full(src: str):
+    """
+    解析 StrategySpec（文件路径或 JSON 文本）
+    → (campaigns, service_sequences, err, meta, raw_spec)。
+
+    比 _resolve_strategy_spec 多回一个 **原始 spec dict**：一致性校验要拿 spec 原文
+    （campaigns[].send_conditions / locale / window / kpi / audience_package）与 Brief 比，
+    归一化后的 strategies 已经丢掉了「运营到底写了什么」。
+    """
     try:
         spec = parse_strategy_spec(src)
     except Exception as e:  # noqa: BLE001
-        return [], [], str(e), None
+        return [], [], str(e), None, None
+    if not isinstance(spec, dict):
+        return [], [], "StrategySpec 不是 JSON 对象", None, None
     campaigns = strategies_from_spec(spec)
     services = service_sequences_from_spec(spec)
     meta = spec_goal_defaults(spec)
     if not campaigns and not services:
-        return [], [], "StrategySpec 的 campaigns / service_sequences 均为空", meta
-    return campaigns, services, "", meta
+        return [], [], "StrategySpec 的 campaigns / service_sequences 均为空", meta, spec
+    return campaigns, services, "", meta, spec
+
+
+def _resolve_strategy_spec(src: str):
+    """解析 StrategySpec（文件路径或 JSON 文本）→ (campaigns, service_sequences, err, meta)。"""
+    campaigns, services, err, meta, _spec = _resolve_strategy_spec_full(src)
+    return campaigns, services, err, meta
+
+
+# --------------------------- 一致性校验（阻断式）辅助 ---------------------------
+def _conflicts_card_html(conflicts, title: str = "策略规格与基础信息冲突",
+                         note: str = "请修正 StrategySpec 或基础信息后重新提交。") -> str:
+    """把 Conflict 列表渲染成一张红色卡片（每冲突一行，文案来自 format_conflicts）。"""
+    if not conflicts:
+        return ""
+    lines = "".join(f"<div class='b-bad' style='margin:4px 0;padding:6px 8px'>{_esc(l)}</div>"
+                    for l in format_conflicts(conflicts))
+    return (f"<div class='card' style='border-left:4px solid #c0392b'>"
+            f"<h3 style='margin:0 0 6px;color:#c0392b'>{_esc(title)}</h3>"
+            f"<p class='note' style='margin:0 0 8px'>{_esc(note)}</p>"
+            f"{lines}</div>")
+
+
+def _brief_ctx_from_form(form: dict, locales: list = None) -> dict:
+    """校验用 Brief 上下文：与 /brief 表单字段一一对应（不一致即阻断）。"""
+    form = form or {}
+    prof = {k: form.get("audience_" + k)
+            for k in ("age", "gender", "income", "education",
+                      "industry", "source", "region")}
+    return {
+        "objective": (form.get("objective", "") or "").strip(),
+        "goal_name": (form.get("goal_name", "") or "").strip(),
+        "start_date": (form.get("start_date", "") or "").strip(),
+        "end_date": (form.get("end_date", "") or "").strip(),
+        "overall_conv": (form.get("overall_conv", "") or "").strip(),
+        "locale": locales if locales else form.get("locale"),
+        "constraints": form.get("constraints", "") or "",
+        "audience_region": prof.get("region"),
+        "audience_profile": prof,
+        "is_revenue": form.get("is_revenue", "0"),
+        "budget": form.get("budget", "") or "",
+    }
+
+
+def _brief_ctx_from_goal(g: dict) -> dict:
+    """校验用 Brief 上下文：来自已落库的 Program（L1 确认策略路径用）。"""
+    g = g or {}
+    meta = g.get("meta") or {}
+    kpi = g.get("kpi") or {}
+    tgt = kpi.get("target")
+    return {
+        "objective": g.get("objective", "") or "",
+        "goal_name": g.get("name", "") or "",
+        "start_date": g.get("start_date", "") or "",
+        "end_date": g.get("end_date", "") or "",
+        "overall_conv": ("" if tgt in (None, 0, 0.0) else str(tgt)),
+        "locale": meta.get("locales") or g.get("locale") or [],
+        "constraints": meta.get("constraints") or g.get("constraints") or [],
+        "audience_region": (g.get("audience_profile") or {}).get("region"),
+        "audience_profile": g.get("audience_profile") or {},
+        "is_revenue": "1" if g.get("is_revenue") else "0",
+        "budget": g.get("budget", "") or "",
+    }
+
+
+def _prefill_from_form(form: dict) -> dict:
+    """提交被阻断时回显已填内容（含约束与策略规格文本），避免运营重填。"""
+    keys = ["goal_name", "objective", "start_date", "end_date", "overall_conv",
+            "budget", "is_revenue", "constraints", "strategy_spec",
+            "audience_age", "audience_gender", "audience_income",
+            "audience_education", "audience_industry", "audience_source",
+            "audience_region", "locale"]
+    out = {}
+    for k in keys:
+        v = (form or {}).get(k, "")
+        if v not in (None, ""):
+            out[k] = v
+    return out
 
 
 # --------------------------- Handler ---------------------------
@@ -2335,9 +2622,9 @@ class Handler(BaseHTTPRequestHandler):
             # ---- L1：Agent 产出的策略（可选）----
             spec_src = (form.get("strategy_spec", "") or "").strip()
             if spec_src:
-                strategies, services, spec_err, spec_meta = _resolve_strategy_spec(spec_src)
+                strategies, services, spec_err, spec_meta, spec_raw = _resolve_strategy_spec_full(spec_src)
             else:
-                strategies, services, spec_err, spec_meta = [], [], "", None
+                strategies, services, spec_err, spec_meta, spec_raw = [], [], "", None, None
             if spec_err:
                 raise ValueError(f"StrategySpec 解析失败：{spec_err}")
             d = spec_meta or {}
@@ -2437,6 +2724,21 @@ class Handler(BaseHTTPRequestHandler):
                 "audience_profile": goal.audience_profile,
                 "is_revenue": goal.is_revenue,
             }
+            # 画像包已由服务端推断 → 带上 goal 重新归一化，让画像包的
+            # 频次 / 静默窗 / 触达时段 / 内容方向默认值真正生效（此前完全空转）
+            if spec_raw:
+                _re = strategies_from_spec(spec_raw, goal=goal)
+                if _re:
+                    strategies = _re
+            # ---- 一致性校验：spec 与上方基础信息冲突 → 阻断，不生成 Program ----
+            if spec_raw:
+                conflicts = validate_spec(spec_raw, _brief_ctx_from_form(form, locales),
+                                          goal.meta.get("audience_package"))
+                if conflicts:
+                    return self._send(200, _page(
+                        "Brief 与策略规格冲突",
+                        _brief_form(strategies, "", spec_meta, services,
+                                    _prefill_from_form(form), conflicts)))
             program = build_program(goal, n, compile, strategy_spec=strategies or None,
                                     service_sequences=services or None)
             # 每个 campaign 绑定派生计划：转化目标 + 执行窗口（可在 /program 上编辑）
@@ -2517,6 +2819,20 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json({"ok": True, "prompt": prompt})
 
     def _handle_ai_parse(self, body: dict):
+        """
+        入口桩：任何未预期异常都必须转成结构化 JSON 返回。
+        原因：BaseHTTPRequestHandler 里冒出去的异常会让 Python 直接掐断连接，
+        浏览器 fetch 收到的是「无响应」→ 报 TypeError: Failed to fetch，
+        用户完全看不到真实错误。这里统一兜底并落盘 ai_error.log。
+        """
+        try:
+            return self._handle_ai_parse_inner(body)
+        except Exception as e:  # noqa: BLE001
+            _log_ai_error(f"ai-parse 未捕获异常 {type(e).__name__}: {e}")
+            return self._send_json(
+                {"ok": False, "error": f"AI 识别内部错误：{type(e).__name__}: {e}"})
+
+    def _handle_ai_parse_inner(self, body: dict):
         """
         营销目标文本 → DeepSeek 意图识别 → 回填结构化字段。
         返回 JSON：{"ok":true,"start_date","end_date","audience_gender","constraints",
@@ -2662,8 +2978,12 @@ class Handler(BaseHTTPRequestHandler):
                 if spec:
                     out["strategy_spec"] = spec
                     strategy_auto = True
-            except RuntimeError:
-                pass  # 合成失败不阻断字段回填（前端仍拿到识别字段）
+            except Exception as e:  # noqa: BLE001
+                # 合成失败不阻断字段回填（前端仍拿到识别字段）。
+                # 不能只捕 RuntimeError：_brief_from_parsed / _build_strategy_prompt_from_brief
+                # 抛 KeyError/TypeError 时会穿透到 Handler 外层，连接被掐断 → 浏览器 Failed to fetch。
+                _log_ai_error(f"strategy 自动合成失败 {type(e).__name__}: {e}")
+                pass
         resp = {"ok": True, **out, "filled": filled}
         if strategy_auto:
             resp["strategy_auto"] = True
@@ -3163,6 +3483,15 @@ class Handler(BaseHTTPRequestHandler):
             strategies = strategies_from_spec(spec, goal)
         except Exception as e:  # noqa: BLE001
             msg = f"<div class='card'><p class='b-bad'>策略解析失败：{_esc(str(e))}</p></div>"
+            return self._send(200, _page("Program", _program_body(p, msg)))
+        # 一致性校验：与 Brief 基础信息冲突 → 不应用、不写 changelog
+        conflicts = validate_spec(spec, _brief_ctx_from_goal(p["goal"]),
+                                  (p["goal"].get("meta") or {}).get("audience_package")
+                                  or p["goal"].get("audience_package"))
+        if conflicts:
+            msg = _conflicts_card_html(
+                conflicts, title="策略规格与基础信息冲突，未应用该策略",
+                note="Program 未做任何改动：不改写下游、不记录变更。请修正策略 JSON 后重新提交。")
             return self._send(200, _page("Program", _program_body(p, msg)))
         # 记录上游完成结果（与 _handle_complete 同口径）
         conv_raw = (form.get("conversion", "") or "").strip()
