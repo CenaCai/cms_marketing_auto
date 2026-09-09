@@ -259,8 +259,20 @@ def _build_email_html(subject: str, activity: str = "", discount: dict = None,
     )
 
 
-def _build_landing_page_html(activity: str, cta_label: str = "立即购票") -> str:
-    """生成结构化落地页（替代旧 <p>名字</p> 占位）。"""
+def _build_landing_page_html(activity: str, cta_label: str = "立即购票",
+                           form_embed: str = None) -> str:
+    """生成结构化落地页（替代旧 <p>名字</p> 占位）。
+
+    form_embed：Mautic 表单内嵌 token（如 "{form=FORM_ALIAS}"），非空时把表单
+    渲染进落地页，使「落地页中有填写个人信息提交的表单」落地。
+    """
+    form_html = ""
+    if form_embed:
+        form_html = (
+            '<div style="margin-top:24px;padding:20px;background:#fafafa;'
+            'border:1px solid #eee;border-radius:8px">'
+            f'{form_embed}</div>'
+        )
     return (
         '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
         f'<title>{activity}</title></head>'
@@ -270,6 +282,7 @@ def _build_landing_page_html(activity: str, cta_label: str = "立即购票") -> 
         'padding:40px 32px">'
         f'<h1 style="font-size:24px;margin:0 0 12px">{activity}</h1>'
         '<p style="color:#555;line-height:1.7">活动详情与购票入口即将开放，敬请期待。</p>'
+        f'{form_html}'
         '<a href="#" style="display:inline-block;margin-top:16px;padding:12px 28px;'
         'background:#b12704;color:#ffffff;text-decoration:none;border-radius:4px">'
         f'{cta_label}</a>'
@@ -383,9 +396,11 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
     return {"id": None, "error": f"POST /api/emails/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
-def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: int = 15, custom_html: str = None) -> dict:
+def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: int = 15,
+                      custom_html: str = None, form_embed: str = None) -> dict:
     """按 name 找 landing page；找不到就 POST 新建（草稿）；返回 {"id","alias","created":bool,"error"?}。
-    正文默认用结构化落地页模板；若给了 url 内嵌 meta-refresh 跳转（mautic_code_mode 标准路径）。"""
+    正文默认用结构化落地页模板；若给了 url 内嵌 meta-refresh 跳转（mautic_code_mode 标准路径）；
+    form_embed 非空时把表单 token 嵌进正文（落地页内嵌表单）。"""
     if not name:
         return {"id": None, "error": "name 为空"}
     try:
@@ -421,7 +436,7 @@ def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: i
     if custom_html:
         html = custom_html
     else:
-        html = _build_landing_page_html(name)
+        html = _build_landing_page_html(name, form_embed=form_embed)
         if url:
             html = html.replace("</head>", f'<meta http-equiv="refresh" content="0;url={url}"></head>')
     body = {"name": name, "alias": alias, "isPublished": False, "customHtml": html, "title": name}
@@ -507,11 +522,12 @@ def ensure_stage(name: str, weight: int = None, env: str = "local", timeout: int
     return {"id": None, "error": f"POST /api/stages/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
-def ensure_form(name: str, env: str = "local", timeout: int = 15) -> dict:
-    """按 name 找 form；找不到就 POST 新建（草稿，含一个必填 email 字段）。
+def ensure_form(name: str, env: str = "local", timeout: int = 15, fields: list = None) -> dict:
+    """按 name 找 form；找不到就 POST 新建（草稿）。
 
-    新建的表单只带 email 一个字段：策略声明「终点是某表单」时通常只是要一个可提交入口，
-    字段本体由运营在 Mautic 补；这里不猜业务字段，避免写出错误映射。
+    fields：表单字段列表（Mautic form field 结构）。缺省为「姓名 + 手机 + 邮箱」
+    三字段，覆盖「落地页收集个人信息、提交表单作为流程终点」的常见需求；
+    传入 fields=[] 则只建空壳（运营补字段）。
     """
     if not name:
         return {"id": None, "error": "name 为空"}
@@ -527,6 +543,16 @@ def ensure_form(name: str, env: str = "local", timeout: int = 15) -> dict:
         token = _get_token(base, client_id, client_secret)
     except Exception as e:  # noqa: BLE001
         return {"id": None, "error": f"token 获取失败: {e}"}
+
+    if not fields:
+        fields = [
+            {"label": "姓名", "alias": "firstname", "type": "text", "isRequired": True,
+             "mappedField": "firstname", "mappedObject": "contact", "order": 1},
+            {"label": "手机", "alias": "phone", "type": "tel", "isRequired": False,
+             "mappedField": "phone", "mappedObject": "contact", "order": 2},
+            {"label": "邮箱", "alias": "email", "type": "email", "isRequired": True,
+             "mappedField": "email", "mappedObject": "contact", "order": 3},
+        ]
 
     alias = _aliasify(name)
     res = _get(base, f"/api/forms?search={urllib.parse.quote(name)}&limit=50", token, timeout)
@@ -548,16 +574,8 @@ def ensure_form(name: str, env: str = "local", timeout: int = 15) -> dict:
         "formType": "standalone",
         "isPublished": False,          # 草稿：等运营补字段/确认后再上线
         "postAction": "return",
-        "postActionProperty": "",
-        "fields": [{
-            "label": "邮箱",
-            "alias": "email",
-            "type": "email",
-            "isRequired": True,
-            "mappedField": "email",
-            "mappedObject": "contact",
-            "order": 1,
-        }],
+        "postActionProperty": "感谢提交，我们的商务同事会尽快与您联系。",
+        "fields": fields,
     }
     r = _post(base, "/api/forms/new", body, token, timeout=timeout)
     if r["status"] in (200, 201):
@@ -758,7 +776,7 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         seg_name = ((proposal.get("strategy_ref") or {}).get("segment_ref")
                     or proposal.get("campaign", {}).get("audience_segment") or "")
         if seg_name:
-            rseg = ensure_segment(seg_name, env=env)
+            rseg = ensure_segment(seg_name, env=env, timeout=60)
             ensure_log.append({"asset": "segment", "name": seg_name, **rseg})
             if rseg.get("id"):
                 seg_id = rseg["id"]
@@ -783,14 +801,49 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
     lp_url = (proposal.get("campaign") or {}).get("landing_page_url") or ""
     discount = str_ref.get("discount")
 
+    # 0.2.0 表单（如策略要求落地页+表单）：先建表单，落地页内嵌表单 token。
+    # 判断依据：main_endpoint.form 或 strategy_ref.form_ref 任一声明即视为需要。
+    _camp_strategy = (proposal.get("campaign") or {}).get("strategy") or {}
+    _mep = _camp_strategy.get("main_endpoint") or {}
+    _needs_form = bool(
+        _mep.get("form") or str_ref.get("form_ref")
+        or any((ev.get("type") == "form.submit")
+               for ev in (proposal.get("mautic_events") or [])))
+    form_id = None
+    form_alias = ""
+    if _needs_form:
+        form_name = f"{campaign_name}-表单"
+        rform = ensure_form(form_name, env=env, timeout=60)
+        ensure_log.append({"asset": "form", "name": form_name, **rform})
+        if rform.get("id"):
+            form_id = rform["id"]
+            form_alias = rform.get("alias") or _aliasify(form_name)
+
     # 0.2.1 落地页：结构化 HTML + 可选 meta-refresh 跳转；邮件 CTA 指向它
     lp_name = f"{campaign_name}-落地页"
     lp_public_url = ""
-    rlp = ensure_landing_page(lp_name, url=lp_url, env=env)
+    rlp = ensure_landing_page(
+        lp_name, url=lp_url, env=env, timeout=60,
+        form_embed=(f"{{form={form_alias}}}" if form_alias else None))
     ensure_log.append({"asset": "landing_page", "name": lp_name, **rlp})
     if rlp.get("id"):
         # Mautic 落地页公开 URL：{base}/s/{alias}
         lp_public_url = f"{base}/s/{rlp.get('alias') or _aliasify(lp_name)}"
+
+    # 0.2.1b 表单终点绑定：把真实 form_id 写回事件图 form.submit 节点，
+    # 重新编译出含 forms:[id] 的 Mautic 事件（offline 编译时 form_id 为空、节点被丢弃）。
+    # 必须在邮件绑定前完成，避免覆盖 email 真实 id。
+    if form_id and isinstance(proposal.get("graph"), list):
+        for n in proposal["graph"]:
+            if isinstance(n, dict) and n.get("type") in ("form.submit", "decision.form_submit"):
+                (n.setdefault("params", {}))["form_id"] = form_id
+        try:
+            from plan_compiler import to_mautic_events
+            _re = to_mautic_events(proposal["graph"], _camp_strategy)
+            proposal["mautic_events"] = _re["events"]
+            proposal["mautic_canvas"] = _re["canvasSettings"]
+        except Exception as _exc:  # noqa: BLE001
+            ensure_log.append({"asset": "form_recompile", "error": str(_exc)})
 
     # 0.2.2 邮件：主 / 提醒各一封（结构化名 + 真实正文 + CTA 指向落地页）
     main_email_name = campaign_name
@@ -803,7 +856,7 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         if name in email_id_cache:
             return email_id_cache[name]
         html = _build_email_html(subject, campaign_name, discount, lp_public_url, is_followup)
-        rem = ensure_email(name, subject=subject, env=env, list_id=seg_id, custom_html=html)
+        rem = ensure_email(name, subject=subject, env=env, list_id=seg_id, custom_html=html, timeout=60)
         ensure_log.append({"asset": "email", "name": name, **rem})
         email_id_cache[name] = rem.get("id")
         return rem.get("id")
@@ -875,7 +928,7 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         create_body["canvasSettings"] = proposal["mautic_canvas"]
     if proposal.get("mautic_lists"):
         create_body["lists"] = proposal["mautic_lists"]
-    r1 = _post(base, "/api/campaigns/new", create_body, token)
+    r1 = _post(base, "/api/campaigns/new", create_body, token, timeout=60)
     steps.append({"step": "create_campaign_with_events", **r1})
     new_id = None
     if isinstance(r1["body"], dict):
@@ -891,9 +944,9 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
             if not aid:
                 continue
             if asset == "email":
-                r = _patch(base, f"/api/emails/{aid}/edit", {"isPublished": True}, token)
+                r = _patch(base, f"/api/emails/{aid}/edit", {"isPublished": True}, token, timeout=60)
             elif asset == "landing_page":
-                r = _patch(base, f"/api/pages/{aid}/edit", {"isPublished": True}, token)
+                r = _patch(base, f"/api/pages/{aid}/edit", {"isPublished": True}, token, timeout=60)
             else:
                 continue
             publish_log.append({"asset": asset, "id": aid, **r})
@@ -901,7 +954,7 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         # Mautic 7：发布用 PATCH /api/campaigns/{id}/edit（POST/404，PUT/500，PATCH 才能正确处理）
         try:
             r3 = _patch(base, f"/api/campaigns/{new_id}/edit",
-                        {"isPublished": True}, token)
+                        {"isPublished": True}, token, timeout=60)
             steps.append({"step": "publish_campaign", **r3})
         except Exception as e:  # noqa: BLE001
             steps.append({"step": "publish_campaign", "status": 0, "body": f"网络/连接错误: {e}"})

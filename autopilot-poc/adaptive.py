@@ -177,6 +177,86 @@ def topology_default_strategy(goal) -> dict:
     }
 
 
+# =====================================================================
+# 落地页 / 表单意图识别（objective 关键词自动识别）
+# ---------------------------------------------------------------------
+# 用户常把「要落地页 + 表单、提交表单作为流程终点」写在 objective 自由文本里，
+# 但历史上这条意图从未被结构化（strategy 只填 email、landing_page_ref 恒空），
+# 导致编译层与 push 层即便具备能力也不会生成落地页/表单。这里把意图提取出来，
+# 注入 strategy 的 landing_page_ref / form_ref / main_endpoint，让 plan_compiler
+# 吐出 page.hit / form.submit 节点、push 真实建 Mautic 落地页+表单资产。
+# =====================================================================
+_LP_KEYWORDS = ("落地页", "着陆页", "landing page", "landing_page", "lp",
+                "报名页", "留资页", "表单页")
+_FORM_KEYWORDS = ("表单", "form", "报名", "提交表单", "填写个人信息",
+                  "留资", "收集信息", "个人信息", "收集")
+
+
+def _goal_requests_lp_form(goal) -> tuple:
+    """扫描 objective + constraints 自由文本，返回 (needs_lp, needs_form)。
+
+    needs_form 为真时一并要求落地页（表单需有承载页；用户多要求「落地页中有表单」）。
+    """
+    text = " ".join(str(x or "") for x in (
+        getattr(goal, "objective", ""),
+        getattr(goal, "constraints", ""),
+    )).lower()
+    needs_form = any(k in text for k in _FORM_KEYWORDS)
+    needs_lp = any(k in text for k in _LP_KEYWORDS) or needs_form
+    return needs_lp, needs_form
+
+
+def _enrich_lp_form(strategy: dict, goal, needs_lp: bool, needs_form: bool) -> dict:
+    """策略未显式声明落地页/表单时，按 objective 意图注入 landing_page + form 终点。
+
+    尊重显式意图：strategy 已带 landing_page_ref / form_ref 时不覆盖（Agent/规格优先）。
+    注入后 plan_compiler 会从 main_endpoint 吐出 page.hit / form.submit 节点，
+    push 再据此真实建 Mautic 落地页（内嵌表单）+ 表单资产。
+    """
+    if not (needs_lp or needs_form):
+        return strategy
+    s = strategy if isinstance(strategy, dict) else {}
+    cname = (s.get("campaign_name")
+             or getattr(goal, "goal_id", "campaign") or "campaign")
+
+    # 落地页
+    if needs_lp and not s.get("landing_page_ref"):
+        s["landing_page_mode"] = "generate"
+        s["landing_page_ref"] = f"LP_{cname}"
+        if "landing_page_url" not in s:
+            s["landing_page_url"] = ""
+
+    # 表单
+    if needs_form and not s.get("form_ref"):
+        s["form_ref"] = f"FORM_{cname}"
+
+    # 主流程终点：以「提交表单」收口（落地页承接）
+    mep = s.get("main_endpoint")
+    if not isinstance(mep, dict):
+        mep = {"tags": [], "stage": None, "segment": None, "email": None,
+               "landing_page": None, "form": None, "terminal": True,
+               "actions": [], "note": "", "action": "add", "judgment": None}
+        s["main_endpoint"] = mep
+    if needs_lp and not mep.get("landing_page"):
+        mep["landing_page"] = s.get("landing_page_ref") or f"LP_{cname}"
+    if needs_form and not mep.get("form"):
+        mep["form"] = s.get("form_ref") or f"FORM_{cname}"
+    mep["terminal"] = True
+    # 显式声明终点动作，避免 _infer_endpoint_action 只挑一个（落地页与表单都要触发）
+    acts = list(mep.get("actions") or [])
+    for k in ("landing_page", "form"):
+        if mep.get(k) and k not in acts:
+            acts.append(k)
+    mep["actions"] = acts
+    # 主流程终点判断信号：form.submit 才收口（以提交表单为流程终点）
+    if needs_form:
+        mep["judgment"] = {
+            "signal": "form.submit", "op": "exists", "value": True,
+            "ref": mep.get("form"), "note": "以提交表单作为流程终点",
+        }
+    return s
+
+
 def default_strategies(goal, n: int = 1) -> list:
     """
     [废弃别名] 原 N 波递进占位已改为「拓扑缺省单 campaign」。保留仅为兼容旧 import。
@@ -210,7 +290,10 @@ def build_program(goal, n: int = DEFAULT_N_CAMPAIGNS, compile_fn=None,
         strategies = [s] if isinstance(s, dict) else list(s)
         n = len(strategies)
     campaigns = []
+    _needs_lp, _needs_form = _goal_requests_lp_form(goal)
     for s in strategies:
+        # objective 关键词自动识别：要求落地页/表单且策略未显式声明时注入终点
+        _enrich_lp_form(s, goal, _needs_lp, _needs_form)
         prop = compile_fn(goal, s) if compile_fn else compile(goal, s)
         campaigns.append({
             "cid": s["cid"], "wave_id": s["wave_id"],
