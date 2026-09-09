@@ -937,8 +937,103 @@ def campaign_count(start_date: str, end_date: str, overall_conv: str) -> dict:
             "reason": f"{base_txt}；{adj_txt}；夹取 [1,5] → {n}"}
 
 
-def build_strategy_prompt(brief: dict) -> str:
-    """把 Brief 上下文拼成自包含提示词，交给 WorkBuddy（小腾）生成 StrategySpec JSON。"""
+# ---- 方向 A：增长运营专家团上下文注入 + WorkBuddy 专家 hook（预留） ----
+
+def load_workbuddy_config() -> dict:
+    """
+    读取 WorkBuddy 专家团配置（config.json [workbuddy]）。
+    仅作为「未来接 WorkBuddy 外部 API」的预留凭证位；当前 enabled 默认 false，策略合成仍走 DeepSeek。
+    返回 {enabled, api_key, mautic_env, strategy_context:{mautic_assets,history}}。
+    """
+    cfg: dict = {"enabled": False, "api_key": "", "mautic_env": "local",
+                 "strategy_context": {"mautic_assets": True, "history": True}}
+    try:
+        with open(os.path.join(HERE, "config.json"), encoding="utf-8") as f:
+            allcfg = json.load(f)
+        wb = allcfg.get("workbuddy") or {}
+        if isinstance(wb.get("enabled"), bool):
+            cfg["enabled"] = wb["enabled"]
+        if wb.get("api_key"):
+            cfg["api_key"] = wb["api_key"]
+        if wb.get("mautic_env"):
+            cfg["mautic_env"] = wb["mautic_env"]
+        if isinstance(wb.get("strategy_context"), dict):
+            cfg["strategy_context"].update(wb["strategy_context"])
+    except Exception:  # noqa: BLE001
+        pass
+    return cfg
+
+
+def _collect_mautic_context() -> str:
+    """读取 Mautic 实例资产清单（emails/segments/pages 的 name+alias），注入策略合成提示词。
+    防御式：缺凭证/连接失败/异常 → 明确标注「数据缺失」，不阻断 prompt 生成（遵循增长运营行为准则：工具无返回即标缺失）。"""
+    try:
+        import mautic_client
+        env = load_workbuddy_config().get("mautic_env") or "local"
+        assets = mautic_client.mautic_read_assets(env)
+    except Exception as e:  # noqa: BLE001
+        return ("（Mautic 资产清单：数据缺失（data_missing）—— 读取异常：%s。"
+                "LLM 须将 needs_operator_review=true，对 email_ref 一律用 generate（新建），"
+                "并在 operator_review_notes 建议人工补齐资产清单。）" % e)
+    if not assets.get("available"):
+        reason = assets.get("reason") or "凭证未配置或未连接"
+        return ("（Mautic 资产清单：数据缺失（data_missing）—— %s。"
+                "LLM 须将 needs_operator_review=true，对 email_ref 一律用 generate（新建）而非 reuse，"
+                "并在 operator_review_notes 标注「未连接 Mautic，复用/新建决策待人工确认」。）" % reason)
+    lines = ["Mautic 实例（env=%s）已有资产（name / alias），email_ref 优先复用下列 alias/id，避免重复新建：" % env]
+    for kind in ("emails", "segments", "pages"):
+        items = assets.get(kind) or []
+        if not items:
+            continue
+        shown = "、".join("%s(%s)" % (it.get("name"), it.get("alias") or it.get("id")) for it in items[:30])
+        lines.append("- %s（%d）：%s%s" % (kind, len(items), shown, " …" if len(items) > 30 else ""))
+    return "\n".join(lines)
+
+
+def _collect_history_context() -> str:
+    """读取最近 10 个 output/program_*.json，提取历史 program 的 goal_id/objective/反馈，作为策略合成复盘上下文。
+    防御式：无文件/异常 → 标注「暂无历史数据」。"""
+    try:
+        out_dir = os.path.join(HERE, "output")
+        if not os.path.isdir(out_dir):
+            return "（历史 program 反馈：暂无数据（output/ 目录不存在）。）"
+        import glob as _gl
+        files = sorted(_gl.glob(os.path.join(out_dir, "program_*.json")),
+                       key=os.path.getmtime, reverse=True)[:10]
+        if not files:
+            return "（历史 program 反馈：暂无数据（output/program_*.json 不存在）。）"
+        rows = []
+        for fp in files:
+            try:
+                with open(fp, encoding="utf-8") as f:
+                    d = json.load(f)
+                gid = d.get("goal_id") or d.get("program_id") or os.path.basename(fp)
+                obj = d.get("objective") or ""
+                fb = d.get("feedback") or d.get("review_note") or ""
+                fb_txt = ("；反馈：%s" % fb) if fb else ""
+                rows.append("- %s：%s%s" % (gid, obj, fb_txt))
+            except Exception:  # noqa: BLE001
+                continue
+        if not rows:
+            return "（历史 program 反馈：文件存在但无可用字段。）"
+        return "最近 program（最多 10，供策略复用/避坑参考）：\n" + "\n".join(rows)
+    except Exception as e:  # noqa: BLE001
+        return "（历史 program 反馈：数据缺失（data_missing）—— %s。）" % e
+
+
+def _workbuddy_expert_completion(system_prompt: str, user_content: str, temperature: float = 0.0) -> str:
+    """【预留 hook】未来通过 WorkBuddy 外部 API 调用「增长运营专家团」生成策略时走这里。
+    当前 WorkBuddy 桌面应用无外部可调 HTTP/MCP 接口，故默认不启用、未实现。
+    启用条件：config.json [workbuddy].enabled=true 且已配置可用 api_key 与端点。
+    若接通则替换 _deepseek_completion 成为策略合成引擎；否则调用方回退到 DeepSeek。"""
+    raise NotImplementedError(
+        "WorkBuddy 专家团外部 API 尚未接入（config.json [workbuddy].enabled=false）。"
+        "当前策略合成仍由 DeepSeek 承担（其 system_prompt 已角色化为阿岚/增长操盘手）。"
+    )
+
+
+def build_strategy_prompt(brief: dict, mautic_context: str = "", history_context: str = "") -> str:
+    """把 Brief 上下文拼成自包含提示词，交给（角色化的）增长运营专家团生成 StrategySpec JSON。"""
     oc = (brief.get("overall_conv") or "").strip()
     oc_json = oc if oc else "0.0"
     cons = (brief.get("constraints") or "").strip().replace("\n", "；").replace("\r", "")
@@ -994,7 +1089,9 @@ def build_strategy_prompt(brief: dict) -> str:
     n_campaigns = _cc["n"]
     cid_list = "、".join(f"c{i}" for i in range(1, n_campaigns + 1))
     tpl = (
-        "你是营销 Agent 的 L1 策略合成角色。请基于以下 Brief 生成一份 StrategySpec JSON"
+        "你是阿岚（增长操盘手），增长运营专家团主理人。你的任务不是「直接写 JSON」，而是先按增长运营 SOP 走完"
+        "「现状盘点 → 目标接收与可达性 → 策略合成（并联内容/数据）→ 门禁确认卡片 → 输出 StrategySpec」再落 spec。"
+        "请基于下方【Brief】+【Mautic 实例上下文】生成一份 StrategySpec JSON"
         "（严格 JSON，不要解释文字、不要 markdown 代码块包裹，只输出可被 json.loads 解析的对象），"
         "供「活动驾驶舱」PoC 编译成 Mautic 事件图。\n\n"
         "【Brief】\n"
@@ -1008,6 +1105,19 @@ def build_strategy_prompt(brief: dict) -> str:
         "- 目标画像包：{aud_pkg}（GENERIC=通用兜底；CUSTOM=运营自定义字段）\n"
         "- 目标人群特点：{aud_block}\n"
         "- 约束/红线：{cons}\n\n"
+        "【Mautic 实例上下文（资产复用 / 命名 / 坑位约束）】\n"
+        "{mautic_context}\n"
+        "{history_context}\n"
+        "命名与工程规范（Mautic CSTS 定制版，务必遵守）：\n"
+        "- campaign / segment / email / form 资产命名前缀分别为 CMP_ / SEG_ / EM_ / FORM_；reuse-first，避免重复新建。\n"
+        "- 落地页 alias 由驾驶舱 `_aliasify(\"{{campaign_name}}-落地页\")` 自动生成，"
+        "**不要**在 StrategySpec 的 landing_page_url 里硬编码 alias；只给主语言 slug（如 /s/c1-en）。\n"
+        "- Mautic 7 已知坑（违反会导致 push 500 或静默失败）：\n"
+        "  · PUT 仅传 partial payload 会触发 jms_serializer 500，必须传完整对象；\n"
+        "  · email 字段需平铺（不要嵌套）；\n"
+        "  · campaign 事件图无法经 API 修改，只能整体 PUT/POST；\n"
+        "  · 决策节点分支不可混合 decision + action 类型，否则 action 节点静默失败（count=0、无日志）；\n"
+        "  · tag 详情页 500（CampaignModel.php:869 array_merge null）、campaign 图谱缺 generated column——属实例层问题，策略不背。\n"
         "【画像包与内容侧重】\n"
         "1. 选画像包（GENERIC / HNW_FAMILY / YOUNG_TREND / PARENT_FAM / CORP_GRP / DORMANT）必须先查本项目的画像包参数表"
         "（项目内路径 references/audience-content-map.json，与 cockpit.py 同级目录下），"
@@ -1065,7 +1175,12 @@ def build_strategy_prompt(brief: dict) -> str:
         "6. 严格遵守约束/红线（免打扰、抑制名单、退订熔断 0.3% 等）。\n"
         "   若约束含「X:00~Y:00免打扰」，quiet_hours 必须**原样**填 \"X:00-Y:00\"（跨午夜用 '-' 连接）；"
         "午夜一律写 \"00:00\"，禁止换成示例里的 \"09:00\"（曾出现 20:00~00:00 被误写成 20:00-09:00）。\n"
-        "7. 只输出 JSON。\n"
+        "7. 【决策纪律（增长运营行为准则）】每条 campaign 决策（画像包选型、波数、CTA、频次、落地页复用/新建、"
+        "是否需换券/调预算）都必须携带 `rationale`（为什么这么定）与 `evidence`（数据出处：历史 n=xx / 行业基准 / 画像包参数表 /"
+        "本实例资产清单；工具未返回数据时写「数据缺失（data_missing）」，**禁止凭空估算人数或转化率**）。\n"
+        "   顶层必须输出 `needs_operator_review`（bool）：凡涉及价格/库存/券规则/预算/护栏参数调整、或目标数学上不可达、"
+        "或本实例资产清单缺失导致无法判定复用 vs 新建时，置 true，并在 `operator_review_notes` 写出需人拍板的具体事项与建议选项。\n"
+        "8. 只输出 JSON。\n"
     )
     return tpl.format(name=name, goal_id=goal_id, objective=objective,
                       start_date=start_date, end_date=end_date,
@@ -1074,7 +1189,8 @@ def build_strategy_prompt(brief: dict) -> str:
                       aud_pkg=aud_pkg, aud_block=aud_block, oc_json=oc_json,
                       multi_pkg=multi_pkg_txt,
                       d_txt=d_txt, c_txt=c_txt, count_reason=_cc["reason"],
-                      n_campaigns=n_campaigns, cid_list=cid_list)
+                      n_campaigns=n_campaigns, cid_list=cid_list,
+                      mautic_context=mautic_context, history_context=history_context)
 
 
 def _extract_strategy_spec(raw: str):
@@ -1125,7 +1241,10 @@ def _build_strategy_prompt_from_brief(brief: dict) -> str:
     brief["audience_package"] = inferred.get("code", "GENERIC")
     brief["audience_packages"] = inferred.get("codes", [])
     brief["audience_match"] = inferred
-    return build_strategy_prompt(brief)
+    wb_cfg = load_workbuddy_config()
+    mautic_ctx = _collect_mautic_context() if wb_cfg["strategy_context"].get("mautic_assets", True) else ""
+    history_ctx = _collect_history_context() if wb_cfg["strategy_context"].get("history", True) else ""
+    return build_strategy_prompt(brief, mautic_context=mautic_ctx, history_context=history_ctx)
 
 
 def _brief_from_parsed(parsed: dict, objective: str) -> dict:
@@ -1178,7 +1297,8 @@ def _should_synthesize_strategy(parsed: dict) -> bool:
 
 def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict = None,
                 service_spec: list = None, prefill: dict = None,
-                conflicts: list = None) -> str:
+                conflicts: list = None, confirm_overwrite: bool = False,
+                executing: list = None) -> str:
     """
     运营只填「目标 + 约束」；分群/落库 tag/内容/频次等策略由 Agent 产出 StrategySpec。
     strategy_spec 非空时，右侧只读展示逐条策略摘要（供提交前确认）。
@@ -1202,6 +1322,9 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     if isinstance(ex.get("audience_age"), (list, tuple, set)):
         ex["audience_age"] = ",".join(str(x) for x in ex["audience_age"] if str(x))
     _is_prefill = bool(prefill and prefill.get("ref_goal_id"))
+    _submit_label = ("⚠️ 二次确认：覆盖原 Program（已推送/执行中的 campaign 不会被自动改/停）"
+                     if confirm_overwrite else
+                     ("覆盖并重新生成 Program →" if _is_prefill else "编译并生成 Program →"))
     _strategy_gen_on = load_strategy_gen_config()["enabled"]
     _deepseek_on = load_deepseek_config()["enabled"]
     fld = lambda k, lbl, v, t="text", ph="", req=False: (
@@ -1326,7 +1449,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<div id='gen-strategy-status' class='note'></div>"
                 f"<p class='note'>{('已配置策略自动生成端点：点击将直接把 StrategySpec 填回上方文本框。' if _strategy_gen_on else ('已配置 DeepSeek：点击将直连 DeepSeek 自动生成 StrategySpec 并填回上方文本框。' if _deepseek_on else '未配置生成能力（无外部端点、无 DeepSeek）：点击后将把提示词复制到剪贴板，请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框。'))}</p>"
                 f"<div id='plan-preview' class='note'>填写「总体目标转化率」与「开始 / 结束日期」后，将自动推算派生战役数量、单 campaign 点击率与合理性。</div>"
-                f"<button class='btn' type='submit' style='margin-top:14px'>编译并生成 Program →</button>"
+                f"<button class='btn' type='submit' style='margin-top:14px'>{_submit_label}</button>"
                 f"</div>"
 
                 # 画像匹配实时推断 JS（与 goal_intake.infer_audience_package 同公式）
@@ -1409,8 +1532,16 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
              + _service_preview_html(service_spec)
              + "</div>")
     _title = "改 Brief" if _is_prefill else "新建 Brief"
-    _banner = (f"<p class='b-warn' style='margin:4px 0 12px'>📝 改 Brief 模式：已预填原 Program <code>{_esc(prefill.get('ref_goal_id',''))}</code> 的字段。"
-               f"提交后将生成新的 Program（不会修改原 Program）。</p>") if _is_prefill else ""
+    _banner = ""
+    if _is_prefill:
+        _banner = (f"<p class='b-warn' style='margin:4px 0 12px'>📝 改 Brief 模式：已预填原 Program <code>{_esc(prefill.get('ref_goal_id',''))}</code> 的字段。"
+                   f"提交后将<b>覆盖</b>该 Program 的内容（同一 goal_id，不新建文件）；其间 campaign 若已推送/执行中，提交前会有二次确认。</p>")
+    if confirm_overwrite and executing:
+        _exec_list = "、".join(_esc(c) for c in executing)
+        _banner += (f"<p class='b-bad' style='margin:4px 0 12px'>⚠️ <b>二次确认</b>：原 Program 中以下 campaign 已推送/执行中："
+                    f"<code>{_exec_list}</code>。<br>覆盖仅更新<b>本地 Program 草稿</b>（按新 Brief 重新生成各 campaign 规格），"
+                    f"<b>不会</b>自动修改或停止 Mautic 中正在运行的 campaign；新草稿会把这些 campaign 状态重置为「未审核」并丢失原 Mautic campaign_id 映射，"
+                    f"若之后再次推送将创建<b>新的</b> Mautic campaign（可能重复）。确认覆盖请点击下方按钮。</p>")
     # 冲突阻断：StrategySpec 与上方基础信息不一致 → 未生成 Program，逐条列出冲突
     if conflicts:
         _banner += _conflicts_card_html(
@@ -1423,7 +1554,10 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
             f"</div>"
             f"<p class='sub'>方案 A 驾驶舱 · 独立 :8090 → Mautic :8080</p>" \
            f"{_banner}" \
-           f"<form method='post' action='/brief'><div class='grid2'>{operator}{agent}</div></form>")
+           f"<form method='post' action='/brief'><div class='grid2'>{operator}{agent}</div>"
+           + (f"<input type='hidden' name='ref_goal_id' value='{_esc(prefill.get('ref_goal_id',''))}'>" if _is_prefill else "")
+           + ("<input type='hidden' name='confirm_overwrite' value='1'>" if confirm_overwrite else "")
+           + "</form>")
 
 
 def _spec_preview_html(strategy_spec: list, spec_err: str = "", spec_meta: dict = None) -> str:
@@ -2646,7 +2780,7 @@ def _prefill_from_form(form: dict) -> dict:
             "budget", "is_revenue", "constraints", "strategy_spec",
             "audience_age", "audience_gender", "audience_income",
             "audience_education", "audience_industry", "audience_source",
-            "audience_region", "locale"]
+            "audience_region", "locale", "ref_goal_id"]
     out = {}
     for k in keys:
         v = (form or {}).get(k, "")
@@ -2849,6 +2983,23 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError(f"StrategySpec 解析失败：{spec_err}")
             d = spec_meta or {}
 
+            # ---- 改 Brief：覆盖而非新建；执行中 campaign 需二次确认 ----
+            ref_goal_id = (form.get("ref_goal_id") or "").strip()
+            confirm_overwrite = str(form.get("confirm_overwrite") or "") == "1"
+            existing = _load_program(ref_goal_id) if ref_goal_id else None
+            if existing:
+                EXEC_STATES = {"approved_idle", "executing", "done_met", "done_below"}
+                exec_cids = [c.get("cid") for c in existing.get("campaigns", [])
+                             if c.get("status") in EXEC_STATES]
+                if exec_cids and not confirm_overwrite:
+                    # 不覆盖：回显表单 + 二次确认警告 + 二次确认按钮（confirm_overwrite=1）
+                    prefill = _prefill_from_form(form)
+                    prefill["ref_goal_id"] = ref_goal_id
+                    return self._send(200, _page(
+                        "改 Brief · 二次确认",
+                        _brief_form(strategies, spec_err, spec_meta, services, prefill,
+                                    confirm_overwrite=True, executing=exec_cids)))
+
             # N 由策略数组长度决定；未提交策略时由 derive_plan 派生（总体目标转化率 + 起止日期反推点击率）
             overall_conv = (form.get("overall_conv", "") or "").strip()
             plan_raw = derive_plan(overall_conv,
@@ -2970,6 +3121,10 @@ class Handler(BaseHTTPRequestHandler):
                 c["exec_end"] = w["end"]
             program["constraints"] = constraints
             program["plan"] = plan
+            # 改 Brief 覆盖模式：锁定原 goal_id，确保覆盖同一 Program 文件而非新建
+            if existing and ref_goal_id:
+                program["goal_id"] = ref_goal_id
+                goal.goal_id = ref_goal_id
             _save_program(program)
             # Location 响应头按 latin-1 编码：goal_id 含中文（slug 保留中文，属 isalnum）时
             # 直接拼会抛 UnicodeEncodeError，必须先百分号编码（路由侧 do_GET 已 unquote 配对）。
@@ -3304,7 +3459,12 @@ class Handler(BaseHTTPRequestHandler):
             msg = ("<div class='card'><p class='b-bad'>推送被拒：该波为 deferred（外部事件触发），"
                    "请先由运营启用</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
-        result = push(c["proposal"], env="local", approved=True)
+        try:
+            result = push(c["proposal"], env="local", approved=True)
+        except Exception as exc:
+            result = {"dry_run": False, "campaign_id": None,
+                      "note": f"push 执行异常：{type(exc).__name__}: {exc}",
+                      "error": str(exc), "steps": [], "ensure_log": {}}
         c["proposal"]["deploy_result"] = result
         # 真实反映 push 结果：失败时回退状态、显示错误
         push_ok, push_err = _check_push_result(result)
@@ -3376,7 +3536,12 @@ class Handler(BaseHTTPRequestHandler):
         # 推之前先记 approved_idle（避免直接跳 executing 之后再被回滚显得反复）
         c["status"] = "approved_idle"
         _save_program(p)
-        result = push(c["proposal"], env="local", approved=True)
+        try:
+            result = push(c["proposal"], env="local", approved=True)
+        except Exception as exc:
+            result = {"dry_run": False, "campaign_id": None,
+                      "note": f"push 执行异常：{type(exc).__name__}: {exc}",
+                      "error": str(exc), "steps": [], "ensure_log": {}}
         c["proposal"]["deploy_result"] = result
         # 诚实反映 push 结果：
         #  · 只有【真实在 Mautic 创建了 campaign】（dry_run=False 且 campaign_id 非空）才标记「执行中」+ deployed=True

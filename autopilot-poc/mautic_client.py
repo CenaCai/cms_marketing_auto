@@ -130,7 +130,7 @@ def _in_date(s: str, date_str: str) -> bool:
 # 缓存避免每次 push 都重取，也降低抖动导致 dry-run 的概率。Mautic token 默认 3600s 有效。
 _TOKEN_CACHE = {"token": None, "exp": 0.0}
 
-def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int = 20) -> str:
+def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int = 60) -> str:
     """OAuth2 client_credentials 换 access_token；失败抛 RuntimeError（带原因）。
     带进程内缓存（TTL 3000s）+ 重试（最多 3 次，仅网络超时重试），跨过 token 端点偶发超时。"""
     import time as _t
