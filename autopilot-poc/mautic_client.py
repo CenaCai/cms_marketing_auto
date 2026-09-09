@@ -260,18 +260,19 @@ def _build_email_html(subject: str, activity: str = "", discount: dict = None,
 
 
 def _build_landing_page_html(activity: str, cta_label: str = "立即购票",
-                           form_embed: str = None) -> str:
+                           form_html: str = None) -> str:
     """生成结构化落地页（替代旧 <p>名字</p> 占位）。
 
-    form_embed：Mautic 表单内嵌 token（如 "{form=FORM_ALIAS}"），非空时把表单
-    渲染进落地页，使「落地页中有填写个人信息提交的表单」落地。
+    form_html：Mautic 表单渲染后的 HTML（如 form.cachedHtml），非空时直接内嵌进落地页，
+    使「落地页中有填写个人信息提交的表单」真正落地。直接内联 HTML（而非 {form=alias} token），
+    规避该 token 经 Mautic API 保存时被内容过滤器剥离（实测 /api/pages/new 会把 {form=...} 整段丢弃）。
     """
-    form_html = ""
-    if form_embed:
-        form_html = (
+    form_block = ""
+    if form_html:
+        form_block = (
             '<div style="margin-top:24px;padding:20px;background:#fafafa;'
             'border:1px solid #eee;border-radius:8px">'
-            f'{form_embed}</div>'
+            f'{form_html}</div>'
         )
     return (
         '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
@@ -282,7 +283,7 @@ def _build_landing_page_html(activity: str, cta_label: str = "立即购票",
         'padding:40px 32px">'
         f'<h1 style="font-size:24px;margin:0 0 12px">{activity}</h1>'
         '<p style="color:#555;line-height:1.7">活动详情与购票入口即将开放，敬请期待。</p>'
-        f'{form_html}'
+        f'{form_block}'
         '<a href="#" style="display:inline-block;margin-top:16px;padding:12px 28px;'
         'background:#b12704;color:#ffffff;text-decoration:none;border-radius:4px">'
         f'{cta_label}</a>'
@@ -397,7 +398,7 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
 
 
 def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: int = 15,
-                      custom_html: str = None, form_embed: str = None) -> dict:
+                      custom_html: str = None, form_html: str = None) -> dict:
     """按 name 找 landing page；找不到就 POST 新建（草稿）；返回 {"id","alias","created":bool,"error"?}。
     正文默认用结构化落地页模板；若给了 url 内嵌 meta-refresh 跳转（mautic_code_mode 标准路径）；
     form_embed 非空时把表单 token 嵌进正文（落地页内嵌表单）。"""
@@ -429,14 +430,24 @@ def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: i
                     existing = it
                     break
         if existing:
-            return {"id": int(existing["id"]), "name": existing.get("title") or existing.get("name"),
-                    "alias": existing.get("alias"), "created": False}
+            eid = int(existing["id"])
+            # 重推时若提供了 form_html/custom_html，PATCH 更新正文（保证表单内嵌在重推时也能修好，幂等）
+            if form_html or custom_html:
+                _nh = custom_html or _build_landing_page_html(name, form_html=form_html)
+                if url:
+                    _nh = _nh.replace("</head>", f'<meta http-equiv="refresh" content="0;url={url}"></head>')
+                try:
+                    _patch(base, f"/api/pages/{eid}/edit", {"customHtml": _nh}, token, timeout=timeout)
+                except Exception:
+                    pass
+            return {"id": eid, "name": existing.get("title") or existing.get("name"),
+                    "alias": existing.get("alias"), "created": False, "updated": bool(form_html or custom_html)}
 
     alias = _aliasify(name)
     if custom_html:
         html = custom_html
     else:
-        html = _build_landing_page_html(name, form_embed=form_embed)
+        html = _build_landing_page_html(name, form_html=form_html)
         if url:
             html = html.replace("</head>", f'<meta http-equiv="refresh" content="0;url={url}"></head>')
     body = {"name": name, "alias": alias, "isPublished": False, "customHtml": html, "title": name}
@@ -735,6 +746,28 @@ def mautic_get_campaign(campaign_id, env: str = "local") -> dict:
     return {"id": c.get("id"), "name": (c.get("name") or "").strip(), "events": c.get("events") or []}
 
 
+def _fetch_form_html(base_url: str, form_id, token: str, timeout: int = 60) -> str:
+    """取表单的渲染 HTML（cachedHtml）用于内嵌落地页。
+
+    Mautic 表单经 API 保存时即生成 cachedHtml（实测新表单创建后立即可取），
+    但个别环境可能缓存未即时生成——故失败时先 PATCH 发布再重试一次。
+    任何异常/空值都返回 None（调用方据此决定是否告警，不会抛出）。"""
+    try:
+        _fobj = _get(base_url, f"/api/forms/{form_id}", token, timeout=timeout)
+        _html = (_fobj.get("form") or {}).get("cachedHtml") if isinstance(_fobj, dict) else None
+        if _html:
+            return _html
+        # 兜底：发布后重新拉取
+        try:
+            _patch(base_url, f"/api/forms/{form_id}/edit", {"isPublished": True}, token, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            pass
+        _fobj2 = _get(base_url, f"/api/forms/{form_id}", token, timeout=timeout)
+        return (_fobj2.get("form") or {}).get("cachedHtml") if isinstance(_fobj2, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
     """
     推送提案到 Mautic。返回结构化结果（含每步状态）。
@@ -810,25 +843,30 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
         or any((ev.get("type") == "form.submit")
                for ev in (proposal.get("mautic_events") or [])))
     form_id = None
-    form_alias = ""
+    form_html = None
     if _needs_form:
         form_name = f"{campaign_name}-表单"
         rform = ensure_form(form_name, env=env, timeout=60)
         ensure_log.append({"asset": "form", "name": form_name, **rform})
         if rform.get("id"):
             form_id = rform["id"]
-            form_alias = rform.get("alias") or _aliasify(form_name)
+            # 取表单渲染后的 HTML（cachedHtml）直接内嵌进落地页，规避 {form=alias} token 被 Mautic 剥离。
+            # cachedHtml 在新建/已存在表单上均已填充（实测新表单创建后立即可取，长度 ~3k）；
+            # 加「发布后重试」兜底，防止个别 Mautic 环境缓存未生成导致 form_html 为空、表单被静默丢弃。
+            form_html = _fetch_form_html(base, form_id, token, timeout=60)
+            if not form_html:
+                ensure_log.append({"asset": "form_html_fetch", "warn": "cachedHtml 为空，落地页将不内嵌表单"})
 
     # 0.2.1 落地页：结构化 HTML + 可选 meta-refresh 跳转；邮件 CTA 指向它
     lp_name = f"{campaign_name}-落地页"
     lp_public_url = ""
     rlp = ensure_landing_page(
-        lp_name, url=lp_url, env=env, timeout=60,
-        form_embed=(f"{{form={form_alias}}}" if form_alias else None))
+        lp_name, url=lp_url, env=env, timeout=60, form_html=form_html)
     ensure_log.append({"asset": "landing_page", "name": lp_name, **rlp})
     if rlp.get("id"):
-        # Mautic 落地页公开 URL：{base}/s/{alias}
-        lp_public_url = f"{base}/s/{rlp.get('alias') or _aliasify(lp_name)}"
+        # Mautic 落地页公开 URL：{base}/{alias}（注意：/s/ 是后台(admin)前缀，
+        # 公开访问落地页不需要 /s/，否则会落到后台路由返回站点首页而非落地页内容）
+        lp_public_url = f"{base}/{rlp.get('alias') or _aliasify(lp_name)}"
 
     # 0.2.1b 表单终点绑定：把真实 form_id 写回事件图 form.submit 节点，
     # 重新编译出含 forms:[id] 的 Mautic 事件（offline 编译时 form_id 为空、节点被丢弃）。
@@ -947,6 +985,9 @@ def push(proposal: dict, env: str = "local", approved: bool = False) -> dict:
                 r = _patch(base, f"/api/emails/{aid}/edit", {"isPublished": True}, token, timeout=60)
             elif asset == "landing_page":
                 r = _patch(base, f"/api/pages/{aid}/edit", {"isPublished": True}, token, timeout=60)
+            elif asset == "form":
+                # 表单上线：否则公开提交端点 /form/submit?formId=X 会拒绝草稿表单的提交
+                r = _patch(base, f"/api/forms/{aid}/edit", {"isPublished": True}, token, timeout=60)
             else:
                 continue
             publish_log.append({"asset": asset, "id": aid, **r})
