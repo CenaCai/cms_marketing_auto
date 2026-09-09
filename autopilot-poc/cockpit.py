@@ -2138,8 +2138,9 @@ def _program_body(program: dict, msg: str = "") -> str:
                          f"<input name='approver' placeholder='审批人(真人)' style='width:160px;display:inline-block'>"
                          f"{ack_c}<button class='btn sm' type='submit'>审批通过</button></form>")
         push_f = ""  # 合并到下方 create_f（"创建并推送到 Mautic"），避免与"推送"按钮重复造成混淆
-        # 新阶段创建按钮（#8）：首波 / 上一波已完成并回填结果 才可点；
-        # 已审批待执行(approved_idle) 也显示按钮 → 推送失败后可从 UI 重新推送（不再被门禁关在门外）
+        # 新阶段创建按钮（#8）：首波 / 上一波「已审批」即可点（不再要求上一波完成+回填，避免 waterfall 死锁）；
+        # 已审批待执行(approved_idle) 也显示按钮 → 推送失败后可从 UI 重新推送（不再被门禁关在门外）。
+        # feedback 只作软提示（影响自适应微调），不作为发布下一波的硬门槛。
         create_f = ""
         if ap and st not in ("executing", "done_met", "done_below"):
             is_retry = (st == "approved_idle")
@@ -2151,14 +2152,21 @@ def _program_body(program: dict, msg: str = "") -> str:
                             f"<button class='btn sm sec' type='submit'>{label}</button></form>")
             else:
                 prev = campaigns[i - 1]
-                if prev["status"] in ("done_met", "done_below") and prev.get("feedback"):
+                # 解锁条件：上一波「已审批(APPROVED)」或「已启动/已完成」——不再要求上一波 done + 人工回填 feedback
+                prev_ap = (prev.get("proposal") or {}).get("approval") or {}
+                prev_approved = (prev_ap.get("status") == "APPROVED")
+                prev_launched = prev["status"] in ("approved_idle", "executing", "done_met", "done_below")
+                if prev_approved or prev_launched:
                     label = "重新发布下一波 →" if is_retry else "确认开启下一个 →"
                     create_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/create' "
                                 f"onsubmit='return confirm(\"确认推送到 Mautic（localhost:8080）并发布下一波？\")' "
                                 f"style='display:inline;margin-left:6px'>"
                                 f"<button class='btn sm sec' type='submit'>{label}</button></form>")
+                    if not prev.get("feedback"):
+                        create_f += ("<span class='note' style='margin-left:6px'>（上一波结果未回填："
+                                     "可先点「自适应微调」再发布，或直接按既定策略发布下一波）</span>")
                 else:
-                    create_f = "<span class='pill'>（上一波完成并回填结果后才可创建）</span>"
+                    create_f = "<span class='pill'>（上一波审批通过后才可创建下一波）</span>"
         # deferred 波次：不得到期自动发送，需运营显式启用
         if st == "deferred":
             defer_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/activate' "
