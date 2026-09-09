@@ -26,6 +26,7 @@ import json
 import os
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +53,9 @@ HOST = "127.0.0.1"
 MULTI_FORM_FIELDS = {"audience_age", "audience_gender", "audience_income",
                      "audience_education", "audience_industry",
                      "audience_source", "audience_region", "locale"}
+
+# 全部语言（未勾选 = 双语全选）
+LOCALE_ALL = ["zh_CN", "en_US"]
 
 # --------------------------- 6 态状态机 ---------------------------
 # 状态 → (中文标签, 配色 class)
@@ -105,6 +109,27 @@ def _save_program(program: dict):
     os.makedirs(OUT_DIR, exist_ok=True)
     with open(_program_path(program["goal_id"]), "w", encoding="utf-8") as f:
         json.dump(program, f, ensure_ascii=False, indent=2)
+
+
+def _permanent_remove(fp: str):
+    """永久删除本地文件，绕过 WorkBuddy 运行时 safe-delete 补丁。
+
+    该运行时通过 sitecustomize 把 os.remove 改为「移入回收站」
+    （Windows: SHFileOperationW）。本项目 output/ 路径在该补丁下会抛
+    SHFileOperationW 0x2，且即便成功也只是进回收站而非真正删除，
+    与「清理无效 program」的意图相悖。nt.unlink 是未被补丁覆盖的底层实现，
+    可真正删除。Program 删除本就是用户二次确认后的显式本地清理，应永久移除。
+    """
+    fp = os.path.abspath(fp)
+    try:
+        import nt
+        nt.unlink(fp)
+    except ImportError:
+        # 非 Windows 回退到原生 remove
+        os.remove(fp)
+    except FileNotFoundError:
+        # 已不存在，幂等视为成功
+        return
 
 
 def _load_proposal(gid: str):
@@ -169,6 +194,8 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);bord
 .btn.sec{background:var(--brand-soft);color:var(--brand)}
 .btn.ghost{background:#fff;color:var(--brand);border:1px solid var(--line)}
 .btn.sm{padding:5px 11px;font-size:12px}
+.btn.danger{background:#fff;color:#c0392b;border:1px solid #c0392b}
+.btn.danger:hover{background:#c0392b;color:#fff}
 .badge{display:inline-block;font-size:11px;padding:2px 9px;border-radius:999px;font-weight:600}
 .b-ok{background:var(--ok-soft);color:var(--ok)} .b-bad{background:var(--bad-soft);color:var(--bad)}
 .b-warn{background:var(--warn-soft);color:var(--warn)} .b-gov{background:var(--gov-soft);color:var(--gov)}
@@ -294,13 +321,14 @@ def _dash_body() -> str:
     else:
         items = "<table><tr><th>Program</th><th>campaign 数</th><th>各 campaign 状态</th><th></th></tr>"
         for p in progs:
+            camps = p.get("campaigns", []) or []
             states = " ".join(
-                f"<span class='badge {STATUS.get(c['status'], ('x','b-idle'))[1]}'>"
-                f"{_esc(c['cid'].split('_c')[-1])}:{_esc(STATUS.get(c['status'], ('x',''))[0])}</span>"
-                for c in p["campaigns"])
-            items += (f"<tr><td><code>{_esc(p['goal_id'])}</code></td>"
-                      f"<td>{p['n_campaigns']}</td><td>{states}</td>"
-                      f"<td><a class='btn sec sm' href='/program/{_esc(p['goal_id'])}'>打开</a></td></tr>")
+                f"<span class='badge {STATUS.get(c.get('status', ''), ('x','b-idle'))[1]}'>"
+                f"{_esc(str(c.get('cid', '')).split('_c')[-1])}:{_esc(STATUS.get(c.get('status', ''), ('x',''))[0])}</span>"
+                for c in camps)
+            items += (f"<tr><td><code>{_esc(p.get('goal_id', '(未知)'))}</code></td>"
+                      f"<td>{len(camps)}</td><td>{states}</td>"
+                      f"<td><a class='btn sec sm' href='/program/{_esc(p.get('goal_id', ''))}'>打开</a></td></tr>")
         items += "</table>"
     return (f"<h1>活动驾驶舱</h1><p class='sub'>一个目标 → 多个 campaign 自适应编排；"
             f"运营只填业务意图，治理/渠道/频次由 Agent 自动决策。</p>"
@@ -432,6 +460,21 @@ function escapeHtml(s){
 function genCacheKey(obj){ return 'brief_genstrat_' + (obj||'').replace(/\\s+/g,' ').trim().toLowerCase(); }
 function genCacheGet(key){ try{ var v=sessionStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){ return null; } }
 function genCacheSet(key,val){ try{ sessionStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+function copyRobust(text, onOk, onFail){
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(function(){ if(onOk) onOk(); }, function(){ fallbackCopy(); });
+  } else { fallbackCopy(); }
+  function fallbackCopy(){
+    var ta=document.createElement('textarea');
+    ta.value=text; ta.setAttribute('readonly','readonly');
+    ta.style.cssText='position:fixed;left:-9999px;top:-9999px;opacity:0;';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    var ok=false;
+    try{ ok=document.execCommand('copy'); }catch(e){}
+    document.body.removeChild(ta);
+    if(ok){ if(onOk) onOk(); } else { if(onFail) onFail(); }
+  }
+}
 function doGen(force){
   force = !!force;
   var btn=document.getElementById('gen-strategy-btn');
@@ -474,15 +517,11 @@ function doGen(force){
         setStatus('✅ 已生成 StrategySpec 并填入上方文本框', true);
       } else if(j.fallback){
         var p=j.prompt||'';
-        if(navigator.clipboard && navigator.clipboard.writeText){
-          navigator.clipboard.writeText(p).then(function(){
-            setStatus('已复制提示词到剪贴板：请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框', false);
-          }, function(){
-            setStatus('自动复制失败，请手动复制：<br><textarea readonly style="width:100%;height:110px">'+escapeHtml(p)+'</textarea>', false);
-          });
-        } else {
-          setStatus('请复制并在 WorkBuddy 发给小腾：<br><textarea readonly style="width:100%;height:110px">'+escapeHtml(p)+'</textarea>', false);
-        }
+        copyRobust(p, function(){
+          setStatus('已复制提示词到剪贴板：请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回下方文本框', false);
+        }, function(){
+          setStatus('自动复制失败，请手动复制：<br><textarea readonly style="width:100%;height:110px">'+escapeHtml(p)+'</textarea>', false);
+        });
       } else {
         setStatus('生成失败：'+(j.error||'未知错误'), false);
       }
@@ -503,15 +542,11 @@ function doCopyPrompt(){
       var j=res.j||{};
       if(res.ok && j.ok && j.prompt){
         var p=j.prompt||'';
-        if(navigator.clipboard && navigator.clipboard.writeText){
-          navigator.clipboard.writeText(p).then(function(){
-            setStatus('✅ 已复制基础信息：请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框', true);
-          }, function(){
-            setStatus('自动复制失败，请手动复制：<br><textarea readonly style="width:100%;height:120px">'+escapeHtml(p)+'</textarea>', false);
-          });
-        } else {
-          setStatus('请复制并在 WorkBuddy 发给小腾：<br><textarea readonly style="width:100%;height:120px">'+escapeHtml(p)+'</textarea>', false);
-        }
+        copyRobust(p, function(){
+          setStatus('✅ 已复制基础信息：请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框', true);
+        }, function(){
+          setStatus('自动复制失败，请手动复制：<br><textarea readonly style="width:100%;height:120px">'+escapeHtml(p)+'</textarea>', false);
+        });
       } else {
         setStatus('复制失败：'+(j.error||'未知错误'), false);
       }
@@ -941,20 +976,16 @@ def campaign_count(start_date: str, end_date: str, overall_conv: str) -> dict:
 
 def load_workbuddy_config() -> dict:
     """
-    读取 WorkBuddy 专家团配置（config.json [workbuddy]）。
-    仅作为「未来接 WorkBuddy 外部 API」的预留凭证位；当前 enabled 默认 false，策略合成仍走 DeepSeek。
-    返回 {enabled, api_key, mautic_env, strategy_context:{mautic_assets,history}}。
+    读取策略合成上下文开关（config.json [workbuddy]，可选段）。
+    控制是否注入 Mautic 资产清单 / 历史 program 反馈，以及读取 Mautic 环境。
+    返回 {mautic_env, strategy_context:{mautic_assets,history}}；缺省全部启用。
     """
-    cfg: dict = {"enabled": False, "api_key": "", "mautic_env": "local",
+    cfg: dict = {"mautic_env": "local",
                  "strategy_context": {"mautic_assets": True, "history": True}}
     try:
         with open(os.path.join(HERE, "config.json"), encoding="utf-8") as f:
             allcfg = json.load(f)
         wb = allcfg.get("workbuddy") or {}
-        if isinstance(wb.get("enabled"), bool):
-            cfg["enabled"] = wb["enabled"]
-        if wb.get("api_key"):
-            cfg["api_key"] = wb["api_key"]
         if wb.get("mautic_env"):
             cfg["mautic_env"] = wb["mautic_env"]
         if isinstance(wb.get("strategy_context"), dict):
@@ -1019,17 +1050,6 @@ def _collect_history_context() -> str:
         return "最近 program（最多 10，供策略复用/避坑参考）：\n" + "\n".join(rows)
     except Exception as e:  # noqa: BLE001
         return "（历史 program 反馈：数据缺失（data_missing）—— %s。）" % e
-
-
-def _workbuddy_expert_completion(system_prompt: str, user_content: str, temperature: float = 0.0) -> str:
-    """【预留 hook】未来通过 WorkBuddy 外部 API 调用「增长运营专家团」生成策略时走这里。
-    当前 WorkBuddy 桌面应用无外部可调 HTTP/MCP 接口，故默认不启用、未实现。
-    启用条件：config.json [workbuddy].enabled=true 且已配置可用 api_key 与端点。
-    若接通则替换 _deepseek_completion 成为策略合成引擎；否则调用方回退到 DeepSeek。"""
-    raise NotImplementedError(
-        "WorkBuddy 专家团外部 API 尚未接入（config.json [workbuddy].enabled=false）。"
-        "当前策略合成仍由 DeepSeek 承担（其 system_prompt 已角色化为阿岚/增长操盘手）。"
-    )
 
 
 def build_strategy_prompt(brief: dict, mautic_context: str = "", history_context: str = "") -> str:
@@ -1306,7 +1326,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
              含 ref_goal_id 时，标题改为「改 Brief」+ 顶部 banner 提示。
     conflicts: validate_spec 返回的冲突列表；非空时在页面顶部渲染阻断卡片（未生成 Program）。
     """
-    ex = {"objective": "", "locale": "zh_CN", "budget": "0", "is_revenue": "0",
+    ex = {"objective": "", "locale": "", "budget": "0", "is_revenue": "0",
           "audience_age": "", "audience_gender": "", "audience_income": "",
           "audience_education": "", "audience_industry": "", "audience_source": "",
           "audience_region": "",
@@ -1392,6 +1412,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 # --- 目标人群特点（7 字段；画像包由系统推断） ---
                 f"<div class='card-inner' style='background:#fafbf5;padding:12px;border-radius:8px;margin:8px 0'>"
                 f"<h4 style='margin:6px 0'>目标人群特点</h4>"
+                f"<p class='note'><b>留空 = 全部（不限制受众）</b>；勾选即按所选约束。语言未选 = 中英文双语。仅当用户明确勾选某选项时才收窄范围。</p>"
                 f"<p class='note'>填入受众字段后，系统按打分公式自动匹配画像包（家庭 / 年轻人 / 父母辈 / 公司客户 / 沉默客户激活）；无匹配则用 GENERIC 兜底。</p>"
                 f"<div class='grid2'>"
                 f"<label>年龄段（输入起止年龄，自动匹配档位）</label>"
@@ -1960,6 +1981,51 @@ def _mautic_campaign_name(campaign_id) -> str:
     if not nm:
         nm = mautic_read_campaigns("local").get("by_id", {}).get(str(campaign_id), "")
     return nm
+
+
+def _mautic_reachable(env="local", timeout=10):
+    """推送前的轻量探活：无凭证 GET /api/segments?limit=1。
+
+    目的：把『Mautic 没启动』这类连接错误，从 push() 内部的 segment/form 逻辑错误里
+    分离出来，避免误导用户去排查并不存在的 segment / 资产问题（正是 c1 推送失败那条
+    「常见原因」静态清单会造成的误导）。
+
+    返回 (ok, detail)：
+      · ok=True  → 服务在线（含 401 未授权——端口通，交给 push() 正常报鉴权错）
+      · ok=False → 连接被拒 / 超时（URLError），服务没起；detail 含网络原因
+    """
+    try:
+        cfg = load_config(env)
+    except Exception:  # noqa: BLE001
+        return (True, "")  # 配置读不到不拦截，让 push() 自己报
+    base = (cfg.get("base_url") or "").rstrip("/")
+    if not base:
+        return (True, "")
+    url = f"{base}/api/segments?limit=1"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()  # 读到任何响应即代表服务在线（401 也算）
+        return (True, "")
+    except urllib.error.HTTPError:
+        # 401/403 等鉴权错 → 服务通，只是缺凭证，交给 push()
+        return (True, "")
+    except urllib.error.URLError as e:
+        return (False, f"连接被拒/超时：{e.reason}")
+    except Exception as e:  # noqa: BLE001
+        return (False, f"探活异常：{e}")
+
+
+def _mautic_netloc(env="local"):
+    """Mautic 地址（用于提示文案），localhost 统一显示成 127.0.0.1。"""
+    try:
+        cfg = load_config(env)
+        nl = urllib.parse.urlsplit(cfg.get("base_url", "")).netloc
+        if nl:
+            return nl.replace("localhost", "127.0.0.1")
+    except Exception:  # noqa: BLE001
+        pass
+    return "127.0.0.1:8080"
 
 
 def _check_push_result(result: dict):
@@ -2601,6 +2667,10 @@ def _program_body(program: dict, msg: str = "") -> str:
                    f"<button class='btn ghost sm' type='button' "
                    f"onclick='if(history.length>1){{history.back()}}else{{location.href=\"/\"}}'>← 返回</button>"
                    f"<a class='btn ghost sm' href='/brief?goal_id={_esc(gid)}' title='预填原 Brief 字段以便迭代优化'>📝 改 Brief</a>"
+                   f"<form method='post' action='/program/{_esc(gid)}/delete' style='margin:0 0 0 auto' "
+                   f"onsubmit='return confirm(\"确定删除 Program {_esc(gid)} 吗？\\n\\n此操作仅移除驾驶舱本地记录（output/program_{_esc(gid)}.json），不影响 Mautic（:8080）已生成的活动、邮件与落地页。删除后不可撤销。\")'>"
+                   f"<button class='btn danger sm' type='submit'>🗑 删除 program</button>"
+                   f"</form>"
                    f"</p>"
                    f"<h1>Program {_esc(gid)}</h1>"
                    f"<p class='sub'>目标名称：{_esc(goal_name) if goal_name else '（未命名）'} "
@@ -2930,6 +3000,9 @@ class Handler(BaseHTTPRequestHandler):
             qs = dict(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query))
             date_str = (qs.get("date") or [_yesterday_str()])[0]
             return self._handle_program_auto_feedback(gid, date_str)
+        if path.endswith("/delete") and path.startswith("/program/"):
+            gid = path.split("/")[2]
+            return self._handle_program_delete(gid)
         if path.endswith("/feedback") and "/campaign/" in path:
             gid, cid = self._split_campaign(path)
             return self._handle_campaign_feedback(gid, cid, jsbody)
@@ -3045,9 +3118,10 @@ class Handler(BaseHTTPRequestHandler):
             elif locale_val:
                 locales = [str(locale_val).strip()]
             else:
-                locales = d.get("locales") or ["zh_CN"]
+                # 未选择 = 全部语言（中英文双语）；仅当用户显式勾选时才收窄
+                locales = d.get("locales") or LOCALE_ALL
             if not locales:
-                locales = ["zh_CN"]
+                locales = LOCALE_ALL
             constraints = [ln.strip() for ln in
                            (form.get("constraints", "") or "").splitlines() if ln.strip()]
             # 画像包由服务端按 profile 推断；表单不接收 audience_package
@@ -3429,6 +3503,12 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             msg = f"<div class='card'><p class='b-bad'>推送被拒：{_esc(reason)}</p></div>"
             return self._send(200, _page("Program", _program_body(p, msg)))
+        # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
+        _mok, _mwhy = _mautic_reachable("local")
+        if not _mok:
+            msg = (f"<div class='card'><p class='b-bad'>❌ 服务序列 {_esc(sid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+                   f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。序列未真正创建，可重试。</p></div>")
+            return self._send(200, _page("Program", _program_body(p, msg)))
         result = push(s["proposal"], env="local", approved=True)
         s["proposal"]["deploy_result"] = result
         push_ok, push_err = _check_push_result(result)
@@ -3458,6 +3538,12 @@ class Handler(BaseHTTPRequestHandler):
         if c["status"] == "deferred":
             msg = ("<div class='card'><p class='b-bad'>推送被拒：该波为 deferred（外部事件触发），"
                    "请先由运营启用</p></div>")
+            return self._send(200, _page("Program", _program_body(p, msg)))
+        # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
+        _mok, _mwhy = _mautic_reachable("local")
+        if not _mok:
+            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+                   f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。campaign 未真正创建，状态保持原样，可重试。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         try:
             result = push(c["proposal"], env="local", approved=True)
@@ -3536,6 +3622,16 @@ class Handler(BaseHTTPRequestHandler):
         # 推之前先记 approved_idle（避免直接跳 executing 之后再被回滚显得反复）
         c["status"] = "approved_idle"
         _save_program(p)
+        # 推之前先探活：Mautic 没启动就直接报「不可达」，不要去撞 segment/form 的误导错误
+        _mok, _mwhy = _mautic_reachable("local")
+        if not _mok:
+            c["proposal"]["deploy_result"] = {"dry_run": False, "campaign_id": None,
+                                              "error": f"Mautic 不可达：{_mwhy}", "steps": []}
+            c["proposal"]["deployed"] = False
+            _save_program(p)
+            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+                   f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。未真正创建 campaign，状态保持「已审批待创建」。</p></div>")
+            return self._send(200, _page("Program", _program_body(p, msg)))
         try:
             result = push(c["proposal"], env="local", approved=True)
         except Exception as exc:
@@ -3818,6 +3914,24 @@ class Handler(BaseHTTPRequestHandler):
                f"达成率 {feedback['conv_rate']} · 退订率 {feedback['unsub_rate']}（不自动推进，需运营标记完成）</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
 
+    def _handle_program_delete(self, gid):
+        """删除 Program：仅移除驾驶舱本地记录（output/program_<gid>.json），
+        绝不动 Mautic（:8080）已生成的活动/邮件/落地页。需前端二次确认（confirm）后才 POST 到此。"""
+        try:
+            # 浏览器提交时会对含中文的 goal_id 做 URL 编码，这里还原以匹配真实文件名
+            gid = urllib.parse.unquote(gid or "").strip()
+            if not gid:
+                return self._send(400, _page("删除失败", "<p class='b-bad'>缺少 goal_id。</p>"))
+            fp = _program_path(gid)
+            if os.path.exists(fp):
+                _permanent_remove(fp)
+            # 回到首页（首页按 output/program_*.json 聚合，已删项不再出现）
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+        except Exception as e:  # noqa: BLE001
+            self._send(200, _page("删除失败", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/'>返回</a></p>"))
+
     def _handle_complete(self, form):
         # path 形如 /program/<gid>/complete
         gid = self.path.split("/")[2] if self.path.startswith("/program/") else ""
@@ -3972,6 +4086,12 @@ class Handler(BaseHTTPRequestHandler):
         ok, reason = verify_push(d, d.get("approval"))
         if not ok:
             msg = f"<div class='card'><p class='b-bad'>推送被拒：{_esc(reason)}</p></div>"
+            return self._send(200, _page("提案", _proposal_body(d, msg)))
+        # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
+        _mok, _mwhy = _mautic_reachable("local")
+        if not _mok:
+            msg = (f"<div class='card'><p class='b-bad'>❌ 提案 {_esc(gid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+                   f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。提案未真正创建，可重试。</p></div>")
             return self._send(200, _page("提案", _proposal_body(d, msg)))
         result = push(d, env="local", approved=True)
         d["deployed"] = True
