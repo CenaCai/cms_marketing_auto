@@ -26,6 +26,7 @@ import html
 import json
 import os
 import time
+import threading
 import traceback
 import urllib.parse
 import urllib.request
@@ -547,16 +548,36 @@ function copyRobust(text, onOk, onFail){
   // 永久 pending（既不通告成功也不通告失败），导致「正在生成」卡死。
   // 这里加 1s 超时，超时或 reject 一律走手动兜底（已全选的文本框，一次按键即可复制）。
   var settled=false;
-  var timer=setTimeout(function(){ if(!settled){ settled=true; if(onFail) onFail(); } }, 1000);
+  function fail(){ if(!settled){ settled=true; if(onFail) onFail(); } }
+  var timer=setTimeout(fail, 1000);
+  function legacyExec(t){
+    // 同步兜底：在 iframe / 非安全上下文里，execCommand('copy') 对剪贴板的限制
+    // 通常比 navigator.clipboard 更松，往往仍能写入；失败再走手动全选。
+    try{
+      var ta=document.createElement('textarea');
+      ta.value=t; ta.setAttribute('readonly','');
+      ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      try{ ta.setSelectionRange(0, ta.value.length); }catch(e){}
+      var ok=document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    }catch(e){ return false; }
+  }
   if(navigator.clipboard && navigator.clipboard.writeText){
     try{
       var p=navigator.clipboard.writeText(text);
       if(p && p.then){
         p.then(function(){ if(settled) return; settled=true; clearTimeout(timer); if(onOk) onOk(); },
-                 function(){ if(settled) return; settled=true; clearTimeout(timer); if(onFail) onFail(); });
-      } else { if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
-    }catch(e){ if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
-  } else { if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
+                 function(){ if(settled) return;
+                             if(legacyExec(text)){ settled=true; clearTimeout(timer); if(onOk) onOk(); }
+                             else { fail(); } });
+        return;
+      }
+    }catch(e){ /* fall through to legacy */ }
+  }
+  if(legacyExec(text)){ if(!settled){ settled=true; clearTimeout(timer); if(onOk) onOk(); } }
+  else { fail(); }
 }
 function doGen(force){
   force = !!force;
@@ -1783,26 +1804,29 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"  for(var code in _PKG_MATCH){{"
                 f"    var pkg=_PKG_MATCH[code];"
                 f"    if(pkg.runtime_only) continue;"
-                f"    var score=0,total=0,ev=[];"
+                f"    var score=0,total=0,ev=[],expl=0;"
                 f"    for(var i=0;i<fields.length;i++){{var f=fields[i];"
                 f"      var ml=pkg.match[f];"
                 f"      if(!ml) continue;  /* 画像包未定义该字段 → 不计入分母 */"
                 f"      total+=_W[f];"
                 f"      var v=vals[f];"
+                f"      var has=Array.isArray(v)?(v.length>0):!!v;"
+                f"      if(!has){{ score+=_W[f]; continue; }}  /* 留空 = 全选 = 不限受众 → 视为命中，给满分（不是 0） */"
                 f"      var hit=false;"
                 f"      if(Array.isArray(v)){{hit=v.some(function(x){{return ml.indexOf(x)>=0;}});}}"
                 f"      else{{hit=!!(v && ml.indexOf(v)>=0);}}"
-                f"      if(hit){{score+=_W[f]; ev.push(f+'='+(Array.isArray(v)?v.join(','):v));}}}}"
+                f"      if(hit){{score+=_W[f]; expl+=_W[f]; ev.push(f+'='+(Array.isArray(v)?v.join(','):v));}}}}"
                 f"    var pct=total>0?score/total:0;"
-                f"    rows.push({{code:code,label:pkg.label,score:pct,evidence:ev}});}}"
-                f"  rows.sort(function(a,b){{return b.score-a.score;}}); return rows;}}"
+                f"    rows.push({{code:code,label:pkg.label,score:pct,abs:expl,evidence:ev}});}}"
+                f"  rows.sort(function(a,b){{return (b.score-a.score)||(b.abs-a.abs);}}); return rows;}}"
                 f"function _updateMatch(){{"
                 f"  var rows=_computeMatch();"
-                f"  var matched=rows.filter(function(x){{return x.score>=0.6;}});"
+                f"  var matched=rows.filter(function(x){{return x.score>=0.6 && x.abs>=0.20;}});  /* abs>=0.20：防止只中 1 个弱字段（gender/source/region）就判满分 */"
                 f"  var box=document.getElementById('audience-match-result');"
                 f"  if(matched.length===0){{"
                 f"    var top=rows[0];"
-                f"    box.innerHTML='<span class=\"b-warn\">无画像包匹配（最高分 '+(top?top.score.toFixed(2):'0.00')+' &lt; 0.60）</span> → 使用 <b>GENERIC 通用兜底</b>';"
+                f"    box.innerHTML='<span class=\"b-warn\">无画像包匹配（最接近 <b>'+(top?top.code:'-')+'</b> '+(top?top.label:'')+'：'+(top?top.score.toFixed(2):'0.00')+' &lt; 0.60）</span> → 使用 <b>GENERIC 通用兜底</b>'"
+                f"      +'<div class=\"note\" style=\"margin-top:4px\">留空 = 全选（该字段计满分），但只有<strong>显式填写且命中</strong>的字段才算证据；命中需证据权重 ≥0.20（补填 age / income 等强字段即可）。</div>';"
                 f"    return;}}"
                 f"  var top=matched[0];"
                 f"  var badges=matched.map(function(m){{return '<span class=\"b-ok\"><b>'+m.code+'</b></span> '+m.label+' — '+m.score.toFixed(2);}}).join('；');"
@@ -2079,7 +2103,10 @@ def _graph_svg(graph: list) -> str:
     while cur and cur not in seen:
         seen.add(cur)
         spine.append(cur)
-        cur = _next_of(cur)
+        # 防御：跨 campaign 的 next 引用（如 c1 图里 next="c2"）在本图无对应节点，
+        # 不能把幽灵 id 塞进 spine，否则后续 by_id[nid] 直接 KeyError 让整页崩溃。
+        _nxt = _next_of(cur)
+        cur = _nxt if (_nxt in by_id) else None
     branch = [n["id"] for n in nodes if n["id"] not in set(spine)]
 
     W, H = 130, 36                       # 节点框（原 156x46，压缩以适配多节点）
@@ -2157,7 +2184,9 @@ def _graph_svg(graph: list) -> str:
     # ---- 连线 ----
     order = spine + branch
     for nid in order:
-        nd = by_id[nid]
+        nd = by_id.get(nid)
+        if nd is None:
+            continue
         c = pos[nid]
         t = nd.get("type", "")
         p = nd.get("params", {}) or {}
@@ -2192,7 +2221,9 @@ def _graph_svg(graph: list) -> str:
 
     # ---- 节点 ----
     for nid in order:
-        nd = by_id[nid]
+        nd = by_id.get(nid)
+        if nd is None:
+            continue
         cx, cy = pos[nid]
         fill, stroke = _color(nd)
         t = nd.get("type", "")
@@ -2488,6 +2519,86 @@ def _resolve_program_project(p, env="local"):
     return pid
 
 
+def _resolve_program_project_safe(p, env="local", timeout=6):
+    """尽力在编译期为 program 建 Mautic project；任何超时 / 异常都安全降级为 None，绝不拖挂请求。
+
+    原因：Mautic 不可达（沙箱 / 断网 / DNS 黑洞）时，底层 urllib 的 connect 与 DNS 解析
+    不一定受 socket timeout 约束，会长时间阻塞，把「生成 Program」整个 HTTP 请求拖挂，
+    浏览器侧表现为「点击生成后报错 / 超时」。用守护线程 + join(timeout) 兜底，到时即跳过，
+    project 留待推送时惰性补建（_resolve_program_project 自身已支持降级）。
+    """
+    box = {}
+
+    def _run():
+        try:
+            _resolve_program_project(p, env)
+        except Exception as _e:  # noqa: BLE001
+            box["err"] = f"{type(_e).__name__}: {_e}"
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        cockpit_log("WARN", "brief 建 Mautic project 超时（>%ss，降级 None，推送时惰性补建）" % timeout)
+        return
+    if box.get("err"):
+        cockpit_log("WARN", f"brief 建 Mautic project 失败（降级 None，推送时惰性补建）：{box['err']}")
+
+
+def _mautic_reachable_safe(env="local", timeout=5):
+    """线程安全版 _mautic_reachable：探活不可达 / 超时时安全降级为 (False, 原因)，
+    绝不拖挂请求线程。
+
+    原因：远程 Mautic 在 DNS 黑洞下 connect / DNS 解析不受 socket timeout 约束会长时间阻塞，
+    若直接在请求线程里 _mautic_reachable 会重演「点生成挂死」。守护线程 + join(timeout)
+    兜底，到时即降级为不可达（与 data_missing 设计一致：资产新建延到推送时惰性补建）。
+    """
+    box = {}
+
+    def _run():
+        try:
+            box["v"] = _mautic_reachable(env, timeout)
+        except Exception as _e:  # noqa: BLE001
+            box["err"] = f"{type(_e).__name__}: {_e}"
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        cockpit_log("WARN", "mautic 探活超时（>%ss，降级不可达，资产延后惰性解析）" % timeout)
+        return (False, "探活超时")
+    if box.get("err"):
+        return (False, box["err"])
+    return box.get("v", (False, "探活无结果"))
+
+
+_EMPTY_IDX = {"available": False, "email": {}, "segment": {}, "page": {}, "form": {}}
+
+
+def _mautic_asset_index_safe(env="local", timeout=6):
+    """线程安全版 _mautic_asset_index：在请求线程里同步拉 Mautic 资产索引会受不可达 / 慢
+    Mautic 拖挂（_mautic_reachable 在沙箱里偶发误判可达），统一用守护线程 + join(timeout)
+    兜底，超时 / 异常即降级空索引（外链不显示，不影响 /program 页面渲染）。"""
+    box = {}
+
+    def _run():
+        try:
+            box["v"] = _mautic_asset_index()
+        except Exception as _e:  # noqa: BLE001
+            box["err"] = f"{type(_e).__name__}: {_e}"
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        cockpit_log("WARN", "mautic 资产索引获取超时（>%ss，降级空索引）" % timeout)
+        return dict(_EMPTY_IDX)
+    if box.get("err"):
+        cockpit_log("WARN", f"mautic 资产索引获取失败（降级空索引）：{box['err']}")
+        return dict(_EMPTY_IDX)
+    return box.get("v", dict(_EMPTY_IDX))
+
+
 def _check_push_result(result: dict):
     """真实判定 push() 返回是否成功。
     - dry_run=True → 算成功（无凭证时正常降级）
@@ -2773,7 +2884,9 @@ def _program_body(program: dict, msg: str = "") -> str:
     # campaign 流水线
     cards = ""
     campaigns = program["campaigns"]
-    idx = _mautic_asset_index()  # Mautic 资产 ref→id 索引（外链用；未连接则为空）
+    # Mautic 资产索引：统一走线程安全包裹，超时 / 不可达即降级空索引，绝不拖挂 /program 渲染。
+    # 与 data_missing 设计一致：资产外链延后到推送时惰性补建（idx 为空时外链不显示）。
+    idx = _mautic_asset_index_safe("local", timeout=6)
     for i, c in enumerate(campaigns):
         prop = c["proposal"]
         ap = prop.get("approval")
@@ -3140,10 +3253,12 @@ def _program_body(program: dict, msg: str = "") -> str:
                    f"<button class='btn ghost sm' type='button' "
                    f"onclick='if(history.length>1){{history.back()}}else{{location.href=\"/\"}}'>← 返回</button>"
                    f"<a class='btn ghost sm' href='/brief?goal_id={_esc(gid)}' title='预填原 Brief 字段以便迭代优化'>📝 改 Brief</a>"
-                   f"<form method='post' action='/program/{_esc(gid)}/delete' style='margin:0 0 0 auto' "
-                   f"onsubmit='return confirm(\"确定删除 Program {_esc(gid)} 吗？\\n\\n此操作仅移除驾驶舱本地记录（output/program_{_esc(gid)}.json），不影响 Mautic（:8080）已生成的活动、邮件与落地页。删除后不可撤销。\")'>"
-                   f"<button class='btn danger sm' type='submit'>🗑 删除 program</button>"
-                   f"</form>"
+                   f"<button class='btn danger sm' type='button' style='margin:0 0 0 auto' "
+                   f"onclick=\"if(!confirm('确定删除 Program {_esc(gid)} 吗？\\n\\n此操作仅移除驾驶舱本地记录（output/program_{_esc(gid)}.json），不影响 Mautic（:8080）已生成的活动、邮件与落地页。删除后不可撤销。'))return; "
+                   f"var b=this;b.disabled=true;b.innerText='处理中…';b.style.opacity='0.65';"
+                   f"var ac=new AbortController();var t=setTimeout(function(){{ac.abort();}},15000);"
+                   f"fetch('/program/{_esc(gid)}/delete',{{method:'POST',signal:ac.signal}}).then(function(r){{clearTimeout(t);if(r.ok||r.redirected){{location.href='/';}}else{{throw new Error('HTTP '+r.status);}}}})"
+                   f".catch(function(e){{clearTimeout(t);b.disabled=false;b.innerText='🗑 删除 program';b.style.opacity='1';alert('删除失败或超时：'+((e&&e.message)||e));}});\">🗑 删除 program</button>"
                    f"</p>"
                    f"<h1>Program {_esc(gid)}</h1>"
                    f"<p class='sub'>目标名称：{_esc(goal_name) if goal_name else '（未命名）'} "
@@ -3676,7 +3791,16 @@ class Handler(BaseHTTPRequestHandler):
                         "Brief 与策略规格冲突",
                         _brief_form(strategies, "", spec_meta, services,
                                     _prefill_from_form(form), conflicts)))
-            program = build_program(goal, n, compile, strategy_spec=strategies or None,
+            # Mautic 不可达时关闭资产解析：避免 plan_compiler 编译期为 form/segment/stage
+            # 调 Mautic（_get_token 默认 60s 超时）→ 点击生成后长时间挂起/超时报错。
+            # 与 data_missing 设计一致：资产新建延到推送时惰性补建（needs_operator_review=true）。
+            mautic_ok, _mreach = _mautic_reachable_safe("local", timeout=5)
+            if not mautic_ok:
+                for _s in (strategies or []):
+                    _s["asset_resolve"] = False
+                for _s in (services or []):
+                    _s["asset_resolve"] = False
+            program = build_program(goal, n, None, strategy_spec=strategies or None,
                                     service_sequences=services or None)
             # 每个 campaign 绑定派生计划：转化目标 + 执行窗口（可在 /program 上编辑）
             for i, c in enumerate(program["campaigns"]):
@@ -3693,10 +3817,9 @@ class Handler(BaseHTTPRequestHandler):
                 goal.goal_id = ref_goal_id
             # 生成 program 时同步在 Mautic 建一个 project（program = project），所有资产挂其下；
             # Mautic 不可达 / 未配 Basic 凭证时降级为 None，不阻断生成（推送时再惰性补建）。
-            try:
-                _resolve_program_project(program, "local")
-            except Exception as _pe:  # noqa: BLE001
-                cockpit_log("WARN", f"brief 建 Mautic project 失败（降级 None，推送时惰性补建）：{type(_pe).__name__}: {_pe}")
+            # 编译期尽力建 Mautic project；不可达 / 超时时守护线程兜底跳过，绝不拖挂请求
+            # （project 留待推送时惰性补建）。
+            _resolve_program_project_safe(program, "local")
             _save_program(program)
             cockpit_log("OK", f"brief 已生成 Program：goal_id={program.get('goal_id')} · mautic_project_id={program.get('mautic_project_id')} · campaigns={len(program.get('campaigns', []))}")
             # Location 响应头按 latin-1 编码：goal_id 含中文（slug 保留中文，属 isalnum）时
@@ -4460,7 +4583,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Location", "/")
             self.end_headers()
         except Exception as e:  # noqa: BLE001
-            self._send(200, _page("删除失败", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/'>返回</a></p>"))
+            self._send(500, _page("删除失败", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/'>返回</a></p>"))
     def _handle_complete(self, form):
         # path 形如 /program/<gid>/complete
         # 两步流：先预览「改写当前campaign」的 diff → 确认后才落库（不影响下游）
