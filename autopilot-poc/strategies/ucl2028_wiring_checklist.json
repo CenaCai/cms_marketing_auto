@@ -1,0 +1,228 @@
+{
+  "goal_id": "ucl2028",
+  "artifact": "wiring_checklist",
+  "status": "design_only",
+  "execution_gate": "用户在驾驶舱确认 Program（审批门通过）后方可执行接线/发布。本文件仅为设计清单，未接线、未发布、未触发任何发送。",
+  "notes": {
+    "container_isolation": "硬要求：5 波各建独立 campaign 容器（CMP_UCL2028_C1..C5），禁止复用 CMP_UCL2028_MAIN 或共享 #115 作入口。共享容器会让成员变动互相污染——某一波 segment 重算会直接影响另一波的 pending 事件，是本实例最现实的串扰来源。",
+    "branch_type_constraint": "既有硬约束：决策节点分支不可混类型。因此 email_open / page_hit / form_submit 必须各自独立成决策节点，不得在同一决策节点内混用事件类型。本清单已按此拆分。",
+    "frequency_is_advisory": "所有 max_per_24h / max_per_7d / quiet_hours 均为【建议值】，由 PoC 硬注入覆盖。须开启 per-lead timezone，否则中国用户会在凌晨收到。",
+    "no_click_webhook": "本实例无 email click webhook（reference 01 已核实）。『已点击』一律由 mtc_* 链接参数 + LP #24 page_hit 反解，故清单中『点击/访问LP』统一用 page_hit 决策节点表达。",
+    "mtc_param_enforcement": "所有外发链接强制注入 mtc_campaign / mtc_wave / mtc_variant / mtc_locale；缺任一必填参数应阻断发送（不是告警）。",
+    "tag_channel": "所有 tag.write 必须走 tag-rule 校验通路，禁止直写 user_tag。",
+    "form_lead_id_p0": "form_submissions.lead_id 丢失是本实例 P0 数据链路缺口（reference 01）。若未修复，『表单提交=登记』判定与 service 确认件触发都会失败——这是数据链路问题，不是内容问题，须转人工。",
+    "merged_c4_cohort": "有意合并，非遗漏：c4 分群 SEG_UCL2028_NOREACH（未到达 LP）同时覆盖两个障碍不同的子群——① 零打开（更冷，可见性障碍：可能没送达/进垃圾箱/标题没打动）；② 已打开但未点击未访问 LP（更暖，动机障碍：看到了但不为所动）。合并动机：只覆盖零打开会造成『更暖人群反而 0 触达』的反向分层；规格 §11.1/§11.2 亦要求对 L2 未点击有动作。PoC 阶段用同一变体 v4_remind_human 处理（对零打开=换标题重新送达；对打开未点击=换角度再给理由并降低承诺门槛），属简化。两个子群以 ucl2028_noopen / eng_open_noclick 标签区分，指标须分群记录。后续数据量足够（各子群样本 ≥5,000 且 p<0.05）应拆成两波分别处理，勿把本次合并当作既有结论。",
+    "touch_cap_verification": "每人最多 3 触，仍在 promo L1 硬顶 4 步内，c4 合并后不破坏该口径：路径① c1(或c2) + c3(到过LP未提交) + c5 = 3 触；路径② c1(或c2) + c4(未到达LP，含零打开与打开未点击) + c5 = 3 触。c3 与 c4 互斥故不可兼得；service 确认件不占 promo 触达、不计入此上限。",
+    "sample_limit": "本地仅 13 联系人、#115 成员 1 人。接线后只能验证『结构正确、campaign_events 已落库』，验证不了规模行为，不得据此判定策略有效。",
+    "implementation_path": "优先 mautic_client 的 /s/api/v2 + AiCampaignBuilderBundle.applyAction 直写事件图；Playwright 仅作 applyAction 不可用时的兜底。"
+  },
+  "campaigns": [
+    {
+      "cid": "ucl2028_c1",
+      "mautic_container": {
+        "name": "CMP_UCL2028_C1_SEED",
+        "note": "独立容器，禁止与其他波共享；不得复用 CMP_UCL2028_MAIN。"
+      },
+      "entry": {
+        "segment": "SEG_UCL2028_SEED_HIINTENT",
+        "note": "必须为 filter-based 且自动刷新（cron 建议压到 15 分钟）；手动分群或刷新非自动等同静态，行为标签变了分群不动，闭环直接断。读取人数前必须轮询 lastBuiltDate 晚于规则下发时间，否则拿到陈旧值会破坏 plan_hash 绑定。"
+      },
+      "nodes": [
+        {"seq": 1, "type": "source", "ref": "SEG_UCL2028_SEED_HIINTENT", "config": {"mode": "filter_based_auto_refresh", "refresh_cron": "15min"}, "note": "高意向种子切片：曾购票 或 event_interest 含 football/sports 或 生命周期 S2/S3，且非 DNC/退订/投诉 且未登记。若 event_interest/viewed_tier 空率>50% 或切片<基数5%，本波并入 c2。"},
+        {"seq": 2, "type": "decision", "ref": "guard_suppression", "config": {"check": ["dnc", "suppress_all", "ucl2028_unsub", "ucl2028_registered"]}, "note": "命中任一即跳过后续全部分支。DNC/退订/投诉=全局永久抑制；ucl2028_registered=活动级 suppress_promo（非全局，保留跨活动交叉销售能力）。"},
+        {"seq": 3, "type": "action", "ref": "schedule_send_window", "config": {"delay_hours": 0, "quiet_hours": "22:00-09:00", "tz_mode": "per_lead", "max_per_24h": 1, "max_per_7d": 1}, "note": "频次与静默窗为建议值，由 PoC 硬注入。必须 per-lead timezone。"},
+        {"seq": 4, "type": "email.send", "ref": "EM_UCL2028_INVITE", "config": {"email_id": 104, "variant_id": "v1_invite_authority", "cta": "ucl2028-bridge", "unsubscribe_form": true, "link_params": ["mtc_campaign", "mtc_wave", "mtc_variant", "mtc_locale"]}, "note": "必须配 unsubscribeForm（合规+约束）。链接强制注入 mtc_*，缺参阻断发送。"},
+        {"seq": 5, "type": "tag.write", "ref": "tags_invited", "config": {"tags": ["ucl2028_invited", "ucl2028_seed"]}, "note": "入池与发送标记，走 tag-rule 通路。"},
+        {"seq": 6, "type": "decision", "ref": "decision_opened", "config": {"wait": "7d", "event_type": "email_open"}, "note": "分支不可混类型：本节点只判 email_open。"},
+        {"seq": 7, "type": "tag.write", "ref": "tags_opened", "config": {"tags": ["ucl2028_opened"]}, "note": "仅 decision_opened=true 分支写入。"},
+        {"seq": 8, "type": "decision", "ref": "decision_lp_visit", "config": {"wait": "3d", "event_type": "page_hit", "url_contains": "ucl2028-bridge"}, "note": "以 LP#24 page_hit 作为『点击CTA或访问LP』的权威信号（无 click webhook）。类型单一，不与 email_open 混用。"},
+        {"seq": 9, "type": "tag.write", "ref": "tags_clicked", "config": {"tags": ["ucl2028_clicked"]}, "note": "仅 decision_lp_visit=true 分支写入。"},
+        {"seq": 10, "type": "decision", "ref": "decision_registered", "config": {"wait": "7d", "event_type": "form_submit", "form": "Page #24 意向登记表单"}, "note": "表单提交=登记成功。依赖 form_submissions.lead_id 完整（P0 缺口）。"},
+        {"seq": 11, "type": "action", "ref": "on_registered", "config": {"action": "write ucl2028_registered + suppress_promo + exit_all_promo + trigger svc_ucl2028_registered_confirm"}, "note": "登记即活动级抑制并退出全部后续 promo，同时触发 service 确认件（不占 promo 触达、豁免静默窗）。"},
+        {"seq": 12, "type": "action", "ref": "on_not_registered", "config": {"action": "handoff"}, "note": "到过LP未提交→打 eng_click_noconv 交 c3；【未到达LP】→交 c4，含两个子群：零打开（打 ucl2028_noopen）与已打开未点击（已打 eng_open_noclick）。不存在第三类『不追加』人群，未登记者必落 c3 或 c4 之一。"}
+      ],
+      "decisions": {
+        "enter": "属 SEG_UCL2028_SEED_HIINTENT、非 DNC、未登记。",
+        "branch": "7d 内是否打开 → 3d 内是否访问 LP#24 → 7d 内是否提交表单。三级判定各自独立成节点，事件类型不混用。",
+        "exit": "提交表单→ucl2028_registered→活动级抑制→退出全部后续 promo→转 service 确认件；退订/投诉→suppress_all+DNC 全局永久退出；连3封未开→eng_low 降频至1封/2周；连5封未开→eng_cold 停邮件。",
+        "handoff": "未登记者按行为分流至 c3（到过 LP 未提交）或 c4（未到达 LP：零打开 或 已打开未点击）。二者互斥，覆盖全部未登记人群，无遗漏子群。"
+      },
+      "tags_to_write": ["ucl2028_invited", "ucl2028_seed", "ucl2028_opened", "ucl2028_clicked", "ucl2028_registered", "ucl2028_unsub"],
+      "suppression": ["dnc", "suppress_all", "ucl2028_unsub（全局永久）", "ucl2028_registered（活动级 suppress_promo）"],
+      "deferred": false,
+      "mutually_exclusive_with": ["ucl2028_c2"],
+      "starts_after": null
+    },
+    {
+      "cid": "ucl2028_c2",
+      "mautic_container": {
+        "name": "CMP_UCL2028_C2_BROAD",
+        "note": "独立容器，禁止与其他波共享；不得复用 CMP_UCL2028_MAIN。"
+      },
+      "entry": {
+        "segment": "SEG_UCL2028_BROAD",
+        "note": "目标基数减去 c1 种子群、减去已登记、减去 DNC/退订/投诉。与 c1 严格互斥，是本 Program 的增量主体。"
+      },
+      "nodes": [
+        {"seq": 1, "type": "source", "ref": "SEG_UCL2028_BROAD", "config": {"mode": "filter_based_auto_refresh", "refresh_cron": "15min"}, "note": "全量扩量人群。"},
+        {"seq": 2, "type": "decision", "ref": "guard_c1_gate", "config": {"gate": "c1 护栏通过（退订率<1.4% 且 投诉率<0.05%，滚动1h）且已产生首批行为数据"}, "note": "前置门禁：未通过则本波挂起并转人工，不得无条件放量。"},
+        {"seq": 3, "type": "decision", "ref": "guard_suppression", "config": {"check": ["dnc", "suppress_all", "ucl2028_unsub", "ucl2028_registered"]}, "note": "同 c1。"},
+        {"seq": 4, "type": "action", "ref": "schedule_send_window", "config": {"delay_hours": 72, "quiet_hours": "22:00-09:00", "tz_mode": "per_lead", "max_per_24h": 1, "max_per_7d": 1}, "note": "建议值由 PoC 硬注入。距 c1 发送 72h，等 c1 首批行为与护栏数据。"},
+        {"seq": 5, "type": "email.send", "ref": "EM_UCL2028_INVITE", "config": {"email_id": 104, "variant_id": "v1_invite_authority", "cta": "ucl2028-bridge", "unsubscribe_form": true, "link_params": ["mtc_campaign", "mtc_wave", "mtc_variant", "mtc_locale"]}, "note": "与 c1 有意共用同一 variant v1（人群不同、内容不变），不产生新 variant_id、不触发 plan_hash 重审。禁止因 headline 与 c1 相同而判定为内容缺失。"},
+        {"seq": 6, "type": "tag.write", "ref": "tags_invited", "config": {"tags": ["ucl2028_invited", "ucl2028_broad"]}, "note": "人群标记用 ucl2028_broad，与 c1 的 ucl2028_seed 区分。"},
+        {"seq": 7, "type": "decision", "ref": "decision_opened", "config": {"wait": "7d", "event_type": "email_open"}, "note": "只判 email_open。"},
+        {"seq": 8, "type": "tag.write", "ref": "tags_opened", "config": {"tags": ["ucl2028_opened"]}, "note": "true 分支。"},
+        {"seq": 9, "type": "decision", "ref": "decision_lp_visit", "config": {"wait": "3d", "event_type": "page_hit", "url_contains": "ucl2028-bridge"}, "note": "只判 page_hit。"},
+        {"seq": 10, "type": "tag.write", "ref": "tags_clicked", "config": {"tags": ["ucl2028_clicked"]}, "note": "true 分支。"},
+        {"seq": 11, "type": "decision", "ref": "decision_registered", "config": {"wait": "7d", "event_type": "form_submit", "form": "Page #24 意向登记表单"}, "note": "表单提交=登记。"},
+        {"seq": 12, "type": "action", "ref": "on_registered", "config": {"action": "write ucl2028_registered + suppress_promo + exit_all_promo + trigger svc_ucl2028_registered_confirm"}, "note": "同 c1。"},
+        {"seq": 13, "type": "action", "ref": "on_not_registered", "config": {"action": "handoff"}, "note": "同 c1 分流规则。"}
+      ],
+      "decisions": {
+        "enter": "属 SEG_UCL2028_BROAD、非 DNC、未登记，且 c1 前置门禁已通过。",
+        "branch": "与 c1 相同的三级判定（打开→访问LP→提交），节点类型不混用。",
+        "exit": "同 c1。另：送达率<88%（单批次）告警、<75% 暂停本批次并保留剩余配额；发送失败率滚动10min ≥10% 警告、≥20% 熔断；实际人数 vs 预估偏差>50% 重审圈选规则，不得硬发。",
+        "handoff": "未登记者分流至 c3（到过 LP 未提交）或 c4（未到达 LP：零打开 或 已打开未点击）。二者互斥，无遗漏子群。"
+      },
+      "tags_to_write": ["ucl2028_invited", "ucl2028_broad", "ucl2028_opened", "ucl2028_clicked", "ucl2028_registered", "ucl2028_unsub"],
+      "suppression": ["dnc", "suppress_all", "ucl2028_unsub（全局永久）", "ucl2028_registered（活动级 suppress_promo）"],
+      "deferred": false,
+      "mutually_exclusive_with": ["ucl2028_c1"],
+      "starts_after": {
+        "cid": "ucl2028_c1",
+        "gate": "c1 护栏通过（退订率<1.4% 且 投诉率<0.05%，滚动1h）且已产生首批行为数据；否则本波挂起并转人工，不得无条件放量"
+      }
+    },
+    {
+      "cid": "ucl2028_c3",
+      "mautic_container": {
+        "name": "CMP_UCL2028_C3_LPABANDON",
+        "note": "独立容器，禁止与其他波共享。面向已到达 LP#24 但未提交表单的人群（意向最强流失点）。"
+      },
+      "entry": {
+        "segment": "SEG_UCL2028_LP_ABANDON",
+        "note": "带 ucl2028_clicked 或 有 LP#24 页面访问记录，且未提交表单、未登记、非 DNC。与 c4 严格互斥（c4 为零打开者）。"
+      },
+      "nodes": [
+        {"seq": 1, "type": "source", "ref": "SEG_UCL2028_LP_ABANDON", "config": {"mode": "filter_based_auto_refresh", "refresh_cron": "15min"}, "note": "由行为标签+page_hit 驱动，依赖 c1/c2 已产生点击/访问数据。"},
+        {"seq": 2, "type": "decision", "ref": "guard_suppression", "config": {"check": ["dnc", "suppress_all", "ucl2028_unsub", "ucl2028_registered"]}, "note": "已登记者必须排除，否则会对已登记者重复促销。"},
+        {"seq": 3, "type": "action", "ref": "schedule_send_window", "config": {"delay_hours": 240, "quiet_hours": "22:00-09:00", "tz_mode": "per_lead", "max_per_24h": 1, "max_per_7d": 2}, "note": "建议值由 PoC 硬注入。240h 为最早启动点，实际按队列滚动触发。"},
+        {"seq": 4, "type": "email.send", "ref": null, "config": {"variant_id": "v3_friction_relief", "cta": "ucl2028-bridge", "unsubscribe_form": true, "link_params": ["mtc_campaign", "mtc_wave", "mtc_variant", "mtc_locale"]}, "note": "新内容，ref 待创建后回填；正文与 variant 由 ucl2028_content_map.json 提供（减摩擦/异议处理，非重复邀约）。必须配 unsubscribeForm。"},
+        {"seq": 5, "type": "tag.write", "ref": "tags_abandon", "config": {"tags": ["ucl2028_lp_abandoned", "eng_click_noconv"]}, "note": "标记已进入减摩擦回收；此后不再追加。"},
+        {"seq": 6, "type": "decision", "ref": "decision_registered", "config": {"wait": "7d", "event_type": "form_submit", "form": "Page #24 意向登记表单"}, "note": "表单提交=登记。"},
+        {"seq": 7, "type": "action", "ref": "on_registered", "config": {"action": "write ucl2028_registered + suppress_promo + exit_all_promo + trigger svc_ucl2028_registered_confirm"}, "note": "同 c1/c2。"},
+        {"seq": 8, "type": "action", "ref": "on_still_not_registered", "config": {"action": "exit"}, "note": "兜底后仍未提交即退出，不再追加——防止把最高 ROI 通道耗在反复不转化者身上。"}
+      ],
+      "decisions": {
+        "enter": "c1/c2 中已点击或已访问 LP#24、未提交、未登记、非 DNC。",
+        "branch": "单轮兜底，仅判一次『是否提交表单』。",
+        "exit": "提交→退出全部 promo 转 service 确认件；未提交→退出且不再追加。",
+        "handoff": "无后续 promo；转人工条件：该群放弃率显著低于代理基准下沿（提交/进入结算 P25 45%）→ 判定为落地页/表单问题，转人工修 LP，而非继续加触达。"
+      },
+      "tags_to_write": ["ucl2028_lp_abandoned", "eng_click_noconv", "ucl2028_registered"],
+      "suppression": ["dnc", "suppress_all", "ucl2028_unsub（全局永久）", "ucl2028_registered（活动级 suppress_promo）"],
+      "deferred": false,
+      "mutually_exclusive_with": ["ucl2028_c4"],
+      "starts_after": null
+    },
+    {
+      "cid": "ucl2028_c4",
+      "mautic_container": {
+        "name": "CMP_UCL2028_C4_NOREACH",
+        "note": "独立容器，禁止与其他波共享。面向【始终未到达 LP#24】的人群，唯一一次差异化复投。容器名随分群改为 NOREACH，避免暗示『仅零打开』。"
+      },
+      "entry": {
+        "segment": "SEG_UCL2028_NOREACH",
+        "note": "c1/c2 已送达 且【无 page_hit(ucl2028-bridge) 且 无 ucl2028_clicked】且 未登记 且 非 DNC。涵盖两个子群：① 零打开（更冷，可见性障碍）；② 已打开但未点击/未访问 LP（更暖，动机障碍，c1/c2 已打 eng_open_noclick）。与 c3 严格互斥（c3=到过 LP 未提交）。CN 子集是否改短信取决于 CN:EN 数据（flag A7），未落地前按邮件。"
+      },
+      "nodes": [
+        {"seq": 1, "type": "source", "ref": "SEG_UCL2028_NOREACH", "config": {"mode": "filter_based_auto_refresh", "refresh_cron": "15min"}, "note": "未到达 LP 人群（零打开 + 打开未点击合并）。"},
+        {"seq": 2, "type": "decision", "ref": "guard_suppression", "config": {"check": ["dnc", "suppress_all", "ucl2028_unsub", "ucl2028_registered"]}, "note": "同前。"},
+        {"seq": 3, "type": "action", "ref": "schedule_send_window", "config": {"delay_hours": 336, "quiet_hours": "22:00-09:00", "tz_mode": "per_lead", "max_per_24h": 1, "max_per_7d": 2}, "note": "建议值由 PoC 硬注入。"},
+        {"seq": 4, "type": "email.send", "ref": null, "config": {"variant_id": "v4_remind_human", "cta": "ucl2028-bridge", "unsubscribe_form": true, "link_params": ["mtc_campaign", "mtc_wave", "mtc_variant", "mtc_locale"]}, "note": "新内容，ref 待创建后回填；正文由 content_map 提供。同一变体覆盖两类障碍：对零打开=换标题重新送达，对打开未点击=换角度再给理由并降低承诺门槛（『30 秒占个位』）。已确认无需拆分变体。必须配 unsubscribeForm。本波限 1 次。"},
+        {"seq": 5, "type": "tag.write", "ref": "tags_reminded", "config": {"tags": ["ucl2028_reminded"], "conditional_tags": [{"tag": "ucl2028_noopen", "when": "无任何 email_open 记录（零打开子群）"}]}, "note": "重要：ucl2028_reminded 全量写入；ucl2028_noopen 仅对零打开子群条件写入。已打开未点击子群在 c1/c2 已打 eng_open_noclick，绝不可同人兼打 ucl2028_noopen 与 eng_open_noclick——否则两个子群无法区分，日后拆分分析无从谈起（这正是保留该区分的目的）。"},
+        {"seq": 6, "type": "decision", "ref": "decision_lp_reached_after_remind", "config": {"wait": "7d", "event_type": "page_hit", "url_contains": "ucl2028-bridge"}, "note": "复投后判『是否到达 LP』而非『是否打开』——因 c4 现含已打开子群，对他们判『是否打开』无意义。类型单一，只判 page_hit。"},
+        {"seq": 7, "type": "action", "ref": "on_reached_lp", "config": {"action": "handoff"}, "note": "到达 LP 但未提交 → 由 c3 容器在其 segment 重算后接管；已提交 → 走 service 确认件。"},
+        {"seq": 8, "type": "action", "ref": "on_still_no_reach", "config": {"action": "eng_low / eng_cold + exit"}, "note": "仍未到达 LP：连3封未开→eng_low 降频至1封/2周；连5封未开→eng_cold 停邮件（可短信试探1次或退出）。"}
+      ],
+      "decisions": {
+        "enter": "c1/c2 已送达、始终未到达 LP#24（零打开 或 已打开未点击）、未登记、非 DNC。",
+        "branch": "唯一一次差异化复投，限 1 次/周期；复投后判『是否到达 LP』（不对已打开子群判『是否打开』，该信号对其无意义）。",
+        "exit": "复投后仍未到达 LP → 退出并降频/停邮件。",
+        "handoff": "到达 LP 未提交 → 交 c3；转人工条件：整体打开率 <12%（基准 P25）说明是送达/名单质量问题而非内容问题 → 转人工查渠道健康与名单新鲜度；严禁用第 3 次触达解决送达问题。"
+      },
+      "tags_to_write": ["ucl2028_reminded", "ucl2028_noopen", "eng_open_noclick", "ucl2028_unsub"],
+      "suppression": ["dnc", "suppress_all", "ucl2028_unsub（全局永久）", "ucl2028_registered（活动级 suppress_promo）"],
+      "deferred": false,
+      "mutually_exclusive_with": ["ucl2028_c3"],
+      "starts_after": null
+    },
+    {
+      "cid": "ucl2028_c5",
+      "mautic_container": {
+        "name": "CMP_UCL2028_C5_HOSTCONFIRM",
+        "note": "独立容器，禁止与其他波共享。deferred：host 官方确认后方可启用，严禁由 delay 到期自动启用。"
+      },
+      "entry": {
+        "segment": "SEG_UCL2028_HOSTCONFIRM_POOL",
+        "note": "截至触发时点仍未登记 且 非 DNC/退订/投诉 的全量人群（含 c1–c4 未转化者与未触达余量）。本群按『外部事件时点』而非行为状态定义，故与 c1–c4 不构成重复触达逻辑，但同一人累计触达仍受每人 ≤3 触约束。"
+      },
+      "nodes": [
+        {"seq": 1, "type": "source", "ref": "SEG_UCL2028_HOSTCONFIRM_POOL", "config": {"mode": "filter_based_auto_refresh", "refresh_cron": "15min"}, "note": "事件触发时点动态圈选。"},
+        {"seq": 2, "type": "decision", "ref": "gate_host_confirmed_event", "config": {"gate": "UEFA 官方公告确认 host（预期 2026-09 中旬，慕尼黑安联为唯一候选）", "auto_enable_on_delay": false}, "note": "deferred 闸门：delay_hours=264 仅为预期时点占位，绝不可到期自动发送。须由运营核实公告后手动启用。"},
+        {"seq": 3, "type": "decision", "ref": "guard_suppression", "config": {"check": ["dnc", "suppress_all", "ucl2028_unsub", "ucl2028_registered"]}, "note": "同前。"},
+        {"seq": 4, "type": "action", "ref": "schedule_send_window", "config": {"delay_hours": 264, "quiet_hours": "22:00-09:00", "tz_mode": "per_lead", "max_per_24h": 1, "max_per_7d": 2}, "note": "建议值由 PoC 硬注入。264h 为占位，实际由事件驱动。"},
+        {"seq": 5, "type": "email.send", "ref": null, "config": {"variant_id": "v5_host_confirmed", "cta": "ucl2028-bridge", "unsubscribe_form": true, "link_params": ["mtc_campaign", "mtc_wave", "mtc_variant", "mtc_locale"]}, "note": "新内容，ref 待创建后回填；正文由 content_map 提供。host 未确认前严禁以确定性措辞表述 host（合规红线）。"},
+        {"seq": 6, "type": "tag.write", "ref": "tags_host_confirmed", "config": {"tags": ["ucl2028_host_confirmed"]}, "note": "标记已进入确定性升级告知序列。"},
+        {"seq": 7, "type": "decision", "ref": "decision_registered", "config": {"wait": "7d", "event_type": "form_submit", "form": "Page #24 意向登记表单"}, "note": "表单提交=登记。"},
+        {"seq": 8, "type": "action", "ref": "on_registered", "config": {"action": "write ucl2028_registered + suppress_promo + exit_all_promo + trigger svc_ucl2028_registered_confirm"}, "note": "同前。"},
+        {"seq": 9, "type": "action", "ref": "on_not_registered", "config": {"action": "exit"}, "note": "本波为最后一波促销，之后不再追加，名单转 2028 开售承接（独立 Program，由开售节点触发）。"}
+      ],
+      "decisions": {
+        "enter": "host 已由 UEFA 官方确认 且 未登记 且 非 DNC。",
+        "branch": "仅判『是否提交表单』。",
+        "exit": "登记→退出转 service 确认件；未登记→本波为最后一波，之后不再追加。",
+        "handoff": "转人工条件：若 host 未按预期在 2026-09 确认 → 保持 deferred，由运营决定延后或改用『唯一候选』措辞；host 未确认前严禁以确定性措辞表述 host。"
+      },
+      "tags_to_write": ["ucl2028_host_confirmed", "ucl2028_registered", "ucl2028_unsub"],
+      "suppression": ["dnc", "suppress_all", "ucl2028_unsub（全局永久）", "ucl2028_registered（活动级 suppress_promo）"],
+      "deferred": true,
+      "deferred_enable_condition": "由外部事件『UEFA 官方确认 host』驱动启用，运营核实公告后手动启用；严禁由 delay_hours=264 到期自动触发。",
+      "mutually_exclusive_with": [],
+      "starts_after": null
+    }
+  ],
+  "service_sequences": [
+    {
+      "sid": "svc_ucl2028_registered_confirm",
+      "mautic_container": {
+        "name": "CMP_UCL2028_SVC_CONFIRM",
+        "note": "服务序列容器，独立于 5 波 promo 容器之外。不挂 segment 入口，由表单提交动作直接触发。"
+      },
+      "entry": {
+        "segment": null,
+        "trigger": "Page #24（alias ucl2028-bridge）意向登记表单提交成功事件",
+        "note": "事件驱动，不是 segment + delay 驱动。不占 promo 触达、不计入每人 3 触上限。"
+      },
+      "nodes": [
+        {"seq": 1, "type": "source", "ref": "form_submit_event", "config": {"event": "Page #24 意向登记表单提交成功", "mode": "event"}, "note": "触发源决定意图：用户主动动作 → service，不是 promo。"},
+        {"seq": 2, "type": "action", "ref": "immediate_send", "config": {"delay_hours": 0, "send_within_minutes": 5, "quiet_hours_exempt": true}, "note": "豁免静默窗（team-lead 已裁定）：仅限用户动作即时触发（≤5min）的服务确认件；促销类触达一律不豁免，仍 22:00-09:00 禁触。"},
+        {"seq": 3, "type": "email.send", "ref": null, "config": {"variant_id": "CONFIRM（由 content_map 提供）", "unsubscribe_form": true}, "note": "正文为服务确认：确认已登记 + host 待 2026-09 确认 + 开票前另行通知。严禁任何促销 CTA 或再次邀约（已登记者禁促销）；严禁票价/库存数字；不得新增必填字段。退订链接仍为合规必需。"},
+        {"seq": 4, "type": "tag.write", "ref": "tags_confirm", "config": {"tags": ["ucl2028_registered", "ucl2028_confirm_sent"]}, "note": "走 tag-rule 通路。"},
+        {"seq": 5, "type": "action", "ref": "exit_to_nurture", "config": {"action": "exit → 2028 开售承接名单"}, "note": "期间除服务性/交易性必要外不主动触达。"}
+      ],
+      "decisions": {
+        "enter": "Page #24 表单提交成功即触发——不看 segment、不看 delay、不看 promo 抑制状态。",
+        "branch": "无分支，单发即结束。",
+        "exit": "确认件发出即结束，转 2028 开售承接名单。",
+        "handoff": "转人工条件：表单提交未触发确认件（form_submissions.lead_id 丢失，P0 缺口）→ 立即转人工排查链路；确认件退订率异常升高 → 暂停并排查是否混入促销内容。"
+      },
+      "tags_to_write": ["ucl2028_registered", "ucl2028_confirm_sent"],
+      "suppression": [],
+      "suppression_exemptions": ["promo_frequency_cap（counts_toward_promo_cap=false）", "suppress_promo（exempt_from_promo_suppression=true）", "comm_freeze（transactional/service 不受冻结约束）", "quiet_hours（仅限 ≤5min 即时触发的服务确认件）"],
+      "deferred": false,
+      "mutually_exclusive_with": [],
+      "starts_after": null
+    }
+  ]
+}
