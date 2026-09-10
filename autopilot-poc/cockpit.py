@@ -2936,10 +2936,12 @@ def _program_body(program: dict, msg: str = "") -> str:
                    f"<button class='btn ghost sm' type='button' "
                    f"onclick='if(history.length>1){{history.back()}}else{{location.href=\"/\"}}'>← 返回</button>"
                    f"<a class='btn ghost sm' href='/brief?goal_id={_esc(gid)}' title='预填原 Brief 字段以便迭代优化'>📝 改 Brief</a>"
-                   f"<form method='post' action='/program/{_esc(gid)}/delete' style='margin:0 0 0 auto' "
-                   f"onsubmit='return confirm(\"确定删除 Program {_esc(gid)} 吗？\\n\\n此操作仅移除驾驶舱本地记录（output/program_{_esc(gid)}.json），不影响 Mautic（:8080）已生成的活动、邮件与落地页。删除后不可撤销。\")'>"
-                   f"<button class='btn danger sm' type='submit'>🗑 删除 program</button>"
-                   f"</form>"
+                   f"<button class='btn danger sm' type='button' style='margin:0 0 0 auto' "
+                   f"onclick=\"if(!confirm('确定删除 Program {_esc(gid)} 吗？\\n\\n此操作仅移除驾驶舱本地记录（output/program_{_esc(gid)}.json），不影响 Mautic（:8080）已生成的活动、邮件与落地页。删除后不可撤销。'))return; "
+                   f"var b=this;b.disabled=true;b.innerText='处理中…';b.style.opacity='0.65';"
+                   f"var ac=new AbortController();var t=setTimeout(function(){{ac.abort();}},15000);"
+                   f"fetch('/program/{_esc(gid)}/delete',{{method:'POST',signal:ac.signal}}).then(function(r){{clearTimeout(t);if(r.ok||r.redirected){{location.href='/';}}else{{throw new Error('HTTP '+r.status);}}}})"
+                   f".catch(function(e){{clearTimeout(t);b.disabled=false;b.innerText='🗑 删除 program';b.style.opacity='1';alert('删除失败或超时：'+((e&&e.message)||e));}});\">🗑 删除 program</button>"
                    f"</p>"
                    f"<h1>Program {_esc(gid)}</h1>"
                    f"<p class='sub'>目标名称：{_esc(goal_name) if goal_name else '（未命名）'} "
@@ -4236,7 +4238,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Location", "/")
             self.end_headers()
         except Exception as e:  # noqa: BLE001
-            self._send(200, _page("删除失败", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/'>返回</a></p>"))
+            self._send(500, _page("删除失败", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/'>返回</a></p>"))
     def _handle_complete(self, form):
         # path 形如 /program/<gid>/complete
         # 两步流：先预览「改写当前campaign」的 diff → 确认后才落库（不影响下游）
