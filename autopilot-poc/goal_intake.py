@@ -117,20 +117,32 @@ AUDIENCE_WEIGHTS = {
 AUDIENCE_THRESHOLD = 0.6  # 命中阈值（>= 算命中；< 则走 GENERIC 兜底）
 
 
+def _profile_values(val):
+    """把 profile 字段值归一化为 list（支持多选：str→[str]、list→list、空→[]）。"""
+    if val is None or val == "":
+        return []
+    if isinstance(val, (list, tuple, set)):
+        return [str(x).strip() for x in val if str(x).strip()]
+    return [str(val).strip()]
+
+
 def infer_audience_package(profile) -> dict:
-    """按打分公式推断画像包。
+    """按打分公式推断画像包（支持字段多值 → 一个 contact 可命中多个画像包）。
 
     score(pkg, contact) = Σ weight(field) × match(field) / Σ weight(field)
-      match(field) = 1 if contact.value ∈ pkg.match[field]，否则 0
-    阈值 AUDIENCE_THRESHOLD (0.6)。多包命中按分数降序。
+      match(field) = 1 if 任一 contact 值 ∈ pkg.match[field]（多选字段取"任一命中"），否则 0
+    阈值 AUDIENCE_THRESHOLD (0.6)。≥ 阈值的所有包都视为命中，按分数降序。
 
     Returns: dict with keys
-      code       str   "HNW_FAMILY" / "YOUNG_TREND" / "PARENT_FAM" / "CORP_GRP" / "GENERIC"
-      label      str   中文 label
-      score      float 命中分数（0~1）；GENERIC 时为最高非命中分
-      evidence   list  命中字段证据（形如 ["age=35-44","gender=男"]）
-      alternatives list 其它 ≥ 阈值的包（最多 2 个），用于详情页候选展示
-      fallback   bool  是否走 GENERIC 兜底
+      code        str   最高分画像包（或 "GENERIC"）；向后兼容单画像调用方
+      codes       list  所有命中画像包 code（不含 GENERIC）
+      label       str   中文 label（最高分）
+      score       float 最高分（0~1）；GENERIC 时为最高非命中分
+      evidence    list  命中字段证据（形如 ["age=['18-24']","gender=['男']"]）
+      matches     list  所有 ≥ 阈值画像包的 [{code,label,score,evidence}]（降序，多画像）
+      alternatives list 除最高分外其它命中包（兼容旧字段，同 matches[1:]）
+      fallback    bool  是否走 GENERIC 兜底
+      near_miss   dict  仅兜底时出现：最接近但未达阈值的包 {code,label,score,evidence}；无候选时为 None
     """
     if not isinstance(profile, dict):
         profile = {}
@@ -138,29 +150,42 @@ def infer_audience_package(profile) -> dict:
     for code, pkg in AUDIENCE_PACKAGES.items():
         if pkg.get("runtime_only"):
             continue
+        match_map = pkg.get("match", {}) or {}
         score, total, evidence = 0.0, 0.0, []
         for field, weight in AUDIENCE_WEIGHTS.items():
+            if field not in match_map:
+                continue  # 画像包未定义该字段 → 不计入分母（避免字段少的包被 7 字段分母压分）
             total += weight
-            val = (profile.get(field) or "").strip()
-            match_list = pkg.get("match", {}).get(field) or []
-            if val and val in match_list:
+            vals = _profile_values(profile.get(field))
+            if any(v in match_map[field] for v in vals):
                 score += weight
-                evidence.append(f"{field}={val}")
+                evidence.append(f"{field}={vals}")
         pct = (score / total) if total > 0 else 0.0
         rows.append({
             "code": code, "label": pkg.get("label", code),
             "score": round(pct, 4), "evidence": evidence,
         })
     rows.sort(key=lambda x: x["score"], reverse=True)
-    top = rows[0] if rows else None
-    alts = [r for r in rows[1:] if r["score"] >= AUDIENCE_THRESHOLD][:2]
-    if not top or top["score"] < AUDIENCE_THRESHOLD:
+    matched = [r for r in rows if r["score"] >= AUDIENCE_THRESHOLD]
+    top = matched[0] if matched else None
+    alts = matched[1:]
+    if not top:
+        # 兜底：保留真实算出的证据（原先硬编码 [] 会把证据丢掉，UI 上只剩一个不可解释的 GENERIC）
+        # near_miss = 最接近但未达阈值的包，供 UI 提示「最接近 YOUNG_TREND 0.375，差 0.225」
         return {
-            "code": "GENERIC", "label": "通用兜底",
-            "score": top["score"] if top else 0.0,
-            "evidence": [], "alternatives": alts, "fallback": True,
+            "code": "GENERIC", "codes": [], "label": "通用兜底",
+            "score": rows[0]["score"] if rows else 0.0,
+            "evidence": rows[0]["evidence"] if rows else [],
+            "near_miss": rows[0] if rows else None,
+            "matches": [], "alternatives": alts, "fallback": True,
         }
-    return {**top, "alternatives": alts, "fallback": False}
+    return {
+        **top,
+        "codes": [m["code"] for m in matched],
+        "matches": matched,
+        "alternatives": alts,
+        "fallback": False,
+    }
 
 
 @dataclass

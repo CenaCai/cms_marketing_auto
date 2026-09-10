@@ -51,14 +51,52 @@ C.mautic_read_assets = lambda env: {
 _idx = C._mautic_asset_index()
 check("外链索引 email 解析", _idx["email"].get("EM_X") == 99, f"id={_idx['email'].get('EM_X')}")
 check("外链索引 segment 解析", _idx["segment"].get("SEG_Y") == 7)
-check("外链 战役 URL", "/s/campaigns/123" in C._mautic_ext_link("campaign", "123", _idx),
+check("外链 战役 URL", "/s/campaigns/view/123" in C._mautic_ext_link("campaign", "123", _idx),
       C._mautic_ext_link("campaign", "123", _idx))
-check("外链 邮件 URL", "/s/emails/99/view" in C._mautic_ext_link("email", "EM_X", _idx),
+check("外链 邮件 URL", "/s/emails/view/99" in C._mautic_ext_link("email", "EM_X", _idx),
       C._mautic_ext_link("email", "EM_X", _idx))
-check("外链 分群 URL", "/s/segments/7" in C._mautic_ext_link("segment", "SEG_Y", _idx))
-check("外链 落页 URL", "/s/landingpages/3" in C._mautic_ext_link("landingpage", "LP_Z", _idx))
+check("外链 分群 URL", "/s/segments/view/7" in C._mautic_ext_link("segment", "SEG_Y", _idx))
+check("外链 落页 URL", "/s/landingpages/view/3" in C._mautic_ext_link("landingpage", "LP_Z", _idx))
 check("外链 未连接返回空", C._mautic_ext_link("email", "NOPE", _idx) == "")
+
+# ---------- 单元：约束红线 → quiet_hours 确定性解析（防 LLM 把午夜写成 09:00） ----------
+from strategy_spec import (parse_quiet_hours, normalize_campaign, strategies_from_spec)  # noqa: E402
+check("parse_quiet_hours 跨午夜保留 00:00", parse_quiet_hours(["20:00~00:00免打扰"]) == "20:00-00:00")
+check("parse_quiet_hours 默认示例", parse_quiet_hours(["22:00-09:00 免打扰"]) == "22:00-09:00")
+check("parse_quiet_hours 自然语言次日", parse_quiet_hours(["晚 20 点后不推送，次日 10 点再发"]) == "20:00-10:00")
+check("parse_quiet_hours 无约束→None", parse_quiet_hours(["每周≤3封"]) is None)
+# 红线必须覆盖 LLM 手填的 quiet_hours
+_nc = normalize_campaign({"cid": "c1", "send_conditions": {"quiet_hours": "20:00-09:00"}},
+                         0, quiet_hours_override="20:00-00:00")
+check("红线覆盖 LLM 手填 quiet_hours", _nc["send_conditions"]["quiet_hours"] == "20:00-00:00",
+      _nc["send_conditions"]["quiet_hours"])
+# strategies_from_spec 自动从 goal.meta.constraints 派生红线
+class _G:
+    meta = {"constraints": ["20:00~00:00免打扰"]}
+_ss = strategies_from_spec({"campaigns": [{"cid": "c1", "send_conditions": {"quiet_hours": "20:00-09:00"}}]},
+                           _G())
+check("strategies_from_spec 自动派生红线", _ss[0]["send_conditions"]["quiet_hours"] == "20:00-00:00",
+      _ss[0]["send_conditions"]["quiet_hours"])
 check("外链 未找到返回空", C._mautic_ext_link("email", "MISSING", _idx) == "")
+
+# ---------- 单元：策略摘要资产引用可点击（创建页/Program 页需求 #10） ----------
+_ss = {
+    "segment": "SEG_Y", "segment_mode": "propose",
+    "send_conditions": {"max_per_24h": 1, "max_per_7d": 3, "delay_hours": 24},
+    "email_ref": "EM_X", "email_mode": "reuse",
+    "landing_page_ref": "LP_Z",
+}
+_ss_html = C._strategy_summary(_ss, _idx)
+check("摘要 分群可点击", "/s/segments/view/7" in _ss_html and "SEG_Y" in _ss_html,
+      "期望 a 链接指向 /s/segments/view/7")
+check("摘要 邮件可点击", "/s/emails/view/99" in _ss_html and "EM_X" in _ss_html,
+      "期望 a 链接指向 /s/emails/view/99")
+check("摘要 落页可点击", "/s/landingpages/view/3" in _ss_html and "LP_Z" in _ss_html,
+      "期望 a 链接指向 /s/landingpages/view/3")
+# 未连 Mautic（available=False）时退化为纯文本 <code>，不生成外链
+_idx_off = dict(_idx); _idx_off["available"] = False
+_ss_off = C._strategy_summary(_ss, _idx_off)
+check("摘要 未连时退化为纯文本", "<a " not in _ss_off and "<code>SEG_Y</code>" in _ss_off)
 # 直接渲染 program 验证 wave→campaign 重命名（不依赖 Mautic 连通）
 _p = C._load_program("ucl2028_svctest")
 if _p:
@@ -69,13 +107,148 @@ if _p:
     _demo = _copy.deepcopy(_p)
     _demo["campaigns"][0]["proposal"]["deploy_result"] = {"campaign_id": "555", "dry_run": False}
     _demo_html = C._program_body(_demo, "")
-    check("已推送 campaign 渲染战役外链", "/s/campaigns/555" in _demo_html,
+    check("已推送 campaign 渲染战役外链", "/s/campaigns/view/555" in _demo_html,
           "campaign_id=555 → /s/campaigns/555")
 else:
     check("program 渲染 wave→campaign 重命名", False, "（output/program_ucl2028_svctest.json 缺失）")
 
 def program_of(gid):
     return json.load(open(os.path.join(HERE, "output", f"program_{gid}.json"), encoding="utf-8"))
+
+# ---------- 单元：StrategySpec 与 Brief 一致性校验（硬阻断，纯单元不依赖活服务） ----------
+from spec_validation import validate_spec, format_conflicts  # noqa: E402
+
+_FORM_OK = {"objective": "UCL2028 门票预售：向目标球迷分群推送官方票务邮件",
+            "goal_name": "UCL2028 预售", "start_date": "2028-05-01", "end_date": "2028-07-09",
+            "overall_conv": "0.15", "locale": ["zh_CN"],
+            "constraints": "20:00~00:00免打扰\n每周≤3封",
+            "audience_region": ["中国大陆"], "is_revenue": "0", "budget": "0"}
+_SPEC_OK = {"locale": ["zh_CN"], "audience_package": "GENERIC",
+            "window": {"start": "2028-05-01", "end": "2028-07-09"},
+            "kpi": {"target": 0.15},
+            "campaigns": [{"cid": "c1", "send_conditions": {"quiet_hours": "20:00-00:00",
+                                                            "max_per_7d": 3}}]}
+_ctx = C._brief_ctx_from_form(_FORM_OK, ["zh_CN"])
+check("brief_ctx 带上约束原文", "20:00~00:00免打扰" in (_ctx["constraints"] or ""))
+check("一致 spec → 0 冲突（可生成）", validate_spec(_SPEC_OK, _ctx, "GENERIC") == [])
+_bad = dict(_SPEC_OK, locale=["en_US"])
+_bad["campaigns"] = [{"cid": "c1", "send_conditions": {"quiet_hours": "20:00-09:00",
+                                                       "max_per_7d": 5}}]
+_cs = validate_spec(_bad, _ctx, "GENERIC")
+check("冲突 spec → 报出 locale/quiet_hours/max_per_7d",
+      {c.field for c in _cs} == {"locale", "quiet_hours", "max_per_7d"},
+      f"got={[c.field for c in _cs]}")
+_card = C._conflicts_card_html(_cs, title="策略规格与基础信息冲突，未生成 Program")
+check("冲突卡片含标题与每条冲突",
+      "未生成 Program" in _card and all(l.strip("· ") in _card for l in format_conflicts(_cs)))
+# 阻断回显：必须保留运营已填内容（objective / 约束 / 多选）
+_pf = C._prefill_from_form(dict(_FORM_OK, strategy_spec="{...}"))
+_page = C._brief_form([], "", None, None, _pf, _cs)
+check("阻断页保留已填 objective", "UCL2028 门票预售" in _page)
+check("阻断页保留约束原文", "20:00~00:00免打扰" in _page)
+check("阻断页勾选已选语言 zh_CN", "value='zh_CN' checked" in _page)
+check("阻断页列出全部冲突行",
+      all(l.strip("· ") in _page for l in format_conflicts(_cs)))
+check("阻断页不渲染自动纠正按钮", "一键纠正" not in _page and "自动纠正" not in _page)
+# 端到端（离线）：直接调 handler —— 冲突 spec 必须不生成 Program、不落盘
+class _FH:
+    path = "/brief"
+    code, body, loc = None, "", None
+
+    def _send(self, code, body, headers=None):
+        self.code, self.body = code, body
+
+    def send_response(self, c):
+        self.code = c
+
+    def send_header(self, k, v):
+        if k == "Location":
+            self.loc = v
+
+    def end_headers(self):
+        pass
+
+
+_fh = _FH()
+_bad_spec = json.dumps({
+    "goal_id": "ucl2028_conflict", "objective": "UCL2028 门票预售",
+    "locale": ["en_US"], "audience_package": "GENERIC",
+    "campaigns": [{"cid": "c1", "segment": {"mode": "propose", "ref": "SEG_A"},
+                   "send_conditions": {"max_per_24h": 1, "max_per_7d": 5,
+                                       "quiet_hours": "20:00-09:00"}}],
+}, ensure_ascii=False)
+C.Handler._handle_brief(_fh, dict(_FORM_OK, strategy_spec=_bad_spec))
+check("handler：冲突 spec → 不生成 Program（无 302 跳转）",
+      _fh.code == 200 and not _fh.loc, f"code={_fh.code} loc={_fh.loc}")
+check("handler：返回阻断卡片", "策略规格与基础信息冲突，未生成 Program" in _fh.body)
+check("handler：未落盘 program_ucl2028_conflict",
+      not os.path.exists(os.path.join(HERE, "output", "program_ucl2028_conflict.json")))
+# goal dict → brief_ctx（L1 确认策略路径用）
+_g = C.parse_brief({"objective": "UCL2028 门票预售：向目标球迷分群推送官方票务邮件",
+                    "locale": "zh_CN", "start_date": "2028-05-01", "end_date": "2028-07-09",
+                    "kpi": {"type": "conversion_rate", "target": 0.15},
+                    "audience_profile": {"age": "18-24", "region": ["中国大陆"]}})
+_g.meta = {"locales": ["zh_CN"], "constraints": ["20:00~00:00免打扰"],
+           "audience_package": _g.audience_package, "audience_match": _g.audience_match}
+_gctx = C._brief_ctx_from_goal(_g.to_dict())
+check("goal→brief_ctx 取到红线约束", "20:00~00:00免打扰" in "；".join(_gctx["constraints"]))
+_bad_qh = {"locale": ["zh_CN"],
+           "campaigns": [{"cid": "c1", "send_conditions": {"quiet_hours": "20:00-09:00"}}]}
+check("goal→brief_ctx 冲突可检出（quiet_hours 不符）",
+      [c.field for c in validate_spec(_bad_qh, _gctx, _g.audience_package)] == ["quiet_hours"],
+      f"pkg={_g.audience_package}")
+
+# ---------- 单元：总策略卡（画像包 + 内容/视觉方向 + 来源徽章） ----------
+_prov = {"send_conditions": {"max_per_24h": 1, "max_per_7d": 3, "quiet_hours": "22:00-09:00"},
+         "send_window": ["19:00-21:00"],
+         "strategy_provenance": {"max_per_7d": "package", "max_per_24h": "spec",
+                                 "quiet_hours": "red_line", "send_window": "default"}}
+_pline = C._provenance_line(_prov)
+check("来源徽章 画像包", "画像包" in _pline)
+check("来源徽章 红线", "红线" in _pline)
+check("来源徽章 默认", "默认" in _pline)
+check("触达时段带值", "19:00-21:00" in _pline)
+_s0 = C.strategies_from_spec({"campaigns": [{"cid": "c1"}]})[0]
+_s0.update(_prov)  # 带上 send_window / strategy_provenance（模拟画像包注入后的策略）
+_pg = {"goal_id": "unit", "goal": _g.to_dict(), "n_campaigns": 1,
+       "campaigns": [{"cid": "c1", "wave_id": "wave_1", "status": "unreviewed",
+                      "strategy": _s0, "proposal": C.compile(_g, _s0), "result": None}],
+       "changelog": []}
+_tcard = C._total_strategy_card(_pg)
+check("总策略卡含画像包 code", _g.audience_package in _tcard, f"pkg={_g.audience_package}")
+check("总策略卡含七属性", all(x in _tcard for x in ("年龄段", "性别", "月收入档", "教育经历",
+                                                "行业", "首选来源", "国家/地区")))
+check("总策略卡含内容方向", "内容方向" in _tcard and "CTA 模板" in _tcard)
+check("总策略卡含视觉方向与配色色块", "视觉方向" in _tcard and "background:#" in _tcard)
+check("总策略卡含 score/命中证据", "score" in _tcard and "命中证据" in _tcard)
+_prog_html = C._program_body(_pg, "")
+check("Program 页渲染总策略卡", "总策略（画像包 + 策略规划 + 属性）" in _prog_html)
+check("Program 页 campaign 卡带来源徽章", "取值来源：" in _prog_html)
+
+# ② L1「确认下阶段策略」：冲突 → 不应用、不写 changelog（离线直调 handler）
+C._save_program(_pg)
+_fh2 = _FH()
+_fh2.path = "/program/unit/confirm-strategy"
+C.Handler._handle_confirm_strategy(_fh2, {
+    "cid": "c1",
+    "strategy_spec": json.dumps({"campaigns": [{"cid": "c1", "send_conditions": {
+        "quiet_hours": "20:00-09:00"}}]}, ensure_ascii=False)})
+_p2 = C._load_program("unit") or {}
+check("L1 确认：冲突策略 → 返回阻断卡片", "未应用该策略" in (_fh2.body or ""),
+      f"code={_fh2.code}")
+check("L1 确认：冲突策略 → 不写 changelog", not _p2.get("changelog"),
+      f"changelog={_p2.get('changelog')}")
+check("L1 确认：冲突策略 → 原 campaign 状态未改",
+      (_p2.get("campaigns") or [{}])[0].get("status") == "unreviewed")
+os.remove(os.path.join(HERE, "output", "program_unit.json"))
+
+# ---------- 单元：生成提示词要求回显 audience_package 与业务主题 ----------
+_prmpt = C.build_strategy_prompt({"goal_name": "UCL2028", "objective": "门票预售",
+                                  "locale": ["zh_CN"], "audience_package": "YOUNG_TREND",
+                                  "start_date": "2028-05-01", "end_date": "2028-07-09"})
+check("提示词要求输出 business_topic", "business_topic" in _prmpt)
+check("提示词回显 audience_package", "audience_package（YOUNG_TREND" in _prmpt)
+check("提示词指向项目内画像包参数表", "references/audience-content-map.json" in _prmpt)
 
 # ---------- 首页 + brief 页 ----------
 check("首页", "活动驾驶舱" in get("/"))

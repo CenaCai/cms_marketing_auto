@@ -140,35 +140,130 @@ from strategy_spec import (  # noqa: F401  (re-export)
 )
 
 
-def default_strategies(goal, n: int) -> list:
+def topology_default_strategy(goal) -> dict:
     """
-    为 N 个 campaign 生成差异化默认策略（逐波递进：延迟递增、变体递增）。
-    ⚠️ 这是 fallback：真实策略应由 Agent（人+LLM）产出 StrategySpec，
-       经 build_program(strategy_spec=...) 注入。保留它是为了 CLI / 未提交策略时不破。
+    未提交 StrategySpec 时的「基础路径拓扑缺省」：只产出拓扑核心路径的**最小实例**——
+    单 campaign，所有内容取自 GoalSpec（分群 / 落地页 / 目标），**不发明**波次、
+    延迟、变体、标签。真正的多 campaign 组合与全部内容由 Agent 的 StrategySpec 决定
+    （频次 / 折扣 / 内容重点 / #campaigns 都是策略本体，不是这里硬编码的叠加层）。
     """
-    base_seg = goal.audience_segment
-    out = []
-    for i in range(n):
-        out.append({
-            "cid": f"{goal.goal_id}_c{i+1}",
-            "wave_id": f"wave_{i+1}",
-            "variant_id": f"v{i+1}",
-            "content_variant": i,
-            "content_variant_spec": {"id": f"v{i+1}", "angle": "", "headline": "", "summary": ""},
-            "segment": base_seg,
-            "segment_mode": "reuse",
-            "email_ref": f"EM_WAVE{i+1}_PLACEHOLDER",
-            "email_mode": "reuse",
-            "email_pending": False,
-            "email_followup_ref": f"EM_WAVE{i+1}_FOLLOWUP_PLACEHOLDER",
-            "campaign_name": f"[PoC] {goal.objective} · 波次{i+1}",
-            "send_conditions": {"delay_hours": 24 * (i + 1), "max_per_24h": 1, "max_per_7d": 3},
-            "tags_to_write": [f"wave_{i+1}"],
-            "rationale": "",
-            "evidence": "",
-            "strategy_source": "default",
-        })
-    return out
+    seg = getattr(goal, "audience_segment", "") or ""
+    cap = getattr(goal, "frequency_cap", None) or {}
+    return {
+        "cid": f"{goal.goal_id}_c1",
+        "wave_id": "wave_1",
+        "variant_id": "v1",
+        "content_variant": 1,
+        "content_variant_spec": {"id": "v1", "angle": "", "headline": goal.objective, "summary": ""},
+        "segment": seg,
+        "segment_mode": "reuse",
+        "email_ref": f"EM_{goal.goal_id}_PLACEHOLDER",
+        "email_mode": "reuse",
+        "email_pending": False,
+        "email_followup_ref": f"EM_{goal.goal_id}_FOLLOWUP_PLACEHOLDER",
+        "campaign_name": f"[拓扑缺省] {goal.objective}",
+        "send_conditions": {
+            "delay_hours": 24,
+            "max_per_24h": cap.get("max_per_24h", 1) if isinstance(cap, dict) else 1,
+            "max_per_7d": cap.get("max_per_7d", 3) if isinstance(cap, dict) else 3,
+        },
+        "tags_to_write": ["wave_1"],
+        "rationale": "未提交 StrategySpec：仅以基础路径拓扑 + GoalSpec 派生单 campaign（无多波递进）",
+        "evidence": "",
+        "strategy_source": "topology_default",
+        "intent": "promo",
+        "journey": "promo",
+        "discount": None,
+    }
+
+
+# =====================================================================
+# 落地页 / 表单意图识别（objective 关键词自动识别）
+# ---------------------------------------------------------------------
+# 用户常把「要落地页 + 表单、提交表单作为流程终点」写在 objective 自由文本里，
+# 但历史上这条意图从未被结构化（strategy 只填 email、landing_page_ref 恒空），
+# 导致编译层与 push 层即便具备能力也不会生成落地页/表单。这里把意图提取出来，
+# 注入 strategy 的 landing_page_ref / form_ref / main_endpoint，让 plan_compiler
+# 吐出 page.hit / form.submit 节点、push 真实建 Mautic 落地页+表单资产。
+# =====================================================================
+_LP_KEYWORDS = ("落地页", "着陆页", "landing page", "landing_page", "lp",
+                "报名页", "留资页", "表单页")
+_FORM_KEYWORDS = ("表单", "form", "报名", "提交表单", "填写个人信息",
+                  "留资", "收集信息", "个人信息", "收集")
+
+
+def _goal_requests_lp_form(goal) -> tuple:
+    """扫描 objective + constraints 自由文本，返回 (needs_lp, needs_form)。
+
+    needs_form 为真时一并要求落地页（表单需有承载页；用户多要求「落地页中有表单」）。
+    """
+    text = " ".join(str(x or "") for x in (
+        getattr(goal, "objective", ""),
+        getattr(goal, "constraints", ""),
+    )).lower()
+    needs_form = any(k in text for k in _FORM_KEYWORDS)
+    needs_lp = any(k in text for k in _LP_KEYWORDS) or needs_form
+    return needs_lp, needs_form
+
+
+def _enrich_lp_form(strategy: dict, goal, needs_lp: bool, needs_form: bool) -> dict:
+    """策略未显式声明落地页/表单时，按 objective 意图注入 landing_page + form 终点。
+
+    尊重显式意图：strategy 已带 landing_page_ref / form_ref 时不覆盖（Agent/规格优先）。
+    注入后 plan_compiler 会从 main_endpoint 吐出 page.hit / form.submit 节点，
+    push 再据此真实建 Mautic 落地页（内嵌表单）+ 表单资产。
+    """
+    if not (needs_lp or needs_form):
+        return strategy
+    s = strategy if isinstance(strategy, dict) else {}
+    cname = (s.get("campaign_name")
+             or getattr(goal, "goal_id", "campaign") or "campaign")
+
+    # 落地页
+    if needs_lp and not s.get("landing_page_ref"):
+        s["landing_page_mode"] = "generate"
+        s["landing_page_ref"] = f"LP_{cname}"
+        if "landing_page_url" not in s:
+            s["landing_page_url"] = ""
+
+    # 表单
+    if needs_form and not s.get("form_ref"):
+        s["form_ref"] = f"FORM_{cname}"
+
+    # 主流程终点：以「提交表单」收口（落地页承接）
+    mep = s.get("main_endpoint")
+    if not isinstance(mep, dict):
+        mep = {"tags": [], "stage": None, "segment": None, "email": None,
+               "landing_page": None, "form": None, "terminal": True,
+               "actions": [], "note": "", "action": "add", "judgment": None}
+        s["main_endpoint"] = mep
+    if needs_lp and not mep.get("landing_page"):
+        mep["landing_page"] = s.get("landing_page_ref") or f"LP_{cname}"
+    if needs_form and not mep.get("form"):
+        mep["form"] = s.get("form_ref") or f"FORM_{cname}"
+    mep["terminal"] = True
+    # 显式声明终点动作，避免 _infer_endpoint_action 只挑一个（落地页与表单都要触发）
+    acts = list(mep.get("actions") or [])
+    for k in ("landing_page", "form"):
+        if mep.get(k) and k not in acts:
+            acts.append(k)
+    mep["actions"] = acts
+    # 主流程终点判断信号：form.submit 才收口（以提交表单为流程终点）
+    if needs_form:
+        mep["judgment"] = {
+            "signal": "form.submit", "op": "exists", "value": True,
+            "ref": mep.get("form"), "note": "以提交表单作为流程终点",
+        }
+    return s
+
+
+def default_strategies(goal, n: int = 1) -> list:
+    """
+    [废弃别名] 原 N 波递进占位已改为「拓扑缺省单 campaign」。保留仅为兼容旧 import。
+    真正多 campaign 应由 StrategySpec 决定，勿再调用本函数编造波次。
+    """
+    s = topology_default_strategy(goal)
+    return [s]
 
 
 def build_program(goal, n: int = DEFAULT_N_CAMPAIGNS, compile_fn=None,
@@ -186,12 +281,19 @@ def build_program(goal, n: int = DEFAULT_N_CAMPAIGNS, compile_fn=None,
     """
     from plan_compiler import compile
     if strategy_spec:
+        # 已提交 StrategySpec：N 由策略数组长度决定（Agent 的策略本体，#campaigns 是策略决策）
         strategies = list(strategy_spec)
         n = len(strategies)
     else:
-        strategies = default_strategies(goal, n)
+        # 拓扑缺省：基础路径单 campaign，内容全来自 GoalSpec，不发明波次
+        s = topology_default_strategy(goal)
+        strategies = [s] if isinstance(s, dict) else list(s)
+        n = len(strategies)
     campaigns = []
+    _needs_lp, _needs_form = _goal_requests_lp_form(goal)
     for s in strategies:
+        # objective 关键词自动识别：要求落地页/表单且策略未显式声明时注入终点
+        _enrich_lp_form(s, goal, _needs_lp, _needs_form)
         prop = compile_fn(goal, s) if compile_fn else compile(goal, s)
         campaigns.append({
             "cid": s["cid"], "wave_id": s["wave_id"],
@@ -237,11 +339,106 @@ def _bump_variant(s: dict) -> dict:
     return s
 
 
+def _verdict_for(target, conv: float, unsub: float) -> str:
+    """
+    由达成率 + 退订率给出修正判定（确定性，可审计）：
+      burn  = 退订率 > 0.003（熔断）
+      strong= 达成率 >= 100%
+      ok    = 50% <= 达成率 < 100%
+      weak  = 达成率 < 50%
+      baseline = 无目标（不触发改写）
+    """
+    if unsub and unsub > 0.003:
+        return "burn"
+    if target is None or target <= 0:
+        return "baseline"
+    ratio = conv / float(target)
+    if ratio >= 1.0:
+        return "strong"
+    if ratio >= 0.5:
+        return "ok"
+    return "weak"
+
+
+def _reengage_branch_strategy(goal, done_c: dict, discount_pct: int = 10) -> dict:
+    """
+    修正循环：为「转化乏力」的源 campaign 新增一条折扣挽回分支（branch 维度）。
+    覆盖未转化联系人（建议真实落地时为源 segment + not_converted 过滤；
+    PoC 记 segment_ref + segment_note 供 Agent 补建 SEG_<goal>_UNENGAGED）。
+    """
+    src = done_c.get("strategy", {})
+    seg = src.get("segment") or getattr(goal, "audience_segment", "") or ""
+    cid = f"{goal.goal_id}_reengage_{done_c['cid']}"
+    return {
+        "cid": cid,
+        "wave_id": "wave_reengage",
+        "variant_id": "v_reengage",
+        "campaign_name": f"[修正分支] 折扣挽回 · 来自 {done_c['cid']}",
+        "strategy_source": "replan_branch",
+        "intent": "promo",
+        "journey": "promo",
+        "segment": seg,
+        "segment_mode": "reuse",
+        "segment_note": f"源 campaign {done_c['cid']} 未转化联系人（建议 SEG_{goal.goal_id}_UNENGAGED）",
+        "segment_broaden": False,
+        "email_ref": f"EM_{cid}_PLACEHOLDER",
+        "email_mode": "generate",
+        "email_pending": True,
+        "email_followup_ref": f"EM_{cid}_FOLLOWUP_PLACEHOLDER",
+        "email_brief": {"subject": f"专属 {int(discount_pct)}% 折扣，最后机会",
+                        "angle": "折扣挽回", "cta": "立即使用", "locale": []},
+        "subject": f"专属 {int(discount_pct)}% 折扣，最后机会",
+        "followup_subject": "提醒：您的专属折扣即将失效",
+        "content_variant": 1,
+        "content_variant_spec": {"id": "v_reengage", "angle": "折扣挽回", "headline": "", "summary": ""},
+        "landing_page_ref": src.get("landing_page_ref", ""),
+        "landing_page_url": src.get("landing_page_url", ""),
+        "send_conditions": {"delay_hours": 24, "max_per_24h": 1, "max_per_7d": 2},
+        "tags_to_write": ["reengage", f"branch_of_{done_c['cid']}"],
+        "discount": {"enabled": True, "pct": int(discount_pct),
+                     "note": "修正循环：源 campaign 转化乏力，开启挽回折扣分支"},
+        "rationale": f"evaluate_and_replan 修正：源 campaign {done_c['cid']} 转化<50% 目标，"
+                     f"新增折扣挽回分支覆盖未转化联系人",
+        "evidence": "",
+        "success_criteria": None,
+        "deferred": False,
+        "deferred_reason": "",
+        "trigger": None,
+    }
+
+
+def _soften_angle(s: dict) -> None:
+    """退订熔断：把邮件角度软化为价值导向（非促销），不改动策略其它字段。"""
+    brief = s.get("email_brief")
+    if not isinstance(brief, dict):
+        brief = {}
+    brief = dict(brief)
+    brief["angle"] = "价值导向（非促销）"
+    s["email_brief"] = brief
+
+
+def _steer_angle_discount(s: dict) -> None:
+    """转化乏力：把邮件角度转向折扣挽回，与开启的折扣策略一致。"""
+    brief = s.get("email_brief")
+    if not isinstance(brief, dict):
+        brief = {}
+    brief = dict(brief)
+    brief["angle"] = "折扣挽回"
+    s["email_brief"] = brief
+
+
 def evaluate_and_replan(program: dict, completed_cid: str, result: dict) -> dict:
     """
-    标记 completed_cid 完成，并确定性改写其后的 pending campaign。
-    result: {"conversion": float(0~1), "unsub": float(0~1)}
-    返回 { ratio, changes:[{cid, notes, strategy, plan_hash}] }
+    标记 completed_cid 完成，并**修订完整策略**（确定性、可审计）：
+      1) 频次（send_conditions.max_per_24h）
+      2) 内容（content_variant 换变体 + email 角度）
+      3) 折扣（discount 开启 / 加码 / 退守）——策略本体，来自意图识别
+      4) 受众（segment_broaden / segment_narrow 标记，供 Agent 补建分群资产）
+      5) 分支（branch 维度）：转化乏力→新增折扣挽回分支 campaign；达标→剪掉挂起的兜底/挽回分支
+
+    返回 { ratio, verdict, changes(下游 knob 改写), new_campaigns(新增分支),
+           pruned_campaigns(剪掉分支), target_unset }。
+    result: {"conversion": float(0~1), "unsub": float(0~1)}（可含 feedback_auto 明细）
     """
     from goal_intake import GoalSpec
     from plan_compiler import compile
@@ -269,6 +466,7 @@ def evaluate_and_replan(program: dict, completed_cid: str, result: dict) -> dict
     done["result"] = result
 
     ratio = (round(conv / target, 3) if target else None)
+    verdict = "baseline" if target_unset else _verdict_for(target, conv, unsub)
 
     goal = GoalSpec(**program["goal"])
     changes = []
@@ -280,34 +478,56 @@ def evaluate_and_replan(program: dict, completed_cid: str, result: dict) -> dict
         sc = dict(s.get("send_conditions", {}) or {})
         tags = list(s.get("tags_to_write", []))
         m24 = sc.get("max_per_24h", 1)
+        disc = s.get("discount") if isinstance(s.get("discount"), dict) else {}
         notes = []
 
-        if unsub > 0.003:
-            # 退订率超熔断阈值：降频 + 收窄 + suppression tag
+        if verdict == "baseline":
+            notes.append("KPI 目标未设置（R 未给）：不做达成率改写，仅记录基线")
+        elif verdict == "burn":
+            # 退订熔断：降频 + 收窄 + 软化内容 + 折扣退守
             sc["max_per_24h"] = max(1, m24 - 1)
             tags.append("suppressed")
-            notes.append("退订率超阈：降频 + 加 suppression tag（收窄）")
-        elif ratio is None:
-            # KPI 目标未设置（R 未给）：不做达成率改写，只记录基线
-            notes.append("KPI 目标未设置（R 未给）：不做达成率改写，仅记录基线")
-        elif ratio >= 1.0:
+            s["segment_narrow"] = True
+            if disc.get("enabled"):
+                new_pct = max(0, int(disc.get("pct", 0)) // 2)
+                if new_pct <= 0:
+                    disc["enabled"] = False
+                    notes.append("退订熔断：折扣退守至关闭")
+                else:
+                    disc["pct"] = new_pct
+                    notes.append(f"退订熔断：折扣退守至 {new_pct}%")
+            else:
+                notes.append("退订熔断：折扣本就未启用，保持不变")
+            _soften_angle(s)
+            notes.append("退订率超阈：降频 + 收窄 + 软化内容角度")
+        elif verdict == "strong":
             # 达标：保持，略降本（降频）
             sc["max_per_24h"] = max(1, m24 - 1)
             notes.append("达标：保持策略，略降本（降频）")
-        elif ratio >= 0.5:
-            # 未达标：提频 + 换内容变体 + urgency tag
+        elif verdict == "ok":
+            # 未达标(50%~100%)：提频 + 换内容变体 + urgency tag
             sc["max_per_24h"] = m24 + 1
             s = _bump_variant(s)
             tags.append("urgency")
-            notes.append("未达标：提频 + 换内容变体 + urgency tag")
-        else:
-            # 乏力：大幅提频 + 扩分组 + 换内容
+            notes.append("未达标(50%~100%)：提频 + 换内容变体 + urgency tag")
+        else:  # weak
+            # 乏力：大幅提频 + 扩分组 + 换内容 + 折扣挽回
             sc["max_per_24h"] = m24 + 2
             tags.append("broaden")
             tags.append("reengage")
             s = _bump_variant(s)
-            notes.append("乏力：大幅提频 + 扩分组 tag(broaden/reengage) + 换内容")
+            s["segment_broaden"] = True
+            if not disc.get("enabled"):
+                disc = {"enabled": True, "pct": 10, "note": "修正：转化乏力，开启挽回折扣"}
+                notes.append("转化乏力：开启 10% 挽回折扣")
+            else:
+                disc["pct"] = int(disc.get("pct", 0)) + 5
+                notes.append(f"转化乏力：折扣加码至 {disc['pct']}%")
+            _steer_angle_discount(s)
+            notes.append("乏力：大幅提频 + 扩分组 + 换内容 + 折扣挽回分支")
 
+        if disc:
+            s["discount"] = disc
         s["send_conditions"] = sc
         s["tags_to_write"] = tags
         c["strategy"] = s
@@ -320,12 +540,108 @@ def evaluate_and_replan(program: dict, completed_cid: str, result: dict) -> dict
             "plan_hash": c["proposal"]["plan_hash"],
         })
 
+    # ---- 分支维度（第 3 轴）：依赖 completed 的 verdict，独立于逐 campaign knob 改写 ----
+    new_campaigns = []
+    pruned_campaigns = []
+    if verdict == "weak":
+        branch_cid = f"{goal.goal_id}_reengage_{completed_cid}"
+        if not any(c["cid"] == branch_cid for c in campaigns):
+            nb = _reengage_branch_strategy(goal, done)
+            nb_prop = compile(goal, nb)
+            new_campaigns.append({
+                "cid": nb["cid"], "wave_id": nb["wave_id"], "strategy": nb,
+                "plan_hash": nb_prop["plan_hash"],
+                "notes": ["修正循环：新增折扣挽回分支（覆盖未转化联系人）"],
+            })
+            campaigns.append({
+                "cid": nb["cid"], "wave_id": nb["wave_id"], "strategy": nb,
+                "proposal": nb_prop, "status": "unreviewed", "result": None,
+            })
+    elif verdict == "strong":
+        # 达标：剪掉仍挂起的兜底/挽回分支（不再需要）
+        for c in campaigns:
+            strat = c.get("strategy") or {}
+            # tag 可能在 campaign 级或 strategy 级，二者都查（人类建的兜底分支常只在 strategy 级）
+            tags_c = c.get("tags_to_write") or strat.get("tags_to_write") or []
+            is_branch = (f"branch_of_{completed_cid}" in tags_c
+                         or c["cid"].endswith(f"_reengage_{completed_cid}")
+                         or c["cid"].endswith(f"_fallback_{completed_cid}"))
+            if c["status"] in ("deferred", "pending", "unreviewed") and is_branch:
+                c["status"] = "done_met"
+                pruned_campaigns.append({
+                    "cid": c["cid"],
+                    "notes": ["达标：剪掉兜底/挽回分支（不再需要）"],
+                })
+
+    program["n_campaigns"] = len(campaigns)
     program["changelog"].append({
         "completed_cid": completed_cid,
         "result": result,
         "ratio": ratio,
+        "verdict": verdict,
         "target_unset": bool(target_unset),
         "changes": changes,
+        "new_campaigns": new_campaigns,
+        "pruned_campaigns": pruned_campaigns,
         "at": time.time(),
     })
-    return {"ratio": ratio, "target_unset": bool(target_unset), "changes": changes}
+    return {
+        "ratio": ratio,
+        "verdict": verdict,
+        "target_unset": bool(target_unset),
+        "changes": changes,
+        "new_campaigns": new_campaigns,
+        "pruned_campaigns": pruned_campaigns,
+    }
+
+
+def adjust_strategy_for_verdict(s: dict, verdict: str) -> dict:
+    """Return a *copy* of strategy s with verdict-driven knobs applied
+    (same rules as evaluate_and_replan's per-campaign loop). Pure / no side effects.
+
+    用于「标记完成并回写→ 改写当前campaign」：把判定结果映射成**当前** campaign 自己的
+    策略调整（回写达成），供 diff 预览 + 二次确认。不触碰下游、不增删分支。
+    """
+    s = dict(s)
+    sc = dict(s.get("send_conditions", {}) or {})
+    tags = list(s.get("tags_to_write", []) or [])
+    m24 = sc.get("max_per_24h", 1)
+    disc = s.get("discount") if isinstance(s.get("discount"), dict) else {}
+    if verdict == "baseline":
+        pass  # 无目标：不做 knob 改写
+    elif verdict == "burn":
+        sc["max_per_24h"] = max(1, m24 - 1)
+        if "suppressed" not in tags:
+            tags.append("suppressed")
+        s["segment_narrow"] = True
+        if disc.get("enabled"):
+            new_pct = max(0, int(disc.get("pct", 0)) // 2)
+            if new_pct <= 0:
+                disc["enabled"] = False
+            else:
+                disc["pct"] = new_pct
+        _soften_angle(s)
+    elif verdict == "strong":
+        sc["max_per_24h"] = max(1, m24 - 1)
+    elif verdict == "ok":
+        sc["max_per_24h"] = m24 + 1
+        s = _bump_variant(s)
+        if "urgency" not in tags:
+            tags.append("urgency")
+    else:  # weak
+        sc["max_per_24h"] = m24 + 2
+        for t in ("broaden", "reengage"):
+            if t not in tags:
+                tags.append(t)
+        s = _bump_variant(s)
+        s["segment_broaden"] = True
+        if not disc.get("enabled"):
+            disc = {"enabled": True, "pct": 10, "note": "修正：转化乏力，开启挽回折扣"}
+        else:
+            disc["pct"] = int(disc.get("pct", 0)) + 5
+        _steer_angle_discount(s)
+    if disc:
+        s["discount"] = disc
+    s["send_conditions"] = sc
+    s["tags_to_write"] = tags
+    return s

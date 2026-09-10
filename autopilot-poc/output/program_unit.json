@@ -1,0 +1,1219 @@
+{
+  "goal_id": "unit",
+  "goal": {
+    "goal_id": "goal_e28390a7",
+    "objective": "UCL2028 门票预售：向目标球迷分群推送官方票务邮件",
+    "kpi": {
+      "type": "conversion_rate",
+      "target": 0.15
+    },
+    "audience_segment": "",
+    "name": "goal_e28390a7",
+    "locale": "zh_CN",
+    "channels": [
+      "email"
+    ],
+    "reserved_channels": [
+      "sms"
+    ],
+    "landing_page_url": "",
+    "budget": 0.0,
+    "is_revenue": false,
+    "start_date": "2028-05-01",
+    "end_date": "2028-07-09",
+    "frequency_cap": {
+      "max_per_24h": 1,
+      "max_per_7d": 3
+    },
+    "guardrails": {
+      "unsubscribe_burn_threshold": 0.003,
+      "honor_suppression": true
+    },
+    "audience_package": "GENERIC",
+    "audience_match": {
+      "code": "GENERIC",
+      "codes": [],
+      "label": "通用兜底",
+      "score": 0.25,
+      "evidence": [
+        "age=['18-24']"
+      ],
+      "near_miss": {
+        "code": "YOUNG_TREND",
+        "label": "年轻潮流客",
+        "score": 0.25,
+        "evidence": [
+          "age=['18-24']"
+        ]
+      },
+      "matches": [],
+      "alternatives": [],
+      "fallback": true
+    },
+    "audience_profile": {
+      "age": "18-24",
+      "region": [
+        "中国大陆"
+      ]
+    },
+    "meta": {
+      "locales": [
+        "zh_CN"
+      ],
+      "constraints": [
+        "20:00~00:00免打扰"
+      ],
+      "audience_package": "GENERIC",
+      "audience_match": {
+        "code": "GENERIC",
+        "codes": [],
+        "label": "通用兜底",
+        "score": 0.25,
+        "evidence": [
+          "age=['18-24']"
+        ],
+        "near_miss": {
+          "code": "YOUNG_TREND",
+          "label": "年轻潮流客",
+          "score": 0.25,
+          "evidence": [
+            "age=['18-24']"
+          ]
+        },
+        "matches": [],
+        "alternatives": [],
+        "fallback": true
+      }
+    }
+  },
+  "n_campaigns": 1,
+  "campaigns": [
+    {
+      "cid": "c1",
+      "wave_id": "wave_1",
+      "status": "unreviewed",
+      "strategy": {
+        "cid": "c1",
+        "wave_id": "wave_1",
+        "variant_id": "v1",
+        "campaign_name": "[Agent] c1",
+        "strategy_source": "agent_spec",
+        "intent": "promo",
+        "counts_toward_promo_cap": true,
+        "segment": "",
+        "segment_mode": "reuse",
+        "segment_note": "",
+        "email_ref": "EM_c1_PLACEHOLDER",
+        "email_mode": "generate",
+        "email_pending": true,
+        "email_brief": null,
+        "email_followup_ref": "EM_c1_FOLLOWUP_PLACEHOLDER",
+        "subject": "[Agent] c1 · 变体 v1（专属限时）",
+        "followup_subject": "提醒：[Agent] c1 · 变体 v1（专属限时）",
+        "content_variant": 1,
+        "content_variant_spec": {
+          "id": "v1",
+          "angle": "稀缺专属",
+          "headline": "[Agent] c1 · 变体 v1（专属限时）",
+          "summary": "与主邮件同主题、不同切入角度的 A/B 变体：以「稀缺专属」制造紧迫感促转化；variant_split 命中比例时走此变体路径。"
+        },
+        "variant_split": 0.5,
+        "landing_page_ref": "",
+        "landing_page_mode": "",
+        "landing_page_note": "",
+        "landing_page_url": "",
+        "send_conditions": {
+          "max_per_24h": 1,
+          "max_per_7d": 3,
+          "quiet_hours": "22:00-09:00"
+        },
+        "tags_to_write": [
+          "wave_1"
+        ],
+        "rationale": "",
+        "evidence": "",
+        "success_criteria": null,
+        "locales": [],
+        "discount": null,
+        "journey": "promo",
+        "judgment": "",
+        "deferred": false,
+        "deferred_reason": "",
+        "deferred_enable_condition": "",
+        "trigger": null,
+        "tag_triggers": null,
+        "tag_warnings": [],
+        "window": null,
+        "branches": [],
+        "stage_rules": [],
+        "main_endpoint": {
+          "tags": [],
+          "stage": null,
+          "segment": null,
+          "email": null,
+          "landing_page": null,
+          "form": null,
+          "terminal": true,
+          "actions": [],
+          "note": "",
+          "action": "add",
+          "judgment": null
+        },
+        "focus_items": null,
+        "assets": null,
+        "content_direction": {
+          "levers": [
+            "中性价值",
+            "不过度修饰"
+          ],
+          "tone": "客观、温和、不带强烈情绪。≤150字",
+          "forbidden_phrases": [
+            "限时",
+            "秒杀",
+            "拼团",
+            "刺激",
+            "上头"
+          ],
+          "cta_templates": [
+            "查看详情",
+            "了解活动"
+          ],
+          "subject_examples": [
+            "{目的地} 活动邀请"
+          ],
+          "angles": [
+            "中性价值",
+            "不过度修饰"
+          ],
+          "claims": [
+            "{目的地} 活动邀请"
+          ],
+          "hero_points": [
+            "首屏一句客观事实陈述（≤150字，不带强烈情绪）",
+            "中性列举 2-3 条通用卖点，不过度修饰",
+            "单一 CTA：查看详情 / 了解活动"
+          ]
+        },
+        "visual_direction": {
+          "visual": "中性色彩 + 通用实景图 / 单一 CTA",
+          "palette": {
+            "primary": "#37474F",
+            "secondary": "#546E7A",
+            "accent": "#78909C",
+            "bg": "#FAFAFA",
+            "text": "#263238"
+          },
+          "design_direction": "中性配色 + 通用实景图；标准单列布局（标题 + 正文 + 单一 CTA）；无强视觉风格倾向，保证可读性优先。",
+          "imagery": "通用实景图（目的地 / 场景），中性色彩；不使用强风格化素材与促销贴片。"
+        },
+        "cta_templates": [
+          "查看详情",
+          "了解活动"
+        ],
+        "_compose": {
+          "package": "GENERIC",
+          "from_package": [
+            "max_per_24h",
+            "max_per_7d",
+            "quiet_hours",
+            "send_window",
+            "content_direction",
+            "visual_direction",
+            "cta_templates"
+          ],
+          "from_spec": [],
+          "from_constraints": [],
+          "from_default": [
+            "delay_hours",
+            "window",
+            "branches",
+            "stage_rules",
+            "main_endpoint"
+          ],
+          "provenance": {
+            "audience_package": "GENERIC",
+            "max_per_24h": "package",
+            "max_per_7d": "package",
+            "quiet_hours": "package",
+            "send_window": "package",
+            "delay_hours": "default",
+            "window": "none",
+            "branches": "none",
+            "stage_rules": "none",
+            "main_endpoint": "default",
+            "content_direction": "package",
+            "visual_direction": "package",
+            "cta_templates": "package"
+          }
+        },
+        "send_window": [
+          "19:00-21:00"
+        ],
+        "strategy_provenance": {
+          "max_per_7d": "package",
+          "max_per_24h": "spec",
+          "quiet_hours": "red_line",
+          "send_window": "default"
+        }
+      },
+      "proposal": {
+        "campaign": {
+          "name": "UCL2028门票预售：向目标球迷分群推-开场-普通票",
+          "goal_id": "c1",
+          "cid": "c1",
+          "wave_id": "wave_1",
+          "locale": "zh_CN",
+          "channels": [
+            "email"
+          ],
+          "reserved_channels": [
+            "sms"
+          ],
+          "landing_page_url": "",
+          "kpi": {
+            "type": "conversion_rate",
+            "target": 0.15
+          },
+          "start_date": "2028-05-01",
+          "end_date": "2028-07-09",
+          "strategy": {
+            "cid": "c1",
+            "wave_id": "wave_1",
+            "variant_id": "v1",
+            "campaign_name": "[Agent] c1",
+            "strategy_source": "agent_spec",
+            "intent": "promo",
+            "counts_toward_promo_cap": true,
+            "segment": "",
+            "segment_mode": "reuse",
+            "segment_note": "",
+            "email_ref": "EM_c1_PLACEHOLDER",
+            "email_mode": "generate",
+            "email_pending": true,
+            "email_brief": null,
+            "email_followup_ref": "EM_c1_FOLLOWUP_PLACEHOLDER",
+            "subject": "[Agent] c1 · 变体 v1（专属限时）",
+            "followup_subject": "提醒：[Agent] c1 · 变体 v1（专属限时）",
+            "content_variant": 1,
+            "content_variant_spec": {
+              "id": "v1",
+              "angle": "稀缺专属",
+              "headline": "[Agent] c1 · 变体 v1（专属限时）",
+              "summary": "与主邮件同主题、不同切入角度的 A/B 变体：以「稀缺专属」制造紧迫感促转化；variant_split 命中比例时走此变体路径。"
+            },
+            "variant_split": 0.5,
+            "landing_page_ref": "",
+            "landing_page_mode": "",
+            "landing_page_note": "",
+            "landing_page_url": "",
+            "send_conditions": {
+              "max_per_24h": 1,
+              "max_per_7d": 3,
+              "quiet_hours": "22:00-09:00"
+            },
+            "tags_to_write": [
+              "wave_1"
+            ],
+            "rationale": "",
+            "evidence": "",
+            "success_criteria": null,
+            "locales": [],
+            "discount": null,
+            "journey": "promo",
+            "judgment": "",
+            "deferred": false,
+            "deferred_reason": "",
+            "deferred_enable_condition": "",
+            "trigger": null,
+            "tag_triggers": null,
+            "tag_warnings": [],
+            "window": null,
+            "branches": [],
+            "stage_rules": [],
+            "main_endpoint": {
+              "tags": [],
+              "stage": null,
+              "segment": null,
+              "email": null,
+              "landing_page": null,
+              "form": null,
+              "terminal": true,
+              "actions": [],
+              "note": "",
+              "action": "add",
+              "judgment": null
+            },
+            "focus_items": null,
+            "assets": null,
+            "content_direction": {
+              "levers": [
+                "中性价值",
+                "不过度修饰"
+              ],
+              "tone": "客观、温和、不带强烈情绪。≤150字",
+              "forbidden_phrases": [
+                "限时",
+                "秒杀",
+                "拼团",
+                "刺激",
+                "上头"
+              ],
+              "cta_templates": [
+                "查看详情",
+                "了解活动"
+              ],
+              "subject_examples": [
+                "{目的地} 活动邀请"
+              ],
+              "angles": [
+                "中性价值",
+                "不过度修饰"
+              ],
+              "claims": [
+                "{目的地} 活动邀请"
+              ],
+              "hero_points": [
+                "首屏一句客观事实陈述（≤150字，不带强烈情绪）",
+                "中性列举 2-3 条通用卖点，不过度修饰",
+                "单一 CTA：查看详情 / 了解活动"
+              ]
+            },
+            "visual_direction": {
+              "visual": "中性色彩 + 通用实景图 / 单一 CTA",
+              "palette": {
+                "primary": "#37474F",
+                "secondary": "#546E7A",
+                "accent": "#78909C",
+                "bg": "#FAFAFA",
+                "text": "#263238"
+              },
+              "design_direction": "中性配色 + 通用实景图；标准单列布局（标题 + 正文 + 单一 CTA）；无强视觉风格倾向，保证可读性优先。",
+              "imagery": "通用实景图（目的地 / 场景），中性色彩；不使用强风格化素材与促销贴片。"
+            },
+            "cta_templates": [
+              "查看详情",
+              "了解活动"
+            ],
+            "_compose": {
+              "package": "GENERIC",
+              "from_package": [
+                "max_per_24h",
+                "max_per_7d",
+                "quiet_hours",
+                "send_window",
+                "content_direction",
+                "visual_direction",
+                "cta_templates"
+              ],
+              "from_spec": [],
+              "from_constraints": [],
+              "from_default": [
+                "delay_hours",
+                "window",
+                "branches",
+                "stage_rules",
+                "main_endpoint"
+              ],
+              "provenance": {
+                "audience_package": "GENERIC",
+                "max_per_24h": "package",
+                "max_per_7d": "package",
+                "quiet_hours": "package",
+                "send_window": "package",
+                "delay_hours": "default",
+                "window": "none",
+                "branches": "none",
+                "stage_rules": "none",
+                "main_endpoint": "default",
+                "content_direction": "package",
+                "visual_direction": "package",
+                "cta_templates": "package"
+              }
+            },
+            "send_window": [
+              "19:00-21:00"
+            ],
+            "strategy_provenance": {
+              "max_per_7d": "package",
+              "max_per_24h": "spec",
+              "quiet_hours": "red_line",
+              "send_window": "default"
+            }
+          }
+        },
+        "graph": [
+          {
+            "id": "n_decision",
+            "type": "decision.segment",
+            "params": {
+              "segment": "",
+              "segment_ref": "",
+              "segment_mode": "reuse",
+              "locale": "zh_CN"
+            },
+            "governance": false,
+            "next": "n_guardrail"
+          },
+          {
+            "id": "n_guardrail",
+            "type": "guardrail",
+            "params": {
+              "honor_suppression": true,
+              "unsubscribe_burn_threshold": 0.003,
+              "allow_locale": [
+                "zh_CN"
+              ]
+            },
+            "governance": true,
+            "next": "n_freq_gate"
+          },
+          {
+            "id": "n_freq_gate",
+            "type": "sourcemarketing.frequency_gate",
+            "params": {
+              "max_per_24h": 1,
+              "max_per_7d": 3
+            },
+            "governance": true,
+            "next": "n_anchor"
+          },
+          {
+            "id": "n_anchor",
+            "type": "anchor_arbitration",
+            "params": {
+              "campaign_id": "c1",
+              "wave_id": "wave_1",
+              "strategy": "claim_if_free"
+            },
+            "governance": true,
+            "next": "n_email_main"
+          },
+          {
+            "id": "n_email_main",
+            "type": "email.send",
+            "params": {
+              "channel": "email",
+              "intent": "promo",
+              "email_ref": "EM_c1_PLACEHOLDER",
+              "email_mode": "generate",
+              "email_brief": null,
+              "content_variant": 1,
+              "content_variant_spec": {
+                "id": "v1",
+                "angle": "稀缺专属",
+                "headline": "[Agent] c1 · 变体 v1（专属限时）",
+                "summary": "与主邮件同主题、不同切入角度的 A/B 变体：以「稀缺专属」制造紧迫感促转化；variant_split 命中比例时走此变体路径。"
+              },
+              "content_constraints": null,
+              "subject": "[Agent] c1 · 变体 v1（专属限时）",
+              "discount": null,
+              "landing_page_ref": "",
+              "tags_to_write": [
+                "wave_1"
+              ],
+              "cta": {
+                "label": "查看/购票",
+                "landing_page_url": "",
+                "tracked_url": ""
+              },
+              "embed_fields": [
+                "campaign_id",
+                "wave_id",
+                "variant_id",
+                "locale",
+                "channel",
+                "node_id",
+                "plan_hash",
+                "sent_at",
+                "contact_id"
+              ]
+            },
+            "governance": false,
+            "next": "n_decision_variant"
+          },
+          {
+            "id": "n_decision_variant",
+            "type": "decision.variant",
+            "params": {
+              "signal": "ab.split",
+              "split": 0.5,
+              "variant_id": "v1",
+              "if_true": "n_email_variant",
+              "if_false": "n_wait",
+              "next": "n_wait",
+              "note": "内容变体 A/B 路由：content_variant_spec 已生成且 variant_split>0 时，按 50% 比例把受众路由到变体 v1（与主邮件同资产、Mautic A/B 同邮件不同 variant），避免双发。"
+            },
+            "governance": false
+          },
+          {
+            "id": "n_email_variant",
+            "type": "email.variant",
+            "params": {
+              "channel": "email",
+              "variant_id": "v1",
+              "angle": "稀缺专属",
+              "headline": "[Agent] c1 · 变体 v1（专属限时）",
+              "summary": "与主邮件同主题、不同切入角度的 A/B 变体：以「稀缺专属」制造紧迫感促转化；variant_split 命中比例时走此变体路径。",
+              "email_ref": "EM_c1_PLACEHOLDER",
+              "subject": "[Agent] c1 · 变体 v1（专属限时）",
+              "landing_page_url": "",
+              "note": "变体邮件（A/B）：透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘。"
+            },
+            "governance": false,
+            "next": "n_wait"
+          },
+          {
+            "id": "n_wait",
+            "type": "wait",
+            "params": {
+              "duration": "24h"
+            },
+            "governance": false,
+            "next": "n_observe"
+          },
+          {
+            "id": "n_observe",
+            "type": "observer.click",
+            "params": {
+              "source": "mtc_refill",
+              "metric": "landingpage_hit",
+              "embed_fields": [
+                "campaign_id",
+                "wave_id",
+                "variant_id",
+                "locale",
+                "channel",
+                "node_id",
+                "plan_hash",
+                "sent_at",
+                "contact_id"
+              ]
+            },
+            "governance": false,
+            "next": "n_branch"
+          },
+          {
+            "id": "n_branch",
+            "type": "decision.clicked",
+            "params": {
+              "if_true": "n_lp",
+              "if_false": "n_followup"
+            },
+            "governance": false
+          },
+          {
+            "id": "n_lp",
+            "type": "page.hit",
+            "params": {
+              "landing_page_url": "",
+              "landing_page_ref": "",
+              "attribution": "last_touch_30d",
+              "embed_fields": [
+                "campaign_id",
+                "wave_id",
+                "variant_id",
+                "locale",
+                "channel",
+                "node_id",
+                "plan_hash",
+                "sent_at",
+                "contact_id"
+              ]
+            },
+            "governance": false,
+            "next": "n_tag"
+          },
+          {
+            "id": "n_followup",
+            "type": "email.send",
+            "params": {
+              "channel": "email",
+              "email_ref": "EM_c1_FOLLOWUP_PLACEHOLDER",
+              "subject": "提醒：[Agent] c1 · 变体 v1（专属限时）",
+              "embed_fields": [
+                "campaign_id",
+                "wave_id",
+                "variant_id",
+                "locale",
+                "channel",
+                "node_id",
+                "plan_hash",
+                "sent_at",
+                "contact_id"
+              ]
+            },
+            "governance": false,
+            "next": "n_tag"
+          },
+          {
+            "id": "n_tag",
+            "type": "tag.write",
+            "params": {
+              "tags": [
+                "wave_1"
+              ],
+              "via": "tag_rule",
+              "direct_user_tag_write": false,
+              "note": "落库 tag，经 tag-rule 校验后写入，驱动下游分组/segment"
+            },
+            "governance": false,
+            "next": "n_log"
+          },
+          {
+            "id": "n_log",
+            "type": "log_channel_send",
+            "params": {
+              "log_table": "inventory_impression_log",
+              "attribution_table": "lead_attribution",
+              "channels": [
+                "email"
+              ],
+              "tags_written": [
+                "wave_1"
+              ],
+              "embed_fields": [
+                "campaign_id",
+                "wave_id",
+                "variant_id",
+                "locale",
+                "channel",
+                "node_id",
+                "plan_hash",
+                "sent_at",
+                "contact_id"
+              ]
+            },
+            "governance": true
+          },
+          {
+            "id": "n_sms_reserved",
+            "type": "sms.send.reserved",
+            "params": {
+              "channel": "sms",
+              "enabled": false,
+              "note": "预留接口：待 email 闭环验证后启用",
+              "embed_fields": [
+                "campaign_id",
+                "wave_id",
+                "variant_id",
+                "locale",
+                "channel",
+                "node_id",
+                "plan_hash",
+                "sent_at",
+                "contact_id"
+              ]
+            },
+            "governance": false
+          }
+        ],
+        "tracking": {
+          "embed_fields": [
+            "campaign_id",
+            "wave_id",
+            "variant_id",
+            "locale",
+            "channel",
+            "node_id",
+            "plan_hash",
+            "sent_at",
+            "contact_id"
+          ],
+          "mtc_params": {
+            "mtc_campaign": "c1",
+            "mtc_wave": "wave_1",
+            "mtc_variant": "v1",
+            "mtc_locale": "zh_CN"
+          }
+        },
+        "governance_injected": true,
+        "plan_hash": "82e893549332883d052f55ed8a1b730ad375ae11a4fc537395a8d646cf0dedcd",
+        "goal": {
+          "goal_id": "goal_e28390a7",
+          "objective": "UCL2028 门票预售：向目标球迷分群推送官方票务邮件",
+          "kpi": {
+            "type": "conversion_rate",
+            "target": 0.15
+          },
+          "audience_segment": "",
+          "name": "goal_e28390a7",
+          "locale": "zh_CN",
+          "channels": [
+            "email"
+          ],
+          "reserved_channels": [
+            "sms"
+          ],
+          "landing_page_url": "",
+          "budget": 0.0,
+          "is_revenue": false,
+          "start_date": "2028-05-01",
+          "end_date": "2028-07-09",
+          "frequency_cap": {
+            "max_per_24h": 1,
+            "max_per_7d": 3
+          },
+          "guardrails": {
+            "unsubscribe_burn_threshold": 0.003,
+            "honor_suppression": true
+          },
+          "audience_package": "GENERIC",
+          "audience_match": {
+            "code": "GENERIC",
+            "codes": [],
+            "label": "通用兜底",
+            "score": 0.25,
+            "evidence": [
+              "age=['18-24']"
+            ],
+            "near_miss": {
+              "code": "YOUNG_TREND",
+              "label": "年轻潮流客",
+              "score": 0.25,
+              "evidence": [
+                "age=['18-24']"
+              ]
+            },
+            "matches": [],
+            "alternatives": [],
+            "fallback": true
+          },
+          "audience_profile": {
+            "age": "18-24",
+            "region": [
+              "中国大陆"
+            ]
+          },
+          "meta": {
+            "locales": [
+              "zh_CN"
+            ],
+            "constraints": [
+              "20:00~00:00免打扰"
+            ],
+            "audience_package": "GENERIC",
+            "audience_match": {
+              "code": "GENERIC",
+              "codes": [],
+              "label": "通用兜底",
+              "score": 0.25,
+              "evidence": [
+                "age=['18-24']"
+              ],
+              "near_miss": {
+                "code": "YOUNG_TREND",
+                "label": "年轻潮流客",
+                "score": 0.25,
+                "evidence": [
+                  "age=['18-24']"
+                ]
+              },
+              "matches": [],
+              "alternatives": [],
+              "fallback": true
+            }
+          }
+        },
+        "strategy_ref": {
+          "cid": "c1",
+          "source": "agent_spec",
+          "rationale": "",
+          "evidence": "",
+          "segment_ref": "",
+          "segment_mode": "reuse",
+          "email_ref": "EM_c1_PLACEHOLDER",
+          "email_mode": "generate",
+          "email_pending": true,
+          "email_brief": null,
+          "content_variant": 1,
+          "content_variant_spec": {
+            "id": "v1",
+            "angle": "稀缺专属",
+            "headline": "[Agent] c1 · 变体 v1（专属限时）",
+            "summary": "与主邮件同主题、不同切入角度的 A/B 变体：以「稀缺专属」制造紧迫感促转化；variant_split 命中比例时走此变体路径。"
+          },
+          "landing_page_ref": "",
+          "discount": null,
+          "tags_to_write": [
+            "wave_1"
+          ],
+          "success_criteria": null,
+          "intent": "promo",
+          "deferred": false,
+          "trigger": null,
+          "governance_exemptions": null,
+          "content_constraints": null,
+          "judgment": ""
+        },
+        "approval": null,
+        "deployed": false,
+        "mautic_events": [
+          {
+            "id": "new1",
+            "name": "发送邮件：[Agent] c1 · 变体 v1（专属限时）",
+            "description": "发送邮件：[Agent] c1 · 变体 v1（专属限时）",
+            "type": "email.send",
+            "eventType": "action",
+            "order": 1,
+            "properties": {
+              "email": 0,
+              "email_type": "transactional",
+              "attempts": 3,
+              "priority": 2
+            },
+            "triggerInterval": 0,
+            "triggerIntervalUnit": null,
+            "triggerMode": null,
+            "children": [
+              "new2"
+            ],
+            "parent": null,
+            "decisionPath": null
+          },
+          {
+            "id": "new2",
+            "name": "决策：是否点击",
+            "description": "决策：是否点击",
+            "type": "email.click",
+            "eventType": "decision",
+            "order": 2,
+            "properties": {
+              "email": 0,
+              "urls": {
+                "list": []
+              }
+            },
+            "triggerInterval": 24,
+            "triggerIntervalUnit": "H",
+            "triggerMode": "interval",
+            "children": [
+              "new3",
+              "new4"
+            ],
+            "parent": "new1",
+            "decisionPath": null
+          },
+          {
+            "id": "new3",
+            "name": "打标签：['wave_1']",
+            "description": "打标签：['wave_1']",
+            "type": "lead.changetags",
+            "eventType": "action",
+            "order": 3,
+            "properties": {
+              "add_tags": [
+                "wave_1"
+              ],
+              "remove_tags": []
+            },
+            "triggerInterval": 0,
+            "triggerIntervalUnit": null,
+            "triggerMode": null,
+            "children": [],
+            "parent": "new2",
+            "decisionPath": "yes"
+          },
+          {
+            "id": "new4",
+            "name": "发送邮件：提醒：[Agent] c1 · 变体 v1（专属限时）",
+            "description": "发送邮件：提醒：[Agent] c1 · 变体 v1（专属限时）",
+            "type": "email.send",
+            "eventType": "action",
+            "order": 4,
+            "properties": {
+              "email": 0,
+              "email_type": "transactional",
+              "attempts": 3,
+              "priority": 2
+            },
+            "triggerInterval": 0,
+            "triggerIntervalUnit": null,
+            "triggerMode": null,
+            "children": [
+              "new5"
+            ],
+            "parent": "new2",
+            "decisionPath": "no"
+          },
+          {
+            "id": "new5",
+            "name": "打标签：['wave_1']",
+            "description": "打标签：['wave_1']",
+            "type": "lead.changetags",
+            "eventType": "action",
+            "order": 5,
+            "properties": {
+              "add_tags": [
+                "wave_1"
+              ],
+              "remove_tags": []
+            },
+            "triggerInterval": 0,
+            "triggerIntervalUnit": null,
+            "triggerMode": null,
+            "children": [],
+            "parent": "new4",
+            "decisionPath": null
+          }
+        ],
+        "mautic_canvas": {
+          "nodes": [
+            {
+              "id": "new1",
+              "positionX": "200",
+              "positionY": "200"
+            },
+            {
+              "id": "new2",
+              "positionX": "400",
+              "positionY": "200"
+            },
+            {
+              "id": "new3",
+              "positionX": "600",
+              "positionY": "40"
+            },
+            {
+              "id": "new4",
+              "positionX": "800",
+              "positionY": "360"
+            },
+            {
+              "id": "new5",
+              "positionX": "1000",
+              "positionY": "360"
+            }
+          ],
+          "connections": [
+            {
+              "sourceId": "new1",
+              "targetId": "new2",
+              "anchors": {
+                "source": "bottom",
+                "target": "top"
+              }
+            },
+            {
+              "sourceId": "new2",
+              "targetId": "new3",
+              "anchors": {
+                "source": "yes",
+                "target": "top"
+              }
+            },
+            {
+              "sourceId": "new2",
+              "targetId": "new4",
+              "anchors": {
+                "source": "no",
+                "target": "top"
+              }
+            },
+            {
+              "sourceId": "new4",
+              "targetId": "new5",
+              "anchors": {
+                "source": "bottom",
+                "target": "top"
+              }
+            }
+          ]
+        },
+        "mautic_lists": null,
+        "api_calls": [
+          {
+            "method": "POST",
+            "path": "/api/campaigns/new",
+            "body": {
+              "name": "c1",
+              "isPublished": false,
+              "events": [
+                {
+                  "id": "new1",
+                  "name": "发送邮件：[Agent] c1 · 变体 v1（专属限时）",
+                  "description": "发送邮件：[Agent] c1 · 变体 v1（专属限时）",
+                  "type": "email.send",
+                  "eventType": "action",
+                  "order": 1,
+                  "properties": {
+                    "email": 0,
+                    "email_type": "transactional",
+                    "attempts": 3,
+                    "priority": 2
+                  },
+                  "triggerInterval": 0,
+                  "triggerIntervalUnit": null,
+                  "triggerMode": null,
+                  "children": [
+                    "new2"
+                  ],
+                  "parent": null,
+                  "decisionPath": null
+                },
+                {
+                  "id": "new2",
+                  "name": "决策：是否点击",
+                  "description": "决策：是否点击",
+                  "type": "email.click",
+                  "eventType": "decision",
+                  "order": 2,
+                  "properties": {
+                    "email": 0,
+                    "urls": {
+                      "list": []
+                    }
+                  },
+                  "triggerInterval": 24,
+                  "triggerIntervalUnit": "H",
+                  "triggerMode": "interval",
+                  "children": [
+                    "new3",
+                    "new4"
+                  ],
+                  "parent": "new1",
+                  "decisionPath": null
+                },
+                {
+                  "id": "new3",
+                  "name": "打标签：['wave_1']",
+                  "description": "打标签：['wave_1']",
+                  "type": "lead.changetags",
+                  "eventType": "action",
+                  "order": 3,
+                  "properties": {
+                    "add_tags": [
+                      "wave_1"
+                    ],
+                    "remove_tags": []
+                  },
+                  "triggerInterval": 0,
+                  "triggerIntervalUnit": null,
+                  "triggerMode": null,
+                  "children": [],
+                  "parent": "new2",
+                  "decisionPath": "yes"
+                },
+                {
+                  "id": "new4",
+                  "name": "发送邮件：提醒：[Agent] c1 · 变体 v1（专属限时）",
+                  "description": "发送邮件：提醒：[Agent] c1 · 变体 v1（专属限时）",
+                  "type": "email.send",
+                  "eventType": "action",
+                  "order": 4,
+                  "properties": {
+                    "email": 0,
+                    "email_type": "transactional",
+                    "attempts": 3,
+                    "priority": 2
+                  },
+                  "triggerInterval": 0,
+                  "triggerIntervalUnit": null,
+                  "triggerMode": null,
+                  "children": [
+                    "new5"
+                  ],
+                  "parent": "new2",
+                  "decisionPath": "no"
+                },
+                {
+                  "id": "new5",
+                  "name": "打标签：['wave_1']",
+                  "description": "打标签：['wave_1']",
+                  "type": "lead.changetags",
+                  "eventType": "action",
+                  "order": 5,
+                  "properties": {
+                    "add_tags": [
+                      "wave_1"
+                    ],
+                    "remove_tags": []
+                  },
+                  "triggerInterval": 0,
+                  "triggerIntervalUnit": null,
+                  "triggerMode": null,
+                  "children": [],
+                  "parent": "new4",
+                  "decisionPath": null
+                }
+              ],
+              "canvasSettings": {
+                "nodes": [
+                  {
+                    "id": "new1",
+                    "positionX": "200",
+                    "positionY": "200"
+                  },
+                  {
+                    "id": "new2",
+                    "positionX": "400",
+                    "positionY": "200"
+                  },
+                  {
+                    "id": "new3",
+                    "positionX": "600",
+                    "positionY": "40"
+                  },
+                  {
+                    "id": "new4",
+                    "positionX": "800",
+                    "positionY": "360"
+                  },
+                  {
+                    "id": "new5",
+                    "positionX": "1000",
+                    "positionY": "360"
+                  }
+                ],
+                "connections": [
+                  {
+                    "sourceId": "new1",
+                    "targetId": "new2",
+                    "anchors": {
+                      "source": "bottom",
+                      "target": "top"
+                    }
+                  },
+                  {
+                    "sourceId": "new2",
+                    "targetId": "new3",
+                    "anchors": {
+                      "source": "yes",
+                      "target": "top"
+                    }
+                  },
+                  {
+                    "sourceId": "new2",
+                    "targetId": "new4",
+                    "anchors": {
+                      "source": "no",
+                      "target": "top"
+                    }
+                  },
+                  {
+                    "sourceId": "new4",
+                    "targetId": "new5",
+                    "anchors": {
+                      "source": "bottom",
+                      "target": "top"
+                    }
+                  }
+                ]
+              }
+            },
+            "desc": "创建 campaign 并写入事件图（events + canvasSettings，含 parent/child 连线）"
+          },
+          {
+            "method": "POST",
+            "path": "/api/campaigns/<id>/edit",
+            "body": {
+              "isPublished": true
+            },
+            "desc": "审批通过后(Gate)再上线——PoC dry-run 不执行"
+          }
+        ]
+      },
+      "result": null
+    }
+  ],
+  "changelog": []
+}

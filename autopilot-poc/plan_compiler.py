@@ -31,6 +31,7 @@ from typing import Optional
 
 from goal_intake import GoalSpec
 from strategy_spec import TAG_WRITE_VIA
+import asset_resolver
 
 # 9 个埋点字段（反填归因用，写进每个 send/click 节点）
 EMBED_FIELDS = [
@@ -50,6 +51,315 @@ GOVERNANCE_NODES = {
 }
 
 
+# =====================================================================
+# 策略规格驱动的「分叉 / 分支终点 / 阶段升降级 / 主流程终点」
+# =====================================================================
+# 分叉有几个、每个分叉判断什么、每个分支终点是什么（tag/阶段/分组/邮件/落地页/表单）、
+# 阶段怎么升降级、主流程在哪里收口 —— 全部由 StrategySpec 声明（strategy_spec 已归一化），
+# topology.py 只给「一条旅程的形状」，不再由代码模板硬编码分支。
+#
+# 条件信号 → 事件图决策节点类型（Mautic 侧都能落成真实 decision 事件）：
+#   email.click  → decision.clicked      → Mautic email.click（已有）、
+#   email.open   → decision.opened       → Mautic email.open
+#   page.hit     → decision.page_hit     → Mautic page.pagehit
+#   form.submit  → decision.form_submit  → Mautic form.submit
+#   未知信号      → decision.generic      → 回落已有的通用决策 email.click，并记 warning
+_SIGNAL_ALIASES = {
+    "click": "email.click", "clicked": "email.click",
+    "open": "email.open", "opened": "email.open",
+    "hit": "page.hit", "pagehit": "page.hit", "page": "page.hit", "lp": "page.hit",
+    "submit": "form.submit", "form": "form.submit",
+}
+_SIGNAL_DECISION = {
+    "email.click": "decision.clicked",
+    "email.open": "decision.opened",
+    "page.hit": "decision.page_hit",
+    "form.submit": "decision.form_submit",
+}
+GENERIC_DECISION_TYPE = "decision.generic"
+
+# 终点字段 → 节点类型；_ENDPOINT_ORDER 即发射顺序（tag → 阶段 → 分组 → 邮件 → 落地页 → 表单）
+_ENDPOINT_ORDER = ("tags", "stage", "segment", "email", "landing_page", "form")
+_ENDPOINT_NODE_TYPES = {
+    "tags": "tag.write",
+    "stage": "stage.change",
+    "segment": "segment.change",
+    "email": "email.send",
+    "landing_page": "page.hit",
+    "form": "form.submit",
+}
+BRANCH_ENDPOINT = "branch_endpoint"
+MAIN_ENDPOINT = "main_endpoint"
+
+# ---- 终点动作选择：「声明了什么」≠「触发什么」 ----
+# 规则 4 里的「tag、阶段、分组、邮件、落地页、表单」是**终点类型的候选集**，
+# 不是「策略里写了几个字段就触发几个动作」。真实语义是：按这次需求判断该触发哪一个/哪几个。
+# 判定链（优先级从高到低）：
+#   1) 规格显式声明 endpoint.actions（Agent 判断的结果）→ 按它来，可多可单；
+#   2) 没声明 → _infer_endpoint_action() 按「文案线索 + 分支信号语义」推断**一个**，
+#      并写 compile_warning 说明「声明了 N 类、只触发了 X、其余已忽略，如需多个请显式声明 actions」。
+# 这样既不会像旧版那样一个分支喷出 4 个动作，也不会把多动作的需求砍没。
+# ⚠️ 不能收 "action"：那是 segment 的 add/remove 语义（{"segment":"X","action":"remove"}），
+#    收进来会把 "remove" 当成「要触发的动作名」而静默清空整个终点。只用复数 actions。
+_ENDPOINT_ACTION_KEYS = ("actions", "do", "fire", "emit", "run", "触发")
+_ACTION_ALIASES = {
+    "tag": "tags", "tags": "tags", "tag.write": "tags", "打标": "tags", "标签": "tags",
+    "stage": "stage", "stage.change": "stage", "阶段": "stage", "升降级": "stage",
+    "segment": "segment", "segments": "segment", "segment.change": "segment",
+    "group": "segment", "list": "segment", "分组": "segment", "分群": "segment",
+    "email": "email", "email.send": "email", "邮件": "email", "发信": "email",
+    "landing_page": "landing_page", "landingpage": "landing_page", "lp": "landing_page",
+    "page": "landing_page", "page.hit": "landing_page", "落地页": "landing_page", "页面": "landing_page",
+    "form": "form", "form.submit": "form", "表单": "form", "报名表": "form",
+}
+# 文案线索：分支描述里出现这些词 → 该终点类型更有可能是本次要触发的动作
+_ENDPOINT_KEYWORDS = {
+    "tags": ("打标", "标签", "tag", "标记"),
+    "stage": ("阶段", "升级", "降级", "stage", "生命周期"),
+    "segment": ("分组", "分群", "segment", "加入组", "移入"),
+    "email": ("邮件", "发信", "补发", "email", "推送"),
+    "landing_page": ("落地页", "页面", "lp", "landing", "跳转"),
+    "form": ("表单", "报名", "提交", "form"),
+}
+# 信号语义 → 终点类型的默认优先级（文案没线索时用）。
+# 排序原则：**先选在 Mautic 里真能做动作的类型，观测型的排最后**。
+#   - landing_page → page.hit 在 Mautic 只是观测（页面访问不是 campaign 动作，无法「执行」），
+#     选它等于这次分支在画布上没有落点，故一律排最后；
+#   - form 作为终点 = 「是否提交该表单」决策，在 form.submit 信号之后再判一次没有意义，
+#     所以 form.submit 信号下它排最后；
+#   - tags 永远可执行（lead.changetags），是最安全的默认落点，点/开信号下排第一。
+_SIGNAL_ENDPOINT_PRIORITY = {
+    "email.click": ("tags", "email", "segment", "stage", "form", "landing_page"),
+    "email.open": ("tags", "email", "segment", "stage", "form", "landing_page"),
+    "page.hit": ("form", "tags", "segment", "stage", "email", "landing_page"),
+    "form.submit": ("tags", "segment", "stage", "email", "landing_page", "form"),
+}
+
+# 需要「真实资产 ID」才落 Mautic 事件的节点类型（没解析到 ID → 退回审计透传）
+_ASSET_ID_KEY = {"stage": "stage_id", "segment": "segment_id", "form": "form_id"}
+_NODE_ASSET_KIND = {"stage.change": "stage", "segment.change": "segment", "form.submit": "form"}
+
+
+def _as_list_eps(v) -> list:
+    """actions 字段容错：str / list / tuple / 逗号串 → list。"""
+    if v is None or v == "" or v == [] or v == {}:
+        return []
+    if isinstance(v, (list, tuple, set)):
+        return [str(x) for x in v if str(x or "").strip()]
+    s = str(v)
+    return [x.strip() for x in re.split(r"[,，、/|]+", s) if x.strip()]
+
+
+def _normalize_signal(signal):
+    """条件信号 → 规范信号名（email.click / email.open / page.hit / form.submit）；未知 → None。"""
+    s = str(signal or "").strip().lower().replace("_", ".").replace("-", ".")
+    s = _SIGNAL_ALIASES.get(s, s)
+    return s if s in _SIGNAL_DECISION else None
+
+
+def _infer_endpoint_action(declared: list, signal=None, text: str = ""):
+    """在声明的终点类型里挑**一个**本次真正该触发的动作。
+    线索优先级：文案关键词（唯一命中）→ 信号语义默认优先级 → 声明顺序第一个。"""
+    if not declared:
+        return None
+    if len(declared) == 1:
+        return declared[0]
+    low = str(text or "").lower()
+    hits = []
+    for k in declared:
+        if any(kw in low for kw in _ENDPOINT_KEYWORDS.get(k, ())):
+            hits.append(k)
+    if len(set(hits)) == 1:
+        return hits[0]
+    for k in (_SIGNAL_ENDPOINT_PRIORITY.get(signal) or _ENDPOINT_ORDER):
+        if k in declared:
+            return k
+    return declared[0]
+
+
+def _select_endpoint_actions(endpoint, fields: dict, signal=None, text: str = "",
+                             branch=None):
+    """
+    决定这个终点真正触发哪些动作 → (selected: list[str], meta: dict)
+      meta = {source: "declared"|"inferred", requested, unknown, missing, ignored}
+    """
+    declared = [k for k in _ENDPOINT_ORDER if fields.get(k)]
+    ep = endpoint if isinstance(endpoint, dict) else {}
+    br = branch if isinstance(branch, dict) else {}
+    # 文案线索：分支说明 + 终点说明都算（写「升到 engaged 阶段」就应判为改阶段）
+    text = " ".join([str(text or "")] + [str(br.get(k) or "") for k in ("note", "label")]
+                    + [str(ep.get(k) or "") for k in ("note", "desc", "description", "label")])
+    raw = None
+    for k in _ENDPOINT_ACTION_KEYS:
+        if k in ep and ep.get(k) not in (None, "", [], {}):
+            raw = ep[k]
+            break
+    if raw is None:
+        for k in _ENDPOINT_ACTION_KEYS:      # 分支层也可以声明 actions
+            if k in br and br.get(k) not in (None, "", [], {}):
+                raw = br[k]
+                break
+    if raw is None:
+        picked = _infer_endpoint_action(declared, signal, text)
+        picked = [picked] if picked else []
+        return picked, {
+            "source": "inferred", "requested": list(picked), "unknown": [], "missing": [],
+            "ignored": [k for k in declared if k not in picked],
+        }
+    wanted, unknown = [], []
+    for a in _as_list_eps(raw):
+        key = _ACTION_ALIASES.get(str(a).strip().lower())
+        if key is None:
+            unknown.append(str(a))
+        elif key not in wanted:
+            wanted.append(key)
+    selected = [k for k in _ENDPOINT_ORDER if k in wanted and fields.get(k)]
+    missing = [k for k in wanted if not fields.get(k)]
+    return selected, {
+        "source": "declared", "requested": wanted, "unknown": unknown, "missing": missing,
+        "ignored": [k for k in declared if k not in selected],
+    }
+
+
+def _safe_id(raw, default: str = "b") -> str:
+    """branch id → 可用作节点 id 后缀的安全串（中文/空格/符号 → _）。"""
+    s = re.sub(r"[^0-9A-Za-z_]+", "_", str(raw or "").strip()).strip("_")
+    return s or default
+
+
+def _signal_decision(signal) -> tuple:
+    """条件信号 → (决策节点类型, 是否已知信号)。未知信号 → 通用决策 + False（调用方记 warning）。"""
+    s = str(signal or "").strip().lower().replace("_", ".").replace("-", ".")
+    s = _SIGNAL_ALIASES.get(s, s)
+    if s in _SIGNAL_DECISION:
+        return _SIGNAL_DECISION[s], True
+    return GENERIC_DECISION_TYPE, False
+
+
+_ENDPOINT_LABEL = {
+    "tags": "打标", "stage": "阶段", "segment": "分组",
+    "email": "邮件", "landing_page": "落地页", "form": "表单",
+}
+
+
+def _warn_selection(where: str, bid, fields: dict, selection: list, meta: dict, warnings: list):
+    """把「声明了哪些、实际触发了哪些、忽略了哪些」的判定结果写进 compile_warnings。
+    这是给运营/审批人看的：推断只触发一个动作时必须说清楚，否则等于静默丢需求。"""
+    name = f"分支 '{bid}'" if bid else where
+    for u in meta.get("unknown", []):
+        warnings.append(f"{name}：actions 里的 '{u}' 不是已知终点类型，已忽略"
+                        f"（可用：{', '.join(_ENDPOINT_ORDER)}）")
+    for m in meta.get("missing", []):
+        warnings.append(f"{name}：actions 要求触发 {_ENDPOINT_LABEL.get(m, m)}，"
+                        f"但终点里没声明 {m} 的内容，已跳过")
+    ignored = meta.get("ignored", [])
+    if meta.get("source") == "inferred" and ignored:
+        fired = "、".join(_ENDPOINT_LABEL.get(k, k) for k in selection) or "无"
+        dropped = "、".join(_ENDPOINT_LABEL.get(k, k) for k in ignored)
+        warnings.append(
+            f"{name}：终点声明了 {len(selection) + len(ignored)} 类内容，按需求判定本次只触发「{fired}」，"
+            f"忽略「{dropped}」；如需多个动作请在 endpoint.actions 里显式声明")
+
+
+def _endpoint_fields(endpoint) -> dict:
+    """终点 dict → 结构化字段（缺字段安全缺省；terminal 单独取）。"""
+    ep = endpoint if isinstance(endpoint, dict) else {}
+    out = {k: None for k in _ENDPOINT_ORDER}
+    tags = ep.get("tags")
+    if isinstance(tags, (list, tuple)):
+        out["tags"] = [str(t) for t in tags if str(t or "").strip()]
+    elif tags not in (None, ""):
+        out["tags"] = [str(tags)]
+    else:
+        out["tags"] = []
+    for k in ("stage", "segment", "email", "landing_page", "form"):
+        v = ep.get(k)
+        out[k] = str(v).strip() if v not in (None, "") else None
+    out["terminal"] = bool(ep.get("terminal"))
+    # segment 的 add/remove（终点「移出某分组」也是合法语义）
+    act = str(ep.get("action") or ep.get("segment_action") or "").strip().lower()
+    out["action"] = "remove" if act in ("remove", "rm", "delete", "移出", "移除") else "add"
+    return out
+
+
+def _endpoint_has_content(fields: dict) -> bool:
+    """终点是否真的声明了内容（有内容才发射节点，避免老 spec 的默认空终点改变事件图）。"""
+    return any(fields.get(k) for k in _ENDPOINT_ORDER)
+
+
+def _endpoint_nodes(prefix: str, fields: dict, source: str, branch_id=None,
+                    selection: list = None, assets: dict = None, meta: dict = None) -> list:
+    """
+    终点字段 → 节点列表。
+
+    ⚠️ 只发射 selection 里列出的动作（由 _select_endpoint_actions 决定），
+       不是「声明几个字段就出几个节点」。selection=None 时退回「全部声明」（兼容直接调用）。
+
+    assets：{kind: asset_resolver.AssetRef}，给 stage / segment / form 补真实资产 ID；
+           没解析到 ID 的节点仍留在事件图（审计），但不会落 Mautic 事件（见 mtype 守卫）。
+    """
+    nodes: list = []
+    assets = assets or {}
+    meta = meta or {}
+    if selection is None:
+        selection = [k for k in _ENDPOINT_ORDER if fields.get(k)]
+
+    def add(suffix: str, key: str, params: dict):
+        nid = f"{prefix}_{suffix}"
+        if nodes:
+            nodes[-1]["next"] = nid
+        p = dict(params)
+        p["endpoint"] = source
+        p["endpoint_selection"] = meta.get("source", "declared")
+        if branch_id is not None:
+            p["branch_id"] = branch_id
+        # 资产解析结果（stage / segment / form）：有 ID 才能落 Mautic 事件
+        a = assets.get(key)
+        if a is not None:
+            p["asset"] = a.to_dict()
+            if a.id is not None:
+                p[_ASSET_ID_KEY[key]] = a.id
+        nodes.append(_node(nid, _ENDPOINT_NODE_TYPES[key], p))
+
+    if "tags" in selection and fields.get("tags"):
+        add("tag", "tags", {
+            "tags": list(fields["tags"]),
+            "via": TAG_WRITE_VIA,
+            "direct_user_tag_write": False,
+            "note": "分支/主流程终点落库 tag（经 tag-rule 校验通路写入）",
+        })
+    if "stage" in selection and fields.get("stage"):
+        add("stage", "stage", {
+            "stage": fields["stage"],
+            "note": "终点阶段：需解析出 stage_id 才落 Mautic lead.changestage，否则仅审计",
+        })
+    if "segment" in selection and fields.get("segment"):
+        add("seg", "segment", {
+            "segment": fields["segment"],
+            "action": fields.get("action") or "add",
+            "note": "终点分组：需解析出 segment_id 才落 Mautic lead.changelist，否则仅审计",
+        })
+    if "email" in selection and fields.get("email"):
+        add("email", "email", {
+            "channel": "email",
+            "email_ref": fields["email"],
+            "email_mode": "reuse",
+            "embed_fields": EMBED_FIELDS,
+        })
+    if "landing_page" in selection and fields.get("landing_page"):
+        add("lp", "landing_page", {
+            "landing_page_ref": fields["landing_page"],
+            "attribution": "last_touch_30d",
+            "embed_fields": EMBED_FIELDS,
+        })
+    if "form" in selection and fields.get("form"):
+        add("form", "form", {
+            "form_ref": fields["form"],
+            "embed_fields": EMBED_FIELDS,
+        })
+    return nodes
+
+
 def _node(nid: str, ntype: str, params: dict, nxt: Optional[str] = None,
           governance: bool = False) -> dict:
     node = {
@@ -61,6 +371,129 @@ def _node(nid: str, ntype: str, params: dict, nxt: Optional[str] = None,
     if nxt is not None:
         node["next"] = nxt
     return node
+
+
+# =====================================================================
+# Campaign 命名合成：Mautic 后台默认显示 cid（c1/c2），运营看不出业务含义。
+# 这里按「活动名 - 波次意图 - 票种」三段式合成结构化名，让 Mautic 列表/搜索可用业务语言。
+# 例：goal_name=「新春labubu演唱会」, subject=「新春labubu演唱会-预热早鸟」, idx=0
+#   → 「新春labubu演唱会-预热-早鸟票」
+# =====================================================================
+def _strip_goal_prefix(name: str) -> str:
+    """去前缀修饰词，让活动名聚焦活动本身（去掉年份/前缀空格）。"""
+    name = (name or "").strip()
+    name = re.sub(r"^20\d{2}\s*年?\s*", "", name).strip()
+    name = re.sub(r"^20\d{2}\s+", "", name).strip()
+    name = re.sub(r"^Q[1-4]\s*", "", name, flags=re.IGNORECASE).strip()
+    return name
+
+
+def _extract_goal_name(goal) -> str:
+    """活动名（goal_name 字段优先，否则从 objective 的「」/『」/""/"" 内抓）。"""
+    if hasattr(goal, "to_dict"):
+        gd = goal.to_dict()
+    elif isinstance(goal, dict):
+        gd = goal
+    else:
+        gd = {}
+    name = (gd.get("goal_name") or "").strip()
+    if not name:
+        obj = gd.get("objective", "") or ""
+        m = re.search(r'[「『""](.+?)[」』""]', obj)
+        if m:
+            name = m.group(1).strip()
+        else:
+            name = re.sub(r"\s+", "", obj)[:20]
+    name = _strip_goal_prefix(name)
+    return name or "活动"
+
+
+def _classify_wave_intent(subject: str, idx: int) -> str:
+    """从 subject 关键词 + wave 序号推断波次意图的中文标签。"""
+    s = subject or ""
+    sl = s.lower()
+    if "预热" in s or "warmup" in sl:
+        return "预热"
+    if "提醒" in s or "兜底" in s or "补发" in s or "remind" in sl:
+        return "提醒"
+    if "VIP" in s.upper() or "vip" in sl:
+        return "VIP推送"
+    if "最后" in s or "末班" in s or "lastchance" in sl:
+        return "末班车"
+    if "开演" in s or "入场" in s:
+        return "开演提醒"
+    if "常规" in s or "主推" in s or "broad" in sl:
+        return "主推"
+    if "退订" in s or "关怀" in s or "winback" in sl or "唤醒" in s:
+        return "唤醒"
+    if "确认" in s or "receipt" in sl:
+        return "确认"
+    # 兜底按序号
+    defaults = {1: "开场", 2: "跟进", 3: "主推", 4: "末班车"}
+    return defaults.get(idx + 1, f"第{idx + 1}波")
+
+
+def _extract_variant_label(strategy: dict, subject: str) -> str:
+    """票种/变体：discount 比例 → 早鸟票；subject 关键词 → 早鸟票/VIP票/套票/现场票/折扣票/免费票；兜底 → 普通票。"""
+    discount = strategy.get("discount") or {}
+    cv_spec = strategy.get("content_variant_spec") or {}
+    angle = (cv_spec.get("angle") or "").lower()
+    sl = (subject or "").lower()
+    if discount.get("enabled") and (discount.get("pct") or 0):
+        pct = int(discount["pct"])
+        if pct >= 20:
+            return f"{pct}折早鸟票"
+        if pct >= 10:
+            return f"{pct}折折扣票"
+        if pct > 0:
+            return f"{pct}折轻折扣票"
+        return "折扣票"
+    if "早鸟" in (subject or ""):
+        return "早鸟票"
+    if "VIP" in (subject or "").upper() or "vip" in angle:
+        return "VIP票"
+    if "套票" in (subject or ""):
+        return "套票"
+    if "现场" in (subject or ""):
+        return "现场票"
+    if "免费" in (subject or "") or "free" in sl:
+        return "免费票"
+    if "折扣" in (subject or "") or "discount" in sl:
+        return "折扣票"
+    return "普通票"
+
+
+def _compose_campaign_name(goal, strategy: dict, idx: int) -> str:
+    """
+    按「活动名 - 波次意图 - 票种」三段式合成 Mautic campaign 名（结构化、可读、可搜索）。
+
+    入参：goal（GoalSpec 或 dict）、strategy（campaign strategy dict）、idx（0-based campaign 序号）
+    返回：例 "新春labubu演唱会-预热-早鸟票"
+    """
+    goal_name = _extract_goal_name(goal)
+    subject = (strategy.get("subject") or strategy.get("campaign_name") or "")
+    wave_label = _classify_wave_intent(subject, idx)
+    variant_label = _extract_variant_label(strategy, subject)
+    parts = [goal_name, wave_label]
+    if variant_label:
+        parts.append(variant_label)
+    # Mautic name 上限 191 字符，截断
+    full = "-".join(parts)
+    return full[:191]
+
+
+def _wave_idx(strategy: dict) -> int:
+    """从 strategy.wave_id（如 wave_3）解出 0-based 序号；解不出取 0。"""
+    wid = (strategy.get("wave_id") or "wave_1")
+    m = re.match(r"wave_(\d+)", wid)
+    if m:
+        return max(0, int(m.group(1)) - 1)
+    # 退化：从 cid (c1/c2) 解
+    cid = (strategy.get("cid") or "")
+    m = re.search(r"c(\d+)", cid)
+    if m:
+        return max(0, int(m.group(1)) - 1)
+    return 0
 
 
 def _inject_governance(graph: list, goal: GoalSpec, strategy: dict, campaign_id: str) -> list:
@@ -178,6 +611,14 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     以上字段（email_ref / email_mode / brief / segment_ref / landing_page_ref /
     content_variant_spec / tags）会透传进事件图与 proposal.strategy_ref；
     治理注入与 plan_hash 计算逻辑不受影响。
+
+    策略规格声明的结构（strategy_spec 归一化后）会真正变成事件图节点：
+      branches[]       → N 个分叉决策节点（signal 决定决策类型），按声明顺序串成
+                         if/elif 阶梯；每个分支的 endpoint 变成该分支的终点节点
+      stage_rules[]    → 阶段升降级节点（带 when 条件与 direction）
+      main_endpoint    → 主流程终点节点 + 终点判断（judgment）
+      window           → 约束/标注 campaign 起止日
+    这些键缺失/为空时（老 spec），事件图、plan_hash、mautic_events 与改动前逐字节一致。
     """
     strategy = strategy or {}
     campaign_id = strategy.get("cid") or goal.goal_id
@@ -188,6 +629,91 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     content_variant = strategy.get("content_variant", 0)
     delay_hours = (strategy.get("send_conditions", {}) or {}).get("delay_hours", 24)
     tags = strategy.get("tags_to_write", [])
+    discount = strategy.get("discount")   # 策略折扣（是否发、发多少比例）——内容本体，来自意图识别
+
+    # ---- 策略规格声明的 分叉 / 阶段升降级 / 主流程终点（缺省为空 → 事件图与旧行为完全一致）----
+    branches = [b for b in (strategy.get("branches") or []) if isinstance(b, dict)]
+    stage_rules = [r for r in (strategy.get("stage_rules") or []) if isinstance(r, dict)]
+    main_ep_raw = strategy.get("main_endpoint") if isinstance(strategy.get("main_endpoint"), dict) else None
+    main_fields = _endpoint_fields(main_ep_raw)
+    main_judgment = (main_ep_raw or {}).get("judgment") if isinstance(main_ep_raw, dict) else None
+    main_used = _endpoint_has_content(main_fields) or bool(main_judgment)
+    warnings: list = []
+
+    # ---- 资产解析：stage / segment / form 名称 → Mautic 资产 ID ----
+    # 策略可用 asset_resolve:false 整体关闭（离线跑批/单测），asset_auto_create:false 只查不建。
+    _env = str(strategy.get("mautic_env") or "local")
+    _allow_create = None if strategy.get("asset_auto_create") is None else bool(strategy["asset_auto_create"])
+    _do_resolve = bool(strategy.get("asset_resolve", True))
+    assets_report: list = []
+
+    def _res(kind, ref):
+        """解析一个资产；未启用解析时返回未解析结果（不落 Mautic 事件，与改动前一致）。"""
+        if not _do_resolve:
+            return asset_resolver.AssetRef(
+                kind=kind, ref=ref, name=str(ref or ""), status=asset_resolver.UNRESOLVED,
+                message="本次编译未启用资产解析")
+        return asset_resolver.resolve(kind, ref, env=_env, allow_create=_allow_create)
+
+    def _take(res):
+        """登记解析结果（供 proposal.asset_resolution 展示）+ 需要提示的写进 warnings。"""
+        if res is None:
+            return None
+        if res.status != asset_resolver.EMPTY:
+            assets_report.append(res)
+        w = res.warning()
+        # 去重：同一资产被多个字段键声明时（如终点 form 与 form_ref 都指向同一表单），
+        # asset_resolver 命中缓存会返回同一个 CREATED 引用，warning() 会重复触发；
+        # 台账 asset_resolution 已按 (kind,name,id,status) 去重，这里 warnings 也要同步去重，
+        # 否则同一行提示会重复出现（如「表单 FORM_甲A足球赛 … 手动发布」连发两条）。
+        if w and w not in warnings:
+            warnings.append(w)
+        return res
+
+    # 主流程终点：同样只触发「按需求判定出来的」那一个/几个动作
+    _mtxt = " ".join(str((main_ep_raw or {}).get(k) or "")
+                     for k in ("note", "desc", "description", "label", "rationale"))
+    _msig = _normalize_signal((main_judgment or {}).get("signal")) if isinstance(main_judgment, dict) else None
+    main_selection, main_meta = _select_endpoint_actions(
+        main_ep_raw, main_fields, signal=_msig, text=_mtxt)
+    main_assets = {k: _take(_res(k, main_fields[k])) for k in main_selection if k in _ASSET_ID_KEY}
+    _warn_selection("主流程终点", None, main_fields, main_selection, main_meta, warnings)
+
+    # 分叉节点 id（按声明顺序，串成 if/elif 阶梯：命中 → 该分支终点；未命中 → 下一个分叉）
+    fork_ids: list = []
+    fork_plans: list = []
+    for i, br in enumerate(branches):
+        bid = str(br.get("id") or f"b{i + 1}")
+        nid = f"n_fork_{_safe_id(bid, f'b{i + 1}')}"
+        dup = 1
+        while nid in fork_ids:
+            dup += 1
+            nid = f"n_fork_{_safe_id(bid, f'b{i + 1}')}_{dup}"
+        fork_ids.append(nid)
+        fork_plans.append((bid, nid, br))
+
+    # 主流程尾部链：n_tag → [阶段升降级...] → [主流程终点判断] → [主流程终点...] → n_log
+    stage_rule_ids = [f"n_stage_rule_{i + 1}" for i in range(len(stage_rules))]
+    main_judge_id = "n_main_judge" if main_judgment else None
+    main_ep_nodes: list = []
+    if main_used:
+        main_ep_nodes = _endpoint_nodes("n_main_ep", main_fields, MAIN_ENDPOINT,
+                                        selection=main_selection, assets=main_assets,
+                                        meta=main_meta)
+        if main_ep_nodes and not main_fields.get("terminal"):
+            main_ep_nodes[-1]["next"] = "n_log"
+    main_ep_entry = main_ep_nodes[0]["id"] if main_ep_nodes else None
+    tail_entry = (stage_rule_ids[0] if stage_rule_ids
+                  else (main_judge_id or (main_ep_entry or "n_log")))
+
+    # ---- 内容变体 A/B 路由（透明节点：仅流程图展示 + 供审批/复盘，不建真实 Mautic 事件，避免双发）----
+    # 条件：content_variant_spec 已生成（策略未给则策略层已同步合成 v1）且 variant_split>0。
+    # 命中分流比例 → 走变体邮件路径；未命中 → 走主邮件路径（与改动前逐字节一致）。
+    cv_spec = strategy.get("content_variant_spec") or {}
+    _has_variant = bool(cv_spec and (cv_spec.get("angle") or cv_spec.get("headline")
+                                     or cv_spec.get("summary")))
+    _variant_split = float(strategy.get("variant_split") or 0.5) or 0.0
+    _variant_continue = fork_ids[0] if fork_ids else ("n_tag" if is_service else "n_wait")
 
     graph: list = []
     graph = _inject_governance(graph, goal, strategy, campaign_id)
@@ -205,6 +731,12 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     # 邮件资产：优先取 Agent 策略的 email.ref（reuse=资产 ID；generate=占位 + brief）
     email_ref = strategy.get("email_ref") or f"EM_{campaign_id}_PLACEHOLDER"
     subject = strategy.get("subject") or f"{goal.objective}（变体 v{content_variant}）"
+    # 折扣反映进邮件主题（策略内容本体：发什么比例折扣）
+    if isinstance(discount, dict) and discount.get("enabled") and discount.get("pct") \
+            and "OFF" not in subject:
+        subject = f"{subject}（{int(discount['pct'])}% OFF）"
+        strategy["subject"] = subject   # 写回策略 dict，保证下游展示/重编译一致
+    _email_main_next = "n_decision_variant" if _has_variant else _variant_continue
     graph.append(_node(
         "n_email_main", "email.send",
         {
@@ -217,6 +749,7 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             "content_variant_spec": strategy.get("content_variant_spec") or None,
             "content_constraints": strategy.get("content_constraints") or None,
             "subject": subject,
+            "discount": discount,   # 折扣策略随邮件节点落库（审批人可见）
             "landing_page_ref": strategy.get("landing_page_ref", ""),
             "tags_to_write": list(tags),
             "cta": {
@@ -226,11 +759,46 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             },
             "embed_fields": EMBED_FIELDS,
         },
-        nxt="n_tag" if is_service else "n_wait",
+        nxt=_email_main_next,
     ))
 
+    if _has_variant:
+        # decision.variant：A/B 分流路由。透明节点（mtype=None）→ Mautic 不建事件，
+        # 但 next 让转换器穿透到主链，避免阻断；if_true/if_false 仅供 PoC 流程图展示分叉。
+        graph.append(_node(
+            "n_decision_variant", "decision.variant",
+            {
+                "signal": "ab.split",
+                "split": _variant_split,
+                "variant_id": cv_spec.get("id") or "v1",
+                "if_true": "n_email_variant",          # 命中分流比例 → 变体路径
+                "if_false": _variant_continue,          # 未命中 → 主邮件路径
+                "next": _variant_continue,              # 透明节点穿透：保证 Mautic 主链不断
+                "note": ("内容变体 A/B 路由：content_variant_spec 已生成且 variant_split>0 时，"
+                         f"按 {int(_variant_split * 100)}% 比例把受众路由到变体"
+                         f" {cv_spec.get('id') or 'v1'}（与主邮件同资产、Mautic A/B 同邮件不同 variant），"
+                         "避免双发。"),
+            },
+        ))
+        # n_email_variant：变体邮件（透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘）。
+        graph.append(_node(
+            "n_email_variant", "email.variant",
+            {
+                "channel": "email",
+                "variant_id": cv_spec.get("id") or "v1",
+                "angle": cv_spec.get("angle", ""),
+                "headline": cv_spec.get("headline", ""),
+                "summary": cv_spec.get("summary", ""),
+                "email_ref": email_ref,
+                "subject": cv_spec.get("headline") or subject,
+                "landing_page_url": cta_url,
+                "note": "变体邮件（A/B）：透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘。",
+            },
+            nxt=_variant_continue,
+        ))
+
     if is_service:
-        # service/transactional：单次确认件，不做 wait/观测/分支/兜底促销 follow-up
+        # service/transactional：单次确认件，不做 wait/观测/兜底促销 follow-up
         pass
     else:
         # ---- 等待 delay_hours 后观测（Observer，靠 mtc_* 反填，无点击 webhook）----
@@ -242,36 +810,89 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
                 "metric": "landingpage_hit",
                 "embed_fields": EMBED_FIELDS,
             },
-            nxt="n_branch",
+            nxt=(fork_ids[0] if fork_ids else "n_branch"),
         ))
 
-        # ---- 分支：点击 → LP 承接转化；未点击 → 兜底 follow-up ----
-        graph.append(_node(
-            "n_branch", "decision.clicked",
-            {"if_true": "n_lp", "if_false": "n_followup"},
-        ))
-        # 点击后：着陆页承接（page.hit），归因末触
-        graph.append(_node(
-            "n_lp", "page.hit",
-            {
-                "landing_page_url": cta_url,
-                "landing_page_ref": strategy.get("landing_page_ref", ""),
-                "attribution": "last_touch_30d",
-                "embed_fields": EMBED_FIELDS,
-            },
-            nxt="n_tag",
-        ))
-        # 未点击：兜底补发一封（仍在 email 主渠道内）
-        graph.append(_node(
-            "n_followup", "email.send",
-            {
-                "channel": "email",
-                "email_ref": strategy.get("email_followup_ref", "EM_FOLLOWUP_PLACEHOLDER"),
-                "subject": strategy.get("followup_subject", "提醒：" + goal.objective),
-                "embed_fields": EMBED_FIELDS,
-            },
-            nxt="n_tag",
-        ))
+        if branches:
+            # ---- 规格声明的分叉：N 个分支 = N 个决策节点，按声明顺序串成 if/elif 阶梯 ----
+            # 命中 → 该分支终点（tag/阶段/分组/邮件/落地页/表单）；未命中 → 下一个分叉；
+            # 全部未命中 → 汇入主流程尾部（n_tag）。terminal=True 的分支到此为止。
+            for i, (bid, nid, br) in enumerate(fork_plans):
+                cond = br.get("condition") if isinstance(br.get("condition"), dict) else {}
+                ntype, known = _signal_decision(cond.get("signal"))
+                if not known:
+                    warnings.append(
+                        f"分支 '{bid}' 的信号 '{cond.get('signal')}' 无对应决策节点，"
+                        f"已回落通用决策（{GENERIC_DECISION_TYPE}）")
+                fields = _endpoint_fields(br.get("endpoint"))
+                sig = _normalize_signal(cond.get("signal"))
+                btxt = " ".join(str(br.get(k) or "")
+                                for k in ("id", "name", "label", "note", "desc",
+                                          "description", "intent", "rationale"))
+                sel, meta = _select_endpoint_actions(br.get("endpoint"), fields,
+                                                     signal=sig, text=btxt, branch=br)
+                _warn_selection("分支", bid, fields, sel, meta, warnings)
+                bassets = {k: _take(_res(k, fields[k])) for k in sel if k in _ASSET_ID_KEY}
+                ep_nodes = _endpoint_nodes(nid, fields, BRANCH_ENDPOINT, branch_id=bid,
+                                           selection=sel, assets=bassets, meta=meta)
+                if ep_nodes and not fields.get("terminal"):
+                    ep_nodes[-1]["next"] = "n_tag"      # 非终点分支：汇入公共落库 + 记账
+                params = {
+                    "signal": cond.get("signal"),
+                    "op": cond.get("op") or "exists",
+                    "value": cond.get("value") if cond.get("value") is not None else True,
+                    "branch_id": bid,
+                    "branch_type": br.get("type") or "condition",
+                    "if_true": ep_nodes[0]["id"] if ep_nodes else "n_tag",
+                    "if_false": fork_ids[i + 1] if i + 1 < len(fork_ids) else "n_tag",
+                }
+                # 「是否提交表单」决策如果指名了具体表单，就带上真实 form_id；
+                # 否则 Mautic 侧是 applyToAny（任意表单），判断会失准。
+                if sig == "form.submit":
+                    aref = (br.get("form_ref") or cond.get("ref") or cond.get("asset")
+                            or cond.get("form"))
+                    if aref not in (None, "", []):
+                        a = _take(_res("form", aref))
+                        if a is not None:
+                            params["asset"] = a.to_dict()
+                            if a.id is not None:
+                                params["form_id"] = a.id
+                if br.get("next"):
+                    # 分支声明的下游延续（campaign 级 cid，非本图节点 id，故只记录不连线）
+                    params["next"] = str(br["next"]).strip()
+                    params["next_kind"] = "campaign_cid"
+                if not known:
+                    params["fallback"] = True
+                graph.append(_node(nid, ntype, params))
+                graph.extend(ep_nodes)
+        else:
+            # ---- 无声明分叉：沿用基础路径模板的点击分支（点击 → LP 承接；未点击 → 兜底补发）----
+            graph.append(_node(
+                "n_branch", "decision.clicked",
+                {"if_true": "n_lp", "if_false": "n_followup"},
+            ))
+            # 点击后：着陆页承接（page.hit），归因末触
+            graph.append(_node(
+                "n_lp", "page.hit",
+                {
+                    "landing_page_url": cta_url,
+                    "landing_page_ref": strategy.get("landing_page_ref", ""),
+                    "attribution": "last_touch_30d",
+                    "embed_fields": EMBED_FIELDS,
+                },
+                nxt="n_tag",
+            ))
+            # 未点击：兜底补发一封（仍在 email 主渠道内）
+            graph.append(_node(
+                "n_followup", "email.send",
+                {
+                    "channel": "email",
+                    "email_ref": strategy.get("email_followup_ref", "EM_FOLLOWUP_PLACEHOLDER"),
+                    "subject": strategy.get("followup_subject", "提醒：" + goal.objective),
+                    "embed_fields": EMBED_FIELDS,
+                },
+                nxt="n_tag",
+            ))
 
     # 落库 tag（可驱动下游 segment/分组）——请求③「修改落库 tag、分组」
     # 必须经 tag-rule 校验通路写入，禁止直写 user_tag
@@ -283,8 +904,64 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             "direct_user_tag_write": False,
             "note": "落库 tag，经 tag-rule 校验后写入，驱动下游分组/segment",
         },
-        nxt="n_log",
+        nxt=tail_entry,
     ))
+
+    # ---- 阶段升降级（策略规格声明）：n_tag → 规则1 → … → 规则N → 主流程终点/记账 ----
+    for i, rule in enumerate(stage_rules):
+        when = rule.get("when") if isinstance(rule.get("when"), dict) else {}
+        nxt_id = (stage_rule_ids[i + 1] if i + 1 < len(stage_rule_ids)
+                  else (main_judge_id or (main_ep_entry or "n_log")))
+        # 目标阶段解析成真实 stage_id：解析到了就落 Mautic lead.changestage，
+        # 没解析到（Mautic 不可达 / 同名阶段不存在且未自动建）→ 退回纯审计，与改动前一致。
+        to_asset = _take(_res("stage", rule.get("to")))
+        sr_params = {
+            "from": rule.get("from"),
+            "to": rule.get("to"),
+            "when": when or None,
+            "direction": rule.get("direction") or "up",   # up=升级 / down=降级（审计可查）
+            "note": "阶段升降级（策略规格声明）",
+        }
+        if to_asset is not None:
+            sr_params["asset"] = to_asset.to_dict()
+            if to_asset.id is not None:
+                sr_params["stage_id"] = to_asset.id
+        graph.append(_node(
+            stage_rule_ids[i], "stage.change",
+            sr_params,
+            nxt=nxt_id,
+        ))
+
+    # ---- 主流程终点判断：命中 → 主流程终点；未命中 → 记账结束 ----
+    if main_judge_id:
+        jtype, jknown = _signal_decision(
+            main_judgment.get("signal") if isinstance(main_judgment, dict) else None)
+        if not jknown and isinstance(main_judgment, dict):
+            warnings.append(
+                f"主流程终点判断的信号 '{main_judgment.get('signal')}' 无对应决策节点，"
+                f"已回落通用决策（{GENERIC_DECISION_TYPE}）")
+        jcond = main_judgment if isinstance(main_judgment, dict) else {}
+        jparams = {
+            "signal": jcond.get("signal"),
+            "op": jcond.get("op") or "exists",
+            "value": jcond.get("value") if jcond.get("value") is not None else True,
+            "endpoint": MAIN_ENDPOINT,
+            "if_true": main_ep_entry or "n_log",
+            "if_false": "n_log",
+            "note": "主流程终点判断（策略规格声明的收口条件）",
+        }
+        if _normalize_signal(jcond.get("signal")) == "form.submit":
+            aref = jcond.get("ref") or jcond.get("asset") or jcond.get("form")
+            if aref not in (None, "", []):
+                a = _take(_res("form", aref))
+                if a is not None:
+                    jparams["asset"] = a.to_dict()
+                    if a.id is not None:
+                        jparams["form_id"] = a.id
+        graph.append(_node(main_judge_id, jtype, jparams))
+
+    # ---- 主流程终点节点（terminal=True → 事件图在此收口，不再接业务节点）----
+    graph.extend(main_ep_nodes)
 
     # 4) 渠道记账：每次 send 落 inventory_impression_log / lead_attribution
     graph.append(_node(
@@ -315,9 +992,20 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     canonical = json.dumps(graph, ensure_ascii=False, sort_keys=True)
     plan_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    # ---- 活动周期：策略声明的 window 优先于 GoalSpec 起止日（未声明则完全沿用旧行为）----
+    window = strategy.get("window") if isinstance(strategy.get("window"), dict) else None
+    start_date = goal.start_date
+    end_date = goal.end_date
+    if window:
+        if window.get("start"):
+            start_date = str(window["start"])
+        if window.get("end"):
+            end_date = str(window["end"])
+
     proposal = {
         "campaign": {
-            "name": strategy.get("campaign_name", goal.objective),
+            # 结构化中文名（活动名-波次意图-票种）替代内部 cid 作为 Mautic 显示名
+            "name": _compose_campaign_name(goal, strategy, _wave_idx(strategy)),
             "goal_id": campaign_id,
             "cid": strategy.get("cid"),
             "wave_id": wave_id,
@@ -326,8 +1014,8 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             "reserved_channels": goal.reserved_channels,
             "landing_page_url": cta_url,
             "kpi": goal.kpi,
-            "start_date": goal.start_date,
-            "end_date": goal.end_date,
+            "start_date": start_date,
+            "end_date": end_date,
             "strategy": strategy,
         },
         "graph": graph,
@@ -353,6 +1041,7 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
             "content_variant": content_variant,
             "content_variant_spec": strategy.get("content_variant_spec") or None,
             "landing_page_ref": strategy.get("landing_page_ref", ""),
+            "discount": discount,
             "tags_to_write": list(tags),
             "success_criteria": strategy.get("success_criteria") or None,
             "intent": intent,
@@ -365,6 +1054,22 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
         "approval": None,
         "deployed": False,
     }
+    if window:
+        proposal["campaign"]["window"] = window
+        proposal["campaign"]["window_source"] = "strategy_spec"
+    if warnings:
+        # 只在真的有降级/回落时才有这个键（老 spec 的 proposal 结构与旧行为逐字节一致）
+        proposal["compile_warnings"] = warnings
+    if assets_report:
+        # 资产解析台账：哪个名字解析成了哪个 ID、是复用还是自动新建的草稿（供运营核对/上线）
+        seen, report = set(), []
+        for a in assets_report:
+            k = (a.kind, a.name, a.id, a.status)
+            if k in seen:
+                continue
+            seen.add(k)
+            report.append(a.to_dict())
+        proposal["asset_resolution"] = report
 
     # ---- Mautic 7 期望的 payload：events + canvasSettings（分开发，含 parent/child 连线）----
     # 这样经 campaign API 写入后，canvas 会出现连线、campaign_events.parent 会被正确设置，
@@ -374,6 +1079,16 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     proposal["mautic_canvas"] = mautic["canvasSettings"]
     proposal["mautic_lists"] = mautic.get("lists")
     proposal["api_calls"] = _build_api_calls(campaign_id, plan_hash, graph, mautic)
+
+    # ---- 可选输出：聚焦项（Focus）/ 资源（Asset）实体 ----
+    # 仅当策略显式声明才进入 proposal；push() 据此在 Mautic 端一键 create 对应实体。
+    # 缺省不写这两个键（保持老 spec 编译出的 proposal 结构完全不变）。
+    _fi = strategy.get("focus_items")
+    _as = strategy.get("assets")
+    if _fi:
+        proposal["focus_items"] = _fi
+    if _as:
+        proposal["assets"] = _as
     return proposal
 
 
@@ -387,26 +1102,56 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
 #      CampaignModel::setEvents() 据此设置 campaign_events.parent，从而建立执行链。
 #
 # PoC 的治理/观测节点（frequency_gate / anchor_arbitration / guardrail / log_channel_send /
-# observer.click / page.hit / decision.segment 等）在 Mautic 没有原生等价物，统一映射为：
-#   - 真实可执行的事件（email.send / email.click 决策 / lead.changetags）；
-#   - 或「无害透传」条件 lead.field_value（校验 email 非空，不改动联系人数据），
-#     以保证链路连通且 Mautic 校验通过。
-# 纯透传节点（wait 计时、observer.click 观测）不单独建事件，而是并入下一个真实事件：
+# observer.click / page.hit / decision.segment 等）在 Mautic 没有原生等价物。
+# 实测这些节点落地成 lead.field_value「无害透传」条件后，既不做真实治理、又污染画布、
+# 还误导运营以为有治理在跑。故统一映射为 None——纯透传，resolve 直接穿过、不生成 Mautic 事件：
+#   - 真实可执行的事件只有 email.send / email.click 决策 / lead.changetags；
+#   - 治理概念仍保留在 proposal.graph（供审批/复盘），但不落到 Mautic 画布。
+# 纯透传节点（wait 计时、observer.click 观测）同样不单独建事件，并入下一个真实事件：
 #   wait 的 duration 成为下一事件的 triggerInterval；observer.click 并入 email.click 决策。
 _MAUTIC_TYPE = {
     "email.send": "email.send",
     "tag.write": "lead.changetags",
-    "guardrail": "lead.dnc",                       # 退订/抑制校验：Mautic 原生条件
-    "frequency_gate": "lead.field_value",          # 无原生事件 → 无害透传
-    "anchor_arbitration": "lead.field_value",      # 无原生事件 → 无害透传
-    "log_channel_send": "lead.field_value",        # 无原生事件 → 无害透传
-    "page.hit": "lead.field_value",                # 归因观测 → 无害透传
-    "decision.segment": "lead.field_value",        # 进入分群门 → 无害透传（真实分群走 lists source）
-    "decision.event_trigger": "lead.field_value",  # 事件触发入口 → 无害透传
+    "guardrail": None,                              # 治理节点：Mautic 无原生护栏事件 → 不生成事件（纯透传，resolve 穿过）
+    "frequency_gate": None,                         # 治理节点：无原生频次闸门 → 不生成事件
+    "anchor_arbitration": None,                     # 治理节点：无原生锚点仲裁 → 不生成事件
+    "log_channel_send": None,                       # 治理节点：无原生渠道记账 → 不生成事件
+    "page.hit": None,                               # 观测节点：点击归因走 channel_url_trackables，不建 campaign 事件
+    "decision.segment": None,                       # 进入分群门 → 不生成事件（真实分群走 campaign lists source）
+    "decision.event_trigger": None,                 # 事件触发入口 → 不生成事件
     "decision.clicked": "email.click",             # 点击分支 → 成为 email.click 决策
     "observer.click": None,                         # 并入 email.click 决策
     "wait": None,                                   # 计时并入下一事件 triggerInterval
     "sms.send.reserved": None,                      # 预留/禁用 → 跳过
+    # ---- 策略规格声明的分叉/终点（StrategySpec 分支真正落到 Mautic 的部分）----
+    # 这四个决策在本机 Mautic 都是原生 decision（EmailBundle/PageBundle/FormBundle 注册），
+    # 且 properties 空列表 = 不限制具体邮件/页面/表单（applyToAny），不会因缺资产 ID 而 500。
+    "decision.opened": "email.open",               # email.open（打开邮件？）
+    "decision.page_hit": "page.pagehit",           # page.pagehit（访问落地页？）
+    "decision.form_submit": "form.submit",         # form.submit（提交表单？）
+    "decision.generic": "email.click",             # 未知信号 → 回落已验证可用的通用决策
+    # 阶段/分组/表单终点：以前是「名称→ID 无解析通路」才被迫透传，现在由 asset_resolver 解析。
+    # 解析到 ID → 落真实事件；解析不到 → mtype() 守卫退回审计（绝不写出指向 0/空的坏动作）。
+    "stage.change": "lead.changestage",       # 改阶段（需 stage_id）
+    "segment.change": "lead.changelist",      # 加入/移出分组（需 segment_id）
+    "form.submit": "form.submit",             # 是否提交该表单（有 form_id 才限定，否则 applyToAny）
+    # ---- 内容变体 A/B 路由（透明：仅流程图展示 + 供审批/复盘，不建真实 Mautic 事件，避免双发）----
+    "decision.variant": None,
+    "email.variant": None,
+}
+
+# Mautic 7 Event.eventType（setEvents 经 ChannelExtractor::setChannel 依赖它，缺失会 500）
+_EVENT_TYPE = {
+    "email.send": "action",
+    "email.click": "decision",
+    "email.open": "decision",
+    "page.pagehit": "decision",
+    "form.submit": "decision",
+    "lead.changetags": "action",
+    "lead.changestage": "action",
+    "lead.changelist": "action",
+    "lead.dnc": "action",
+    "lead.field_value": "condition",
 }
 
 
@@ -425,10 +1170,25 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
     nodes = {n["id"]: n for n in graph}
 
     def mtype(n):
-        return _MAUTIC_TYPE.get(n.get("type"))
+        t = _MAUTIC_TYPE.get(n.get("type"))
+        if t is None:
+            return None
+        # 依赖资产 ID 的动作：没解析到 ID 就退回审计透传（不写出 stage=0 / addToLists=[] 的坏动作）
+        kind = _NODE_ASSET_KIND.get(n.get("type"))
+        if kind and not (n.get("params") or {}).get(_ASSET_ID_KEY[kind]):
+            return None
+        return t
+
+    def _next_id(n):
+        """next 可能落在 top-level，也可能落在 params（decision.variant 就是写在 params 里），两处都认。"""
+        return n.get("next") or (n.get("params") or {}).get("next")
 
     def resolve(start_id):
-        """沿 next/if_true/if_false 穿过透传节点，返回第一个真实事件节点 id 与累计等待小时数。"""
+        """沿 next 穿过透传节点，返回第一个真实事件节点 id 与累计等待小时数。
+
+        注意：透明节点（如 decision.variant）的 next 可能只存在于 params 中，
+        若只读 top-level 会导致穿透失败 → 上游事件失去出边 → Mautic 判定 orphaned 拒绝发布。
+        """
         cid = start_id
         interval = 0
         seen = set()
@@ -444,7 +1204,7 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
                 m = re.match(r"(\d+)\s*h", str(dur))
                 if m:
                     interval = int(m.group(1))
-            cid = n.get("next")
+            cid = _next_id(n)
         return (None, interval)
 
     def successors(n):
@@ -459,8 +1219,8 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
                 rt, iv = resolve(p["if_false"])
                 if rt:
                     out.append((rt, "no", iv))
-        elif n.get("next"):
-            rt, iv = resolve(n.get("next"))
+        elif _next_id(n):
+            rt, iv = resolve(_next_id(n))
             if rt:
                 out.append((rt, None, iv))
         return out
@@ -484,10 +1244,27 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
             }
         if t == "lead.changetags":
             return {"add_tags": list(p.get("tags") or []), "remove_tags": []}
+        if t == "lead.changestage":
+            return {"stage": int(p.get("stage_id") or 0)}
+        if t == "lead.changelist":
+            sid = p.get("segment_id")
+            ids = [int(sid)] if sid else []
+            # 终点声明 action=remove → 移出分组；缺省加入
+            return ({"addToLists": [], "removeFromLists": ids} if p.get("action") == "remove"
+                    else {"addToLists": ids, "removeFromLists": []})
         if t == "lead.dnc":
             return {"channels": ["email"], "reason": None}
         if t == "email.click":
             return {"email": _email_id(main_email_ref), "urls": {"list": []}}
+        if t == "email.open":
+            return {"email": _email_id(main_email_ref)}
+        if t == "page.pagehit":
+            # 空 pages = 不限制具体页面（PageBundle: applyToAny）；缺 key 会报 undefined index
+            return {"pages": []}
+        if t == "form.submit":
+            # 有 form_id → 只认这个表单；空 forms = 任意表单（FormBundle 只在非空时才比对）
+            fid = p.get("form_id")
+            return {"forms": [int(fid)] if fid else []}
         # 无害透传（lead.field_value）：校验 email 非空，不改动联系人数据
         return {"field": "email", "operator": "!empty", "value": ""}
 
@@ -497,16 +1274,28 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
             return f"发送邮件：{p.get('subject') or n['id']}"
         if t == "lead.changetags":
             return f"打标签：{p.get('tags') or []}"
+        if t == "lead.changestage":
+            return f"改阶段：{p.get('stage') or '（未解析到阶段）'}"
+        if t == "lead.changelist":
+            verb = "移出分组" if p.get("action") == "remove" else "加入分组"
+            return f"{verb}：{p.get('segment') or '（未解析到分组）'}"
         if t == "lead.dnc":
             return "护栏：退订/抑制校验"
         if t == "email.click":
             return "决策：是否点击"
+        if t == "email.open":
+            return "决策：是否打开"
+        if t == "page.pagehit":
+            return "决策：是否访问页面"
+        if t == "form.submit":
+            return "决策：是否提交表单"
         return f"{n.get('type')}（治理/观测）"
 
     events: list = []
     canvas_nodes: list = []
     connections: list = []
     instances: dict = {}        # (node_id, parent_sig) -> temp_id
+    children_map: dict = {}     # temp_id -> [child temp_id]
     order = [0]
 
     def emit(node_id, parent_temp_id, anchor, interval, lane):
@@ -518,30 +1307,43 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
         order[0] += 1
         tid = f"new{order[0]}"
         instances[key] = tid
+        # —— 严格对齐 Mautic 7 CampaignApiControllerFunctionalTest::testCreateNewCampaign 的 201 payload ——
+        # 缺 eventType / order / children / parent / decisionPath 或误用 triggerUnit、position:{x,y}、
+        # anchors.target!='top' 都会触发 setEvents/setChannel 内部 500。
         ev = {
             "id": tid,
-            "type": t,
             "name": _name(n, t),
+            "description": _name(n, t),
+            "type": t,
+            "eventType": _EVENT_TYPE.get(t, "action"),
+            "order": order[0],
             "properties": _props(n, t),
-            "triggerMode": "immediate",
+            "triggerInterval": interval if (interval and interval > 0) else 0,
+            "triggerIntervalUnit": "H" if (interval and interval > 0) else None,
+            "triggerMode": "interval" if (interval and interval > 0) else None,
+            "children": [],
+            "parent": parent_temp_id,
+            "decisionPath": anchor,
         }
-        if interval and interval > 0:
-            ev["triggerMode"] = "interval"
-            ev["triggerInterval"] = interval
-            ev["triggerUnit"] = "H"
         events.append(ev)
         canvas_nodes.append({
             "id": tid,
-            "position": {"x": order[0] * 200, "y": lane * 160 + 40},
-            "type": t,
-            "name": ev["name"],
+            "positionX": str(order[0] * 200),
+            "positionY": str(lane * 160 + 40),
         })
         if parent_temp_id is not None:
+            # anchors.source 约定（取自生产 campaign #27 实测）：
+            #   决策分支 → "yes"/"no"；顺序（非决策 action/condition→子） → "bottom"；
+            #   lead source → "leadsource"。
+            # ⚠️ 不能为 null：setCanvasSettings() 对 anchors.source=null 会走重建分支并
+            #    执行 null['endpoint'] → PHP fatal → HTTP 500（这是之前全量 500 的根因）。
+            src_anchor = anchor if anchor in ("yes", "no") else "bottom"
             connections.append({
                 "sourceId": parent_temp_id,
                 "targetId": tid,
-                "anchors": {"source": anchor, "target": "endpointConnection"},
+                "anchors": {"source": src_anchor, "target": "top"},
             })
+            children_map.setdefault(parent_temp_id, []).append(tid)
         for (succ, sa, iv) in successors(n):
             child_lane = lane
             if sa == "yes":
@@ -562,6 +1364,10 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
         if mtype(nodes[nid]) is not None and indeg.get(nid, 0) == 0:
             emit(nid, None, None, 0, 1)
 
+    # 反填 children（Mautic 期望 events[].children 为子事件 temp id 列表）
+    for ev in events:
+        ev["children"] = children_map.get(ev["id"], [])
+
     lists = None
     seg_id = strategy.get("segment_id")
     if seg_id:
@@ -578,7 +1384,7 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
                 connections.append({
                     "sourceId": "lists",
                     "targetId": cn["id"],
-                    "anchors": {"source": "leadsource", "target": "endpointConnection"},
+                    "anchors": {"source": "leadsource", "target": "top"},
                 })
 
     return {
@@ -613,13 +1419,13 @@ def _build_api_calls(campaign_id: str, plan_hash: str, graph: list, mautic: Opti
     return [
         {
             "method": "POST",
-            "path": "/s/api/v2/campaigns/new",
+            "path": "/api/campaigns/new",
             "body": create_body,
             "desc": "创建 campaign 并写入事件图（events + canvasSettings，含 parent/child 连线）",
         },
         {
             "method": "POST",
-            "path": "/s/api/v2/campaigns/<id>/edit",
+            "path": "/api/campaigns/<id>/edit",
             "body": {"isPublished": True},
             "desc": "审批通过后(Gate)再上线——PoC dry-run 不执行",
         },
