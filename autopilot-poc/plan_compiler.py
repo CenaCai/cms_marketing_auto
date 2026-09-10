@@ -662,7 +662,11 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
         if res.status != asset_resolver.EMPTY:
             assets_report.append(res)
         w = res.warning()
-        if w:
+        # 去重：同一资产被多个字段键声明时（如终点 form 与 form_ref 都指向同一表单），
+        # asset_resolver 命中缓存会返回同一个 CREATED 引用，warning() 会重复触发；
+        # 台账 asset_resolution 已按 (kind,name,id,status) 去重，这里 warnings 也要同步去重，
+        # 否则同一行提示会重复出现（如「表单 FORM_甲A足球赛 … 手动发布」连发两条）。
+        if w and w not in warnings:
             warnings.append(w)
         return res
 
@@ -1075,6 +1079,16 @@ def compile(goal: GoalSpec, strategy: Optional[dict] = None) -> dict:
     proposal["mautic_canvas"] = mautic["canvasSettings"]
     proposal["mautic_lists"] = mautic.get("lists")
     proposal["api_calls"] = _build_api_calls(campaign_id, plan_hash, graph, mautic)
+
+    # ---- 可选输出：聚焦项（Focus）/ 资源（Asset）实体 ----
+    # 仅当策略显式声明才进入 proposal；push() 据此在 Mautic 端一键 create 对应实体。
+    # 缺省不写这两个键（保持老 spec 编译出的 proposal 结构完全不变）。
+    _fi = strategy.get("focus_items")
+    _as = strategy.get("assets")
+    if _fi:
+        proposal["focus_items"] = _fi
+    if _as:
+        proposal["assets"] = _as
     return proposal
 
 
@@ -1165,8 +1179,16 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
             return None
         return t
 
+    def _next_id(n):
+        """next 可能落在 top-level，也可能落在 params（decision.variant 就是写在 params 里），两处都认。"""
+        return n.get("next") or (n.get("params") or {}).get("next")
+
     def resolve(start_id):
-        """沿 next/if_true/if_false 穿过透传节点，返回第一个真实事件节点 id 与累计等待小时数。"""
+        """沿 next 穿过透传节点，返回第一个真实事件节点 id 与累计等待小时数。
+
+        注意：透明节点（如 decision.variant）的 next 可能只存在于 params 中，
+        若只读 top-level 会导致穿透失败 → 上游事件失去出边 → Mautic 判定 orphaned 拒绝发布。
+        """
         cid = start_id
         interval = 0
         seen = set()
@@ -1182,7 +1204,7 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
                 m = re.match(r"(\d+)\s*h", str(dur))
                 if m:
                     interval = int(m.group(1))
-            cid = n.get("next")
+            cid = _next_id(n)
         return (None, interval)
 
     def successors(n):
@@ -1197,8 +1219,8 @@ def to_mautic_events(graph: list, strategy: Optional[dict] = None) -> dict:
                 rt, iv = resolve(p["if_false"])
                 if rt:
                     out.append((rt, "no", iv))
-        elif n.get("next"):
-            rt, iv = resolve(n.get("next"))
+        elif _next_id(n):
+            rt, iv = resolve(_next_id(n))
             if rt:
                 out.append((rt, None, iv))
         return out

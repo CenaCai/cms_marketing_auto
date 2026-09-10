@@ -92,6 +92,11 @@ class AssetRef:
         """需要提示给运营的一行中文；无需提示返回 None。"""
         label = ASSET_KINDS.get(self.kind, {}).get("label", self.kind)
         if self.status == CREATED:
+            if self.kind == "form":
+                # 表单与邮件/落地页一致：推送上线时由 push() 的 ensure_log 发布循环自动上线，
+                # 故编译期只提示「已建草稿」，不再要求运营手动发布。
+                return (f"{label}「{self.name}」在 Mautic 不存在，已自动建草稿（id={self.id}）；"
+                        f"推送上线时会自动发布（与邮件/落地页一致）")
             return (f"{label}「{self.name}」在 Mautic 不存在，已自动建草稿（id={self.id}）；"
                     f"草稿未上线，需运营补内容后手动发布")
         if self.status == UNRESOLVED:

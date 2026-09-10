@@ -655,6 +655,140 @@ def ensure_form(name: str, env: str = "local", timeout: int = 15, fields: list =
     return {"id": None, "error": f"POST /api/forms/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
+# =====================================================================
+# 聚焦项（Focus）/ 资源（Asset）：find-or-create（与 segment/email/page 同一套模式）
+# ---------------------------------------------------------------------
+# 这是「策略模型可选输出」的落地层：策略声明 focus_items / assets 时，push() 据此在
+# Mautic 端一键创建对应实体。两者都是独立 Mautic 实体（非 campaign 事件图节点）：
+#   - Asset  = 可下载营销资源（手册/价目表/白皮书），本实例 AssetBundle 可用 → 真实创建；
+#   - Focus  = 浮层 CTA（弹窗/通知条/顶部条），本 Mautic 构建若无 FocusBundle 会 404
+#             → ensure_focus_item 内部降级为 skipped 标记，不报错、不阻断 campaign 推送。
+# =====================================================================
+def ensure_asset(name: str, env: str = "local", timeout: int = 15,
+                 url: str = None, title: str = None, language: str = "zh_CN",
+                 project_id: int = None) -> dict:
+    """按 title 找资源(Asset)；找不到就 POST 新建（草稿）。返回 {"id","title","alias","created","error"?}。
+
+    name：资源名（同时作为 Mautic asset title，缺省用 name）。
+    url ：远程资源地址（storage_location=remote，无需上传文件）；为空则只建空壳（运营补文件）。
+    Mautic Asset API：POST /api/assets/new，必填 title + alias；远程资源再带 storage_location/remotePath。
+    """
+    if not name:
+        return {"id": None, "error": "name 为空"}
+    title = title or name
+    alias = _aliasify(name)
+    try:
+        cfg = load_config(env)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"load_config: {e}"}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {"id": None, "error": "未配置 OAuth client_id/secret"}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"token 获取失败: {e}"}
+
+    res = _get(base, f"/api/assets?search={urllib.parse.quote(title)}&limit=10", token, timeout)
+    for it in _bucket_items(res, "assets"):
+        if it.get("id") and (str(it.get("title") or "").strip() == title.strip()
+                             or it.get("alias") == alias):
+            return {"id": int(it["id"]), "title": it.get("title"), "alias": it.get("alias"),
+                    "created": False}
+
+    body = {
+        "title": title,
+        "alias": alias,
+        "isPublished": False,
+        "language": language,
+    }
+    # 远程资源：免文件上传，直接给下载链接（最常用场景）；本地文件上传需 multipart，留给运营后台补。
+    if url:
+        body["storage_location"] = "remote"
+        body["remotePath"] = url
+    if project_id:
+        body["projects"] = [int(project_id)]
+    r = _post(base, "/api/assets/new", body, token, timeout=timeout)
+    if r["status"] in (200, 201):
+        a = (r["body"] or {}).get("asset") or {}
+        new_id = a.get("id")
+        if new_id:
+            return {"id": int(new_id), "title": title, "alias": alias, "created": True}
+    return {"id": None, "error": f"POST /api/assets/new HTTP {r['status']}: {_format_err(r['body'])}"}
+
+
+def ensure_focus_item(name: str, env: str = "local", timeout: int = 15,
+                      focus_type: str = "notification", style: str = "modal",
+                      content: str = None, cta_url: str = None,
+                      project_id: int = None) -> dict:
+    """按 name 找聚焦项(Focus)；找不到就 POST 新建（草稿）。返回 {"id","name","alias","created","skipped"?,"error"?}。
+
+    ⚠️ 防御性实现：本 Mautic 构建可能未启用 FocusBundle（/api/focus/* 会 404）。
+    若实例无 FocusBundle，POST 返回 404 / 无 focus 实体，则回退为 skipped 标记
+    （不报错、不阻断 campaign 推送），由调用方在 ensure_log 标注「实例未安装 FocusBundle」。
+
+    Mautic Focus API：POST /api/focus/new，字段 name/description/type/style/content/properties。
+    type ：notification | popup | modal（聚焦项类型）
+    style：modal | notification | top_bar | bottom_bar（展示样式；与 type 共同决定外观）
+    """
+    if not name:
+        return {"id": None, "error": "name 为空"}
+    alias = _aliasify(name)
+    try:
+        cfg = load_config(env)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"load_config: {e}"}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {"id": None, "error": "未配置 OAuth client_id/secret"}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"token 获取失败: {e}"}
+
+    # 先查现有（Focus 列表接口同样依赖 FocusBundle；404 时直接走 skipped 分支）
+    try:
+        res = _get(base, f"/api/focus?search={urllib.parse.quote(name)}&limit=10", token, timeout)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "skipped": True,
+                "reason": f"FocusBundle 可能未安装（查询失败）: {e}"}
+    existing = None
+    if isinstance(res, dict):
+        for it in _bucket_items(res, "focus", "items"):
+            if it.get("id") and (str(it.get("name") or "").strip() == name.strip()
+                                 or it.get("alias") == alias):
+                existing = it
+                break
+    if existing:
+        return {"id": int(existing["id"]), "name": existing.get("name"),
+                "alias": existing.get("alias"), "created": False}
+
+    body = {
+        "name": name,
+        "alias": alias,
+        "description": "",
+        "type": focus_type,
+        "style": style,
+        "isPublished": False,
+        "content": content or "",
+        "properties": {},
+    }
+    if cta_url:
+        body["properties"] = {"cta_url": cta_url}
+    r = _post(base, "/api/focus/new", body, token, timeout=timeout)
+    if r["status"] in (200, 201):
+        f = (r["body"] or {}).get("focus") or (r["body"] or {}).get("item") or {}
+        new_id = f.get("id")
+        if new_id:
+            return {"id": int(new_id), "name": name, "alias": alias, "created": True}
+        # 201 但无 focus 实体（极少）：当未安装处理
+    # 404 / 无 focus 实体 → 视为实例未安装 FocusBundle，安全降级
+    return {"id": None, "skipped": True,
+            "reason": f"FocusBundle 可能未安装（POST /api/focus/new HTTP {r['status']}）"}
+
+
 def ensure_project(name: str, env: str = "local", timeout: int = 60) -> int:
     """按 name 找/建 Mautic project（/api/v2/projects，Basic 认证）。返回 int id 或 None。
     project 与 cockpit program 一一对应（program 生成时建一个，所有资产挂其下）。
@@ -951,7 +1085,12 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
     form_id = None
     form_html = None
     if _needs_form:
-        form_name = f"{campaign_name}-表单"
+        # 优先复用编译期 asset_resolver 已按声明名建好的表单（如 FORM_甲A足球赛，
+        # 遵循 CSTS「FORM_」命名规范），使其进入 ensure_log 并被推送发布循环自动上线，
+        # 与邮件/落地页行为一致；未声明表单名时再回退到「{活动名}-表单」自动命名。
+        # 这样避免「编译期建一份 + 推送期又建一份同名不同 id」导致的孤儿草稿。
+        _declared_form = str_ref.get("form_ref") or _mep.get("form") or ""
+        form_name = _declared_form.strip() or f"{campaign_name}-表单"
         rform = ensure_form(form_name, env=env, timeout=60, project_id=project_id)
         ensure_log.append({"asset": "form", "name": form_name, **rform})
         if rform.get("id"):
@@ -1044,6 +1183,39 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
                     props["email"] = ev_email[pid]
                     ev["properties"] = props
 
+    # 0.2.4 可选：聚焦项（Focus）/ 资源（Asset）实体（策略声明的「可选输出」）
+    # 仅当 proposal 含 focus_items / assets 才执行；缺省不影响既有流程、零额外请求。
+    # - Asset 实体：本实例 AssetBundle 可用 → 真实 create（远程资源免上传）；
+    # - Focus 实体：本 Mautic 构建若无 FocusBundle 会 404 → ensure_focus_item 内部 skipped，
+    #   不报错、不阻断 campaign 推送，仅 ensure_log 标注「实例未安装 FocusBundle」。
+    _fi_items = proposal.get("focus_items") or []
+    _as_items = proposal.get("assets") or []
+    if _fi_items or _as_items:
+        for fi in _fi_items:
+            if not isinstance(fi, dict):
+                continue
+            fi_name = fi.get("name") or ""
+            if not fi_name:
+                ensure_log.append({"asset": "focus_item", "warn": "聚焦项缺 name，已跳过"})
+                continue
+            rfi = ensure_focus_item(
+                fi_name, env=env, timeout=60,
+                focus_type=fi.get("type", "notification"), style=fi.get("style", "modal"),
+                content=fi.get("content"), cta_url=fi.get("cta_url"), project_id=project_id)
+            ensure_log.append({"asset": "focus_item", "name": fi_name, **rfi})
+        for a in _as_items:
+            if not isinstance(a, dict):
+                continue
+            a_name = a.get("name") or a.get("title") or ""
+            if not a_name:
+                ensure_log.append({"asset": "asset", "warn": "资源缺 name/title，已跳过"})
+                continue
+            ra = ensure_asset(
+                a_name, env=env, timeout=60, url=a.get("url"),
+                title=a.get("title"), language=a.get("language", "zh_CN"),
+                project_id=project_id)
+            ensure_log.append({"asset": "asset", "name": a_name, **ra})
+
     # 0.3 关键：plan 阶段若 strategy.segment_id 缺失 → mautic_canvas.connections 没有
     #     「lists → 根事件」连线，导致 Mautic 报「orphan events」无法发布。
     #     这里补一条从 lists source 连到第一个无父节点的根事件。
@@ -1103,6 +1275,12 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
             elif asset == "form":
                 # 表单上线：否则公开提交端点 /form/submit?formId=X 会拒绝草稿表单的提交
                 r = _patch(base, f"/api/forms/{aid}/edit", {"isPublished": True}, token, timeout=60)
+            elif asset == "asset":
+                # 资源上线：草稿资源无公开下载页，发布后才可被邮件 CTA 引用
+                r = _patch(base, f"/api/assets/{aid}/edit", {"isPublished": True}, token, timeout=60)
+            elif asset == "focus_item":
+                # 聚焦项上线（仅当实例有 FocusBundle 且已成功创建；skipped 项无 id 已被 continue 过滤）
+                r = _patch(base, f"/api/focus/{aid}/edit", {"isPublished": True}, token, timeout=60)
             else:
                 continue
             publish_log.append({"asset": asset, "id": aid, **r})

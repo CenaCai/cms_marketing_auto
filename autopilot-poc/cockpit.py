@@ -174,86 +174,104 @@ def _mock_strategy(goal: GoalSpec) -> dict:
 
 
 # --------------------------- 设计系统 ---------------------------
-CSS = """
-:root{
- --bg:#f4f6f9; --card:#ffffff; --ink:#1c2330; --muted:#6b7280;
- --line:#e6e9ef; --brand:#185fa5; --brand-soft:#e8f1fb;
- --ok:#1d9e75; --ok-soft:#e1f5ee; --bad:#d85a30; --bad-soft:#fbece7;
- --warn:#ba7517; --warn-soft:#faefda; --gov:#3b6d11; --gov-soft:#eaf3de;
- --radius:14px; --shadow:0 1px 3px rgba(20,30,50,.06),0 6px 18px rgba(20,30,50,.05);
+CSS = """:root{
+ --bg:#eef2f7; --card:#ffffff; --ink:#0f172a; --muted:#64748b;
+ --line:#e2e8f0; --brand:#2563eb; --brand-2:#1d4ed8; --brand-soft:#eff6ff;
+ --ok:#15a34a; --ok-soft:#e7f7ee; --bad:#e11d48; --bad-soft:#fdeaef;
+ --warn:#c2790a; --warn-soft:#fdf3df; --gov:#0f9d8f; --gov-soft:#e2f7f4;
+ --radius:14px; --radius-sm:10px;
+ --shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.06);
+ --shadow-hover:0 4px 12px rgba(15,23,42,.08),0 14px 36px rgba(15,23,42,.10);
 }
 *{box-sizing:border-box}
-body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
- background:var(--bg);color:var(--ink);font-size:14px;line-height:1.6}
-.header{background:linear-gradient(180deg,#0f2a4a,#16406e);color:#fff;padding:18px 28px;display:flex;
- align-items:center;gap:14px;box-shadow:var(--shadow)}
-.header .logo{font-size:18px;font-weight:600;letter-spacing:.5px}
-.header .env{margin-left:auto;background:rgba(255,255,255,.14);padding:4px 12px;border-radius:999px;font-size:12px}
-.wrap{max-width:1040px;margin:0 auto;padding:26px 20px 60px}
-h1{font-size:22px;margin:0 0 4px}
-.sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+html{scroll-behavior:smooth}
+::selection{background:var(--brand-soft);color:var(--brand-2)}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+ background:var(--bg);color:var(--ink);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.header{background:linear-gradient(135deg,#0b223f 0%,#16365f 100%);color:#fff;padding:16px 28px;
+ display:flex;align-items:center;gap:14px;box-shadow:0 2px 16px rgba(11,34,63,.28);border-bottom:3px solid var(--brand)}
+.header .logo{font-size:18px;font-weight:600;letter-spacing:.4px;color:#ffffff}
+.header .env{margin-left:auto;background:rgba(255,255,255,.16);padding:4px 12px;border-radius:999px;
+ font-size:12px;border:1px solid rgba(255,255,255,.18)}
+.wrap{max-width:1060px;margin:0 auto;padding:28px 20px 64px}
+h1{font-size:22px;margin:0 0 6px;letter-spacing:-.2px}
+h2{font-size:16px;margin:0 0 10px}
+h3{font-size:14px;margin:0 0 8px}
+.sub{color:var(--muted);font-size:13px;margin-bottom:24px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
- padding:20px;margin-bottom:18px;box-shadow:var(--shadow)}
+ padding:22px;margin-bottom:18px;box-shadow:var(--shadow);transition:box-shadow .2s ease,border-color .2s ease}
+.card:hover{box-shadow:var(--shadow-hover);border-color:#d6deea}
 .grid2{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}
 @media(max-width:820px){.grid2{grid-template-columns:1fr}}
-label{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px;font-weight:500}
-input,select,textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:10px;
- font-size:14px;background:#fcfdff;color:var(--ink);font-family:inherit}
-textarea{min-height:74px;resize:vertical;line-height:1.5}
-input:focus,select:focus,textarea:focus{outline:2px solid var(--brand-soft);border-color:var(--brand)}
-.btn{display:inline-block;background:var(--brand);color:#fff;padding:9px 16px;border-radius:10px;
- border:0;font-size:13px;cursor:pointer;text-decoration:none}
-.btn.sec{background:var(--brand-soft);color:var(--brand)}
-.btn.ghost{background:#fff;color:var(--brand);border:1px solid var(--line)}
-.btn.sm{padding:5px 11px;font-size:12px}
-.btn.danger{background:#fff;color:#c0392b;border:1px solid #c0392b}
-.btn.danger:hover{background:#c0392b;color:#fff}
-.badge{display:inline-block;font-size:11px;padding:2px 9px;border-radius:999px;font-weight:600}
+label{display:block;font-size:12px;color:var(--muted);margin:14px 0 6px;font-weight:600;letter-spacing:.2px}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);
+ font-size:14px;background:#fbfdff;color:var(--ink);font-family:inherit;transition:border-color .15s,box-shadow .15s,background .15s}
+textarea{min-height:78px;resize:vertical;line-height:1.55}
+input:focus,select:focus,textarea:focus{outline:0;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--brand);color:#fff;
+ padding:10px 18px;border-radius:var(--radius-sm);border:0;font-size:13px;font-weight:500;cursor:pointer;
+ text-decoration:none;transition:background .15s,transform .08s,box-shadow .15s;box-shadow:0 1px 2px rgba(37,99,235,.25)}
+.btn:hover{background:var(--brand-2);box-shadow:0 4px 12px rgba(37,99,235,.32)}
+.btn:active{transform:translateY(1px);box-shadow:none}
+.btn.sec{background:var(--brand-soft);color:var(--brand);box-shadow:none}
+.btn.sec:hover{background:#dbeafe}
+.btn.ghost{background:#fff;color:var(--brand);border:1px solid var(--line);box-shadow:none}
+.btn.ghost:hover{border-color:var(--brand);background:var(--brand-soft)}
+.btn.sm{padding:6px 12px;font-size:12px}
+.btn.danger{background:#fff;color:#e11d48;border:1px solid #e11d48;box-shadow:none}
+.btn.danger:hover{background:#e11d48;color:#fff;border-color:#e11d48}
+.badge{display:inline-block;font-size:11px;padding:3px 10px;border-radius:999px;font-weight:600;letter-spacing:.2px}
 .b-ok{background:var(--ok-soft);color:var(--ok)} .b-bad{background:var(--bad-soft);color:var(--bad)}
 .b-warn{background:var(--warn-soft);color:var(--warn)} .b-gov{background:var(--gov-soft);color:var(--gov)}
-.b-idle{background:#eef0f3;color:#5f5e5a}
-.req{color:#c0392b;font-weight:700;margin-right:2px}  /* 必填星号 */
-.opt{color:#7f8896;font-size:11px;font-weight:500;margin-left:2px}  /* 可选小标 */
+.b-idle{background:#eef1f5;color:#64748b}
+.req{color:#e11d48;font-weight:700;margin-right:2px}  /* 必填星号 */
+.opt{color:#94a3b8;font-size:11px;font-weight:500;margin-left:2px}  /* 可选小标 */
 /* 多选 chip 选择器（替代原生 select multiple） */
-.chip-group{display:flex;flex-wrap:wrap;gap:8px;padding:3px 0 13px;border-bottom:1px dashed #d3d9e2}
-.chip{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid var(--line);
- border-radius:999px;background:#fcfdff;font-size:13px;line-height:1;cursor:pointer;user-select:none;
- transition:border-color .12s,background .12s,color .12s}
-.chip:hover{border-color:var(--brand);background:var(--brand-soft)}
+.chip-group{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 14px;border-bottom:1px dashed #cdd6e2}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:8px 15px;border:1px solid var(--line);
+ border-radius:999px;background:#fbfdff;font-size:13px;line-height:1;cursor:pointer;user-select:none;
+ transition:border-color .15s,background .15s,color .15s,box-shadow .15s}
+.chip:hover{border-color:var(--brand);background:var(--brand-soft);box-shadow:0 1px 4px rgba(37,99,235,.12)}
 .chip input{display:none}
-.chip:has(input:checked){background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+.chip:has(input:checked){background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600;box-shadow:0 2px 8px rgba(37,99,235,.28)}
 /* 营销目标「最近填写」历史下拉 */
-.obj-history{position:relative;background:#fff;border:1px solid var(--line);border-radius:10px;
- margin-top:4px;box-shadow:var(--shadow);z-index:20;max-height:210px;overflow:auto}
-.obj-hist-empty{padding:7px 12px;color:var(--muted);font-size:12px;border-bottom:1px solid #f0f2f5}
-.obj-hist-item{padding:8px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid #f0f2f5}
+.obj-history{position:relative;background:#fff;border:1px solid var(--line);border-radius:var(--radius-sm);
+ margin-top:6px;box-shadow:var(--shadow);z-index:20;max-height:210px;overflow:auto}
+.obj-hist-empty{padding:8px 12px;color:var(--muted);font-size:12px;border-bottom:1px solid #eef2f7}
+.obj-hist-item{padding:9px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid #eef2f7;transition:background .12s,color .12s}
 .obj-hist-item:last-child{border-bottom:0}
 .obj-hist-item:hover{background:var(--brand-soft);color:var(--brand)}
 /* KPI 看板 (issue 2026-09-07) */
-.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:8px 0}
-.kpi-card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;text-align:center;position:relative;overflow:hidden}
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:10px 0}
+.kpi-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius-sm);padding:16px;text-align:center;
+ position:relative;overflow:hidden;transition:transform .18s,box-shadow .18s,border-color .18s}
+.kpi-card:hover{transform:translateY(-3px);box-shadow:var(--shadow-hover);border-color:#d6deea}
 .kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--brand)}
 .kpi-card.gov::before{background:var(--gov)} .kpi-card.warn::before{background:var(--warn)}
 .kpi-card.ok::before{background:var(--ok)} .kpi-card.bad::before{background:var(--bad)}
-.kpi-num{font-size:30px;font-weight:700;line-height:1.1;color:var(--ink);margin:6px 0 2px}
+.kpi-num{font-size:30px;font-weight:700;line-height:1.1;color:var(--ink);margin:8px 0 2px;letter-spacing:-.5px}
 .kpi-card.gov .kpi-num{color:var(--gov)} .kpi-card.warn .kpi-num{color:var(--warn)}
 .kpi-card.ok .kpi-num{color:var(--ok)} .kpi-card.bad .kpi-num{color:var(--bad)}
 .kpi-label{font-size:12px;color:var(--muted);font-weight:500}
-.kpi-sub{font-size:10px;color:var(--muted);margin-top:3px}
+.kpi-sub{font-size:10px;color:var(--muted);margin-top:4px}
 table{width:100%;border-collapse:collapse;font-size:13px}
-td,th{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--muted);font-weight:600;font-size:12px}
-.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:6px;background:#eef0f3;color:#444;margin:1px}
+td,th{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12px;background:#f8fafc}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:#f5f9ff}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:7px;background:#eef1f5;color:#475569;margin:1px}
 .tag.gov{background:var(--gov-soft);color:var(--gov)} .tag.biz{background:var(--brand-soft);color:var(--brand)}
 .tag.res{background:var(--warn-soft);color:var(--warn)}
-code{background:#eef0f3;padding:1px 6px;border-radius:6px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.pre{background:#0e1726;color:#cfe0f2;padding:13px;border-radius:10px;overflow:auto;font-size:12px}
-a{color:var(--brand);text-decoration:none} a:hover{text-decoration:underline}
+code{background:#eef1f5;padding:2px 7px;border-radius:7px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#334155}
+.pre{background:#0f172a;color:#cfe0f2;padding:14px;border-radius:var(--radius-sm);overflow:auto;font-size:12px;border:1px solid #1e293b}
+a{color:var(--brand);text-decoration:none;transition:color .12s}
+a:hover{text-decoration:underline;color:var(--brand-2)}
 .ext{font-weight:600} .ext::after{content:" ↗";font-weight:400}
-.agent{background:var(--gov-soft);border:1px dashed #b7d99a;border-radius:12px;padding:16px}
+.agent{background:var(--gov-soft);border:1px dashed #9fd6cd;border-radius:12px;padding:18px;transition:box-shadow .18s}
+.agent:hover{box-shadow:var(--shadow)}
 .agent h4{margin:0 0 10px;color:var(--gov);font-size:13px}
 .agent .row{display:flex;flex-wrap:wrap;gap:7px}
-.note{font-size:12px;color:var(--muted);margin-top:6px}
+.note{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6}
 .pill{font-size:11px;color:var(--muted)}
 /* 开发日志面板：仅本地驾驶舱可见，方便开发看发生了什么/哪里报错 */
 .devlog{margin-top:28px;border:1px solid var(--line);border-radius:12px;background:#0e1726;color:#cfe0f2;overflow:hidden}
@@ -270,7 +288,7 @@ a{color:var(--brand);text-decoration:none} a:hover{text-decoration:underline}
 
 PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>{css}</style></head>
-<body><div class="header"><span class="logo">⚙ Autopilot 活动驾驶舱</span>
+<body><div class="header"><a class="logo" href="/" target="_blank" rel="noopener" title="在新标签页打开列表页">⚙ Autopilot 活动驾驶舱</a>
 <span class="env">环境 local · → Mautic :8080</span></div>
 <div class="wrap">{body}</div></body></html>"""
 
@@ -505,19 +523,20 @@ function genCacheKey(obj){ return 'brief_genstrat_' + (obj||'').replace(/\\s+/g,
 function genCacheGet(key){ try{ var v=sessionStorage.getItem(key); return v?JSON.parse(v):null; }catch(e){ return null; } }
 function genCacheSet(key,val){ try{ sessionStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
 function copyRobust(text, onOk, onFail){
+  // 防挂起：navigator.clipboard.writeText 在部分内嵌预览/非安全上下文里会
+  // 永久 pending（既不通告成功也不通告失败），导致「正在生成」卡死。
+  // 这里加 1s 超时，超时或 reject 一律走手动兜底（已全选的文本框，一次按键即可复制）。
+  var settled=false;
+  var timer=setTimeout(function(){ if(!settled){ settled=true; if(onFail) onFail(); } }, 1000);
   if(navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(function(){ if(onOk) onOk(); }, function(){ fallbackCopy(); });
-  } else { fallbackCopy(); }
-  function fallbackCopy(){
-    var ta=document.createElement('textarea');
-    ta.value=text; ta.setAttribute('readonly','readonly');
-    ta.style.cssText='position:fixed;left:-9999px;top:-9999px;opacity:0;';
-    document.body.appendChild(ta); ta.focus(); ta.select();
-    var ok=false;
-    try{ ok=document.execCommand('copy'); }catch(e){}
-    document.body.removeChild(ta);
-    if(ok){ if(onOk) onOk(); } else { if(onFail) onFail(); }
-  }
+    try{
+      var p=navigator.clipboard.writeText(text);
+      if(p && p.then){
+        p.then(function(){ if(settled) return; settled=true; clearTimeout(timer); if(onOk) onOk(); },
+                 function(){ if(settled) return; settled=true; clearTimeout(timer); if(onFail) onFail(); });
+      } else { if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
+    }catch(e){ if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
+  } else { if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
 }
 function doGen(force){
   force = !!force;
@@ -564,7 +583,9 @@ function doGen(force){
         copyRobust(p, function(){
           setStatus('已复制提示词到剪贴板：请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回下方文本框', false);
         }, function(){
-          setStatus('自动复制失败，请手动复制：<br><textarea readonly style="width:100%;height:110px">'+escapeHtml(p)+'</textarea>', false);
+          setStatus('自动复制失败，文本已为您全选，请按 Ctrl+C / ⌘C 复制：<br><textarea id="manual-prompt" readonly style="width:100%;height:120px">'+escapeHtml(p)+'</textarea>', false);
+          var mt=document.getElementById('manual-prompt');
+          if(mt){ mt.focus(); mt.select(); try{ mt.setSelectionRange(0, mt.value.length); }catch(e){} }
         });
       } else {
         setStatus('生成失败：'+(j.error||'未知错误'), false);
@@ -589,7 +610,9 @@ function doCopyPrompt(){
         copyRobust(p, function(){
           setStatus('✅ 已复制基础信息：请在 WorkBuddy 粘贴发给小腾生成策略，再把返回的 JSON 贴回上方文本框', true);
         }, function(){
-          setStatus('自动复制失败，请手动复制：<br><textarea readonly style="width:100%;height:120px">'+escapeHtml(p)+'</textarea>', false);
+          setStatus('自动复制失败，文本已为您全选，请按 Ctrl+C / ⌘C 复制：<br><textarea id="manual-prompt" readonly style="width:100%;height:120px">'+escapeHtml(p)+'</textarea>', false);
+          var mt=document.getElementById('manual-prompt');
+          if(mt){ mt.focus(); mt.select(); try{ mt.setSelectionRange(0, mt.value.length); }catch(e){} }
         });
       } else {
         setStatus('复制失败：'+(j.error||'未知错误'), false);
@@ -1439,13 +1462,13 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     region_opts = ["", "中国大陆", "港澳台", "海外"]
 
     operator = (f"<div class='card'><h3>① 你的目标与约束（运营填写）</h3>"
-                f"{fld('goal_name','营销/活动 内部简称（留空则用 ID 值；<span class=\"opt\">可选</span>）',ex['goal_name'])}"
                 f"<label><span class='req'>*</span> 营销目标（必填，业务描述，至少 4 字符，非占位词）</label>"
                 f"<textarea name='objective' rows='3' required placeholder='例：为「2027 元旦跨年演唱会」于 2026-12-20~2027-01-03 向 25-34 岁音乐爱好者推广门票，目标 5000 张转化；约束：每周≤3 封、晚 20:00 后不推送、含 9 折早鸟券'>{_esc(ex['objective'])}</textarea>"
                 f"<p class='note'>建议按「活动/主题 + 起止时间 + 目标人群 + 期望动作 + 数量目标 + 约束条件」描述</p>"
                 f"<button id='ai-parse-btn' class='btn sec' type='button' style='margin-top:8px'>✨ AI 识别意图（DeepSeek）</button>"
                 f"<div id='ai-parse-status' class='note'></div>"
                 f"<p class='note'>{('已配置 DeepSeek：点击将识别简称/日期/年龄/性别/收入/渠道来源等字段并回填上方表单；当活动周期 ≥7 天（或设了转化目标）时，还会自动合成多波次 StrategySpec。' if _deepseek_on else '未配置 DeepSeek：请在 config.json [deepseek].api_key 填入 key，或设置环境变量 DEEPSEEK_API_KEY。')}</p>"
+                f"{fld('goal_name','营销/活动 内部简称（留空则用 ID 值；<span class=\"opt\">可选</span>）',ex['goal_name'])}"
                 f"<div class='grid2'>"
                 f"{fld('start_date','开始日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['start_date'])}"
                 f"{fld('end_date','结束日期（<span class=\"opt\">可选</span>，留空用页面默认）',ex['end_date'])}</div>"
@@ -1539,7 +1562,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"    var score=0,total=0,ev=[];"
                 f"    for(var i=0;i<fields.length;i++){{var f=fields[i];"
                 f"      var ml=pkg.match[f];"
-                f"      if(!ml) continue;  // 画像包未定义该字段 → 不计入分母"
+                f"      if(!ml) continue;  /* 画像包未定义该字段 → 不计入分母 */"
                 f"      total+=_W[f];"
                 f"      var v=vals[f];"
                 f"      var hit=false;"
@@ -1833,10 +1856,10 @@ def _graph_svg(graph: list) -> str:
         cur = _next_of(cur)
     branch = [n["id"] for n in nodes if n["id"] not in set(spine)]
 
-    W, H = 156, 46                       # 节点框
+    W, H = 130, 36                       # 节点框（原 156x46，压缩以适配多节点）
     HW, HH = W / 2, H / 2                # 半宽/半高（菱形同外接框）
-    COL_X, BR_X = 64, 340               # 主链列 x / 分支列 x
-    TOP, ROW = 34, 66                    # 顶部留白 / 行距
+    COL_X, BR_X = 50, 282                # 主链列 x / 分支列 x
+    TOP, ROW = 26, 52                    # 顶部留白 / 行距（原 34/66）
     pos = {}
     for i, nid in enumerate(spine):
         pos[nid] = (COL_X, TOP + i * ROW)
@@ -1881,9 +1904,12 @@ def _graph_svg(graph: list) -> str:
     total_rows = max(len(spine), len(spine) + br_idx)
     vw = BR_X + W + 40
     vh = TOP * 2 + total_rows * ROW
-    svg = [f"<svg viewBox='0 0 {vw} {vh}' width='100%' "
-           f"style='background:#fbfcfe;border:1px solid var(--line);border-radius:10px' "
-           f"font-family='inherit' font-size='11'>"]
+    # 按原始尺寸渲染（不再 width:100% 放大——18 节点时会被撑到 2300+px）；
+    # max-width:100% + height:auto 保证窄屏仍可等比缩小。
+    svg = [f"<svg viewBox='0 0 {vw} {vh}' width='{vw}' height='{vh}' "
+           f"style='background:#fbfcfe;border:1px solid var(--line);border-radius:10px;"
+           f"max-width:100%;height:auto' "
+           f"font-family='inherit' font-size='10'>"]
     svg.append("<defs>"
                "<marker id='arw' markerWidth='8' markerHeight='8' refX='6' refY='3' orient='auto' "
                "markerUnits='userSpaceOnUse'><path d='M0,0 L6,3 L0,6 Z' fill='#6b7280'/></marker>"
@@ -1953,23 +1979,25 @@ def _graph_svg(graph: list) -> str:
                 f"<polygon points='{cx},{cy-HH} {cx+HW},{cy} {cx},{cy+HH} {cx-HW},{cy}' "
                 f"fill='{stroke}' stroke='{fill}' stroke-width='1.6'/>"
                 f"<text x='{cx}' y='{cy-4}' text-anchor='middle' fill='{fill}' "
-                f"font-weight='600' font-size='10.5'>{_esc(_short(t))}</text>"
+                f"font-weight='600' font-size='10'>{_esc(_short(t))}</text>"
                 f"<text x='{cx}' y='{cy+12}' text-anchor='middle' fill='#1c2330' "
-                f"font-size='8.5'>{_esc(nd['id'])}</text>")
+                f"font-size='8'>{_esc(nd['id'])}</text>")
         else:
             svg.append(
                 f"<rect x='{cx-W/2}' y='{cy-H/2}' width='{W}' height='{H}' rx='9' "
                 f"fill='{stroke}' stroke='{fill}' stroke-width='1.5'/>"
                 f"<text x='{cx}' y='{cy-4}' text-anchor='middle' fill='{fill}' "
-                f"font-weight='600' font-size='10.5'>{_esc(_short(t))}</text>"
+                f"font-weight='600' font-size='10'>{_esc(_short(t))}</text>"
                 f"<text x='{cx}' y='{cy+13}' text-anchor='middle' fill='#1c2330' "
-                f"font-size='8.5'>{_esc(nd['id'])}</text>")
+                f"font-size='8'>{_esc(nd['id'])}</text>")
         if transparent:
             svg.append(f"<text x='{cx}' y='{cy+H/2+12}' text-anchor='middle' "
                        f"fill='#7a4fb5' font-size='8'>透明节点·不建 Mautic 事件</text>")
         svg.append("</g>")
     svg.append("</svg>")
-    return "".join(svg)
+    inner = "".join(svg)
+    # 节点多时在图内滚动，避免整页被撑得过长
+    return f"<div style='max-height:620px;overflow:auto;border-radius:10px'>{inner}</div>"
 
 
 def _mautic_asset_table(program: dict, idx: dict = None) -> str:
@@ -2039,7 +2067,10 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
         rows += _row("email", em_ref, em_mode)
         rows += _row("分群", seg, seg_mode)
         if lp:
-            rows += _row("着陆页", lp, "reuse")
+            # 着陆页与表单均按「有则复用、无则推送时 ensure 创建」处理（find-or-create），
+            # 与分群/邮件一致；故模式用 propose 而非 reuse —— 未解析时结论应为「新建（按需）」，
+            # 而非「调用已有（未找到）」。found→超链接、not found→新建，符合运营预期。
+            rows += _row("着陆页", lp, "propose")
         else:
             rows += ("<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
                      "<td>新建</td><td>未连</td></tr>" if not avail else
@@ -2048,7 +2079,9 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
         # 表单：与邮件/落地页同属「内容资产」，按「哪个 campaign 用到就在哪个 campaign 显示」原则
         # 逐 campaign 展示（不特殊标注为独立/共享基础设施）。
         if form_ref:
-            rows += _row("表单", form_ref, "reuse")
+            # 表单同着陆页：find-or-create（ensure_form），模式用 propose 而非 reuse，
+            # 未解析时结论为「新建（按需）」而非「调用已有（未找到）」。
+            rows += _row("表单", form_ref, "propose")
         else:
             rows += ("<tr><td>表单</td><td><code>—</code></td><td>generate</td>"
                      "<td>新建</td><td>未连</td></tr>" if not avail else
