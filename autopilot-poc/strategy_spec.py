@@ -977,6 +977,15 @@ def normalize_campaign(c: dict, idx: int, goal_id: str = "",
         "stage_rules": stage_rules,
         # 主流程终点及终点判断
         "main_endpoint": main_endpoint,
+        # ---- 可选输出：聚焦项（Focus）/ 资源（Asset）实体 ----
+        # 仅当 StrategySpec 的 campaign 显式声明 focus_items / assets 才进入 strategy；
+        # 缺省为 None（不写键，保持老 spec 归一化结果逐字节一致）。
+        # push() 会据此在 Mautic 端一键 create 对应实体（Asset 实例可用；
+        # Focus 依赖 FocusBundle，无则实例内 skipped 降级）。
+        #   focus_items: [ {name, type?, style?, content?, cta_url?} ]
+        #   assets:      [ {name|title, url?, language?, title?} ]
+        "focus_items": _as_list(c.get("focus_items")) or None,
+        "assets": _as_list(c.get("assets")) or None,
         # 画像包内容 / 视觉方向（绑定文案方向与落地页设计方向）
         "content_direction": content_direction,
         "visual_direction": visual_direction,

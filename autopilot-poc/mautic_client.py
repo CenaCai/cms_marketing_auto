@@ -11,8 +11,8 @@ Mautic Client — 把提案推送到 {base_url}/s/（经 REST API）
 
     调用顺序：
   1) POST /oauth/v2/token               换 access_token（grant_type=client_credentials）
-  2) POST /api/campaigns/new            创建（isPublished=False）+ events + canvasSettings + lists
-  3) POST /api/campaigns/<id>/edit      审批后上线（仅 approved=True 时）
+  2) POST /api/campaigns/new            创建（isPublished=True）+ events + canvasSettings + lists
+  3) POST /api/campaigns/<id>/edit      幂等确认上线（创建即已上线；approved=True 时再 PATCH 一次）
 """
 from __future__ import annotations
 
@@ -386,7 +386,7 @@ def ensure_segment(name: str, env: str = "local", timeout: int = 15, project_id:
     #    （会报 400: properties: 该表单中不可有额外字段 / operator 无效），故只发最小字段；
     #    筛选条件若需要，后续用 edit 接口补。空筛选 segment 作为 campaign 联系来源足够。
     alias = _aliasify(name)
-    body = {"name": name, "alias": alias, "isPublished": False}
+    body = {"name": name, "alias": alias, "isPublished": True}
     if project_id:
         body["projects"] = [int(project_id)]
     r = _post(base, "/api/segments/new", body, token, timeout=timeout)
@@ -433,7 +433,7 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
         "name": name,
         "alias": alias,
         "subject": subject or name,
-        "isPublished": False,
+        "isPublished": True,
         "emailType": email_type,
         "customHtml": custom_html if custom_html else _build_email_html(subject or name, name),
     }
@@ -504,7 +504,7 @@ def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: i
         html = _build_landing_page_html(name, form_html=form_html)
         if url:
             html = html.replace("</head>", f'<meta http-equiv="refresh" content="0;url={url}"></head>')
-    body = {"name": name, "alias": alias, "isPublished": False, "customHtml": html, "title": name}
+    body = {"name": name, "alias": alias, "isPublished": True, "customHtml": html, "title": name}
     if project_id:
         body["projects"] = [int(project_id)]
     r = _post(base, "/api/pages/new", body, token, timeout=timeout)
@@ -639,7 +639,7 @@ def ensure_form(name: str, env: str = "local", timeout: int = 15, fields: list =
         "name": name,
         "alias": alias,
         "formType": "standalone",
-        "isPublished": False,          # 草稿：等运营补字段/确认后再上线
+        "isPublished": True,
         "postAction": "return",
         "postActionProperty": "感谢提交，我们的商务同事会尽快与您联系。",
         "fields": fields,
@@ -700,7 +700,7 @@ def ensure_asset(name: str, env: str = "local", timeout: int = 15,
     body = {
         "title": title,
         "alias": alias,
-        "isPublished": False,
+        "isPublished": True,
         "language": language,
     }
     # 远程资源：免文件上传，直接给下载链接（最常用场景）；本地文件上传需 multipart，留给运营后台补。
@@ -771,7 +771,7 @@ def ensure_focus_item(name: str, env: str = "local", timeout: int = 15,
         "description": "",
         "type": focus_type,
         "style": style,
-        "isPublished": False,
+        "isPublished": True,
         "content": content or "",
         "properties": {},
     }
@@ -1003,6 +1003,62 @@ def _fetch_form_html(base_url: str, form_id, token: str, timeout: int = 60) -> s
         return (_fobj2.get("form") or {}).get("cachedHtml") if isinstance(_fobj2, dict) else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def find_existing_campaign(base_url: str, token: str, name: str,
+                           project_id: int = None, timeout: int = 60) -> dict | None:
+    """查找同名（且与 project 关联，若提供）的已存在 campaign，用于 push 幂等复用。
+
+    返回最优可复用副本的 {id, name, isPublished, events, dup_count}；无匹配返回 None。
+    选择策略（规避孤儿/草稿副本被误复用）：已发布 > 事件数多 > id 大（最新）。
+    """
+    data = _get(base_url, "/api/campaigns?limit=200", token, timeout=timeout)
+    if not isinstance(data, dict):
+        return None
+    campaigns = data.get("campaigns") or {}
+    if not isinstance(campaigns, dict):
+        return None
+    name_matches = []
+    for cid, c in campaigns.items():
+        if not isinstance(c, dict) or c.get("name") != name:
+            continue
+        c2 = dict(c)
+        c2["id"] = c2.get("id") or cid
+        name_matches.append(c2)
+    if not name_matches:
+        return None
+    # 若提供 project_id，优先复用关联到该 project 的副本；无关联副本时回退到任意同名副本
+    if project_id is not None:
+        proj_hits = []
+        for c in name_matches:
+            proj_ids = set()
+            for p in (c.get("projects") or []):
+                proj_ids.add(p.get("id") if isinstance(p, dict) else p)
+            try:
+                if int(project_id) in proj_ids:
+                    proj_hits.append(c)
+            except (TypeError, ValueError):
+                pass
+        if proj_hits:
+            name_matches = proj_hits
+    matches = name_matches
+
+    def _score(c):
+        try:
+            _cid = int(c.get("id") or 0)
+        except (TypeError, ValueError):
+            _cid = 0
+        return (1 if c.get("isPublished") else 0, len(c.get("events") or []), _cid)
+
+    matches.sort(key=_score, reverse=True)
+    best = matches[0]
+    return {
+        "id": best.get("id"),
+        "name": best.get("name"),
+        "isPublished": best.get("isPublished"),
+        "events": len(best.get("events") or []),
+        "dup_count": len(matches),
+    }
 
 
 def push(proposal: dict, env: str = "local", approved: bool = False, project_id: int = None) -> dict:
@@ -1243,21 +1299,36 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
         canvas["connections"] = conns
         proposal["mautic_canvas"] = canvas
 
-    # 1) 创建 campaign（默认下线），同时带上 Mautic 7 期望的 events + canvasSettings（+ lists）
-    create_body = {"name": goal_name, "isPublished": False}
-    if project_id:
-        create_body["projects"] = [int(project_id)]
-    if proposal.get("mautic_events"):
-        create_body["events"] = proposal["mautic_events"]
-    if proposal.get("mautic_canvas"):
-        create_body["canvasSettings"] = proposal["mautic_canvas"]
-    if proposal.get("mautic_lists"):
-        create_body["lists"] = proposal["mautic_lists"]
-    r1 = _post(base, "/api/campaigns/new", create_body, token, timeout=60)
-    steps.append({"step": "create_campaign_with_events", **r1})
-    new_id = None
-    if isinstance(r1["body"], dict):
-        new_id = (r1["body"].get("campaign") or {}).get("id")
+    # 1) 幂等复用：若已存在同名（同 project）campaign，直接复用，不再 POST /campaigns/new 制造副本。
+    #    ensure_* 资产已按 name 复用，故「重复推送」唯一会增生副本的就是 campaign 本身。
+    reused = False
+    existing = find_existing_campaign(base, token, goal_name, project_id=project_id, timeout=60)
+    if existing and existing.get("id"):
+        new_id = existing["id"]
+        reused = True
+        steps.append({
+            "step": "reuse_existing_campaign",
+            "campaign_id": new_id,
+            "name": goal_name,
+            "isPublished": existing.get("isPublished"),
+            "dup_count": existing.get("dup_count"),
+            "note": "已存在同名 campaign，复用而非新建，避免重复副本（幂等）",
+        })
+    else:
+        create_body = {"name": goal_name, "isPublished": True}
+        if project_id:
+            create_body["projects"] = [int(project_id)]
+        if proposal.get("mautic_events"):
+            create_body["events"] = proposal["mautic_events"]
+        if proposal.get("mautic_canvas"):
+            create_body["canvasSettings"] = proposal["mautic_canvas"]
+        if proposal.get("mautic_lists"):
+            create_body["lists"] = proposal["mautic_lists"]
+        r1 = _post(base, "/api/campaigns/new", create_body, token, timeout=60)
+        steps.append({"step": "create_campaign_with_events", **r1})
+        new_id = None
+        if isinstance(r1["body"], dict):
+            new_id = (r1["body"].get("campaign") or {}).get("id")
 
     # 2) 审批通过后上线：campaign + 依赖资产（email / landing_page）一并发布
     if new_id and approved:
@@ -1281,21 +1352,31 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
             elif asset == "focus_item":
                 # 聚焦项上线（仅当实例有 FocusBundle 且已成功创建；skipped 项无 id 已被 continue 过滤）
                 r = _patch(base, f"/api/focus/{aid}/edit", {"isPublished": True}, token, timeout=60)
+            elif asset == "segment":
+                # 联系人来源 segment 必须上线：未发布的 segment 不会吸纳联系人，
+                # 会导致 campaign 上线却无人进入流程（功能性失效，而非单纯草稿态）。
+                r = _patch(base, f"/api/segments/{aid}/edit", {"isPublished": True}, token, timeout=60)
             else:
                 continue
             publish_log.append({"asset": asset, "id": aid, **r})
         # 2.2 campaign 上线
-        # Mautic 7：发布用 PATCH /api/campaigns/{id}/edit（POST/404，PUT/500，PATCH 才能正确处理）
-        try:
-            r3 = _patch(base, f"/api/campaigns/{new_id}/edit",
-                        {"isPublished": True}, token, timeout=60)
-            steps.append({"step": "publish_campaign", **r3})
-        except Exception as e:  # noqa: BLE001
-            steps.append({"step": "publish_campaign", "status": 0, "body": f"网络/连接错误: {e}"})
+        # Mautic 7：发布用 PATCH /api/campaigns/{id}/edit（POST/404，PUT/500，PATCH 才能正确处理）。
+        # 幂等：复用且已发布的副本跳过 PATCH（避免对正常副本做无意义写；
+        # 若复用的是未发布副本则仍尝试上线，孤儿副本会 400 但被下方 except 捕获）。
+        if reused and existing.get("isPublished"):
+            steps.append({"step": "publish_campaign", "skipped": "reused_already_published",
+                          "campaign_id": new_id})
+        else:
+            try:
+                r3 = _patch(base, f"/api/campaigns/{new_id}/edit",
+                            {"isPublished": True}, token, timeout=60)
+                steps.append({"step": "publish_campaign", **r3})
+            except Exception as e:  # noqa: BLE001
+                steps.append({"step": "publish_campaign", "status": 0, "body": f"网络/连接错误: {e}"})
         steps.append({"step": "publish_assets", "log": publish_log})
 
     return {
-        "dry_run": False, "env": env, "campaign_id": new_id,
+        "dry_run": False, "env": env, "campaign_id": new_id, "reused": reused,
         "steps": steps, "ensure_log": ensure_log,
     }
 

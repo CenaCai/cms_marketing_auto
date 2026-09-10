@@ -1,7 +1,19 @@
-# 运行时生成的 program/提案 JSON（测试产物）
-output/
-# Python 缓存
+# Python
 __pycache__/
 *.pyc
-# 真实 Mautic 凭证（勿提交；复制 config.example.json 为 config.json 后填）
+*.pyo
+
+# Logs
+*.log
+
+# Secrets / local config
 config.json
+
+# Backup copies
+*.bak
+*.bak2
+output/*.bak
+output/*.bak2
+
+# Recovery / scratch dirs
+_cleared_programs_*/

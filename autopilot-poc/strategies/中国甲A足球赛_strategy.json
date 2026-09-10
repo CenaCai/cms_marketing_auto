@@ -1,0 +1,200 @@
+{
+  "goal_id": "jiaa_football_2050",
+  "objective": "2050年1月1日~3月15日中国甲A足球赛，面向足球/体育兴趣的男性IT人群，以落地页表单收集线索、商务线下人工跟进，整体表单转化率1%；22:00-08:00免打扰、已转化用户不重复触达。",
+  "business_topic": "中国甲A足球赛 票务团购预售",
+  "kpi": {"metric": "conversion", "target": 0.01},
+  "window": {"start": "2049-07-01", "end": "2050-03-15"},
+  "locale": ["zh_CN"],
+  "audience_package": "CORP_GRP",
+  "audience_profile": {
+    "gender": "男",
+    "income": ["L2", "L3", "L4", "L5"],
+    "education": "名校",
+    "industry": "IT",
+    "source": "CTL",
+    "region": ["中国大陆", "港澳台"],
+    "age": null
+  },
+  "needs_operator_review": true,
+  "operator_review_notes": [
+    "Mautic 资产清单数据缺失（data_missing，连接失败）：email_ref 一律按 generate（新建），reuse vs new 决策待人工在连接后确认。",
+    "各 campaign 的 segment（SEG_甲A_*）需在 Mautic 手动补「exclude tag=甲A_已转化」过滤器以实现「已转化用户不重复触达」——ensure_segment 当前仅建空壳草稿。",
+    "落地页与表单为 generate 空壳，运营需补表单字段（姓名/手机/邮箱/公司/意向场次）与落地页正文。",
+    "退订熔断 0.3% 监控阈值需运营在 Mautic 配置（原生 DNC 已处理退订，熔断为运营观测红线）。",
+    "quiet_hours 按 Brief 红线原样填 22:00-08:00，已覆盖画像包默认 22:00-09:00；请运营确认午夜边界无误。"
+  ],
+  "campaigns": [
+    {
+      "cid": "c1",
+      "name": "中国甲A足球赛-阶段1-官方启幕",
+      "content_brief": "目标人群已知甲A回归但不知官方启幕时间与参赛阵容，需先建立赛事认知与关注入口。",
+      "content_emphasis": ["团体价格", "议程建议", "真实企业 logo", "深度价值", "数据对比", "长期主义"],
+      "segment": {"mode": "propose", "ref": "SEG_甲A_seed_CN_ZH"},
+      "send_conditions": {
+        "delay_hours": 0,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["09:00-18:00", "19:00-21:00"]
+      },
+      "tags_to_write": ["甲A_c1_预热", "甲A_兴趣未转化"],
+      "email_mode": "generate",
+      "email_ref": "",
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "中国甲A足球赛重磅回归 · 官方启幕在即",
+          "angle": "赛事回归官宣 + 历史情怀 + 关注入口",
+          "cta": "获取团购方案",
+          "locale": ["zh_CN"]
+        }
+      },
+      "landing_page": {"mode": "generate", "ref": null, "url": "http://localhost:8080/s/c1-zh"},
+      "landing_page_url": "http://localhost:8080/s/c1-zh",
+      "content_variant": {"id": "v1", "angle": "官方启幕 · 建立认知", "headline": "甲A回归 官方启幕", "summary": "赛事回归官宣、参赛阵容前瞻、关注/登记入口。"},
+      "window": {"start": "2049-07-01", "end": "2049-09-30"},
+      "main_endpoint": {
+        "form": "FORM_甲A足球赛",
+        "terminal": true,
+        "judgment": {"signal": "form.submit", "op": ">=", "value": 1},
+        "note": "提交表单即流程终点，引导商务线下人工跟进"
+      },
+      "depends_on": null,
+      "editable_until_start": true,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "阶段1为认知预热，窗口 2049-07~09（赛前6个月启动），按 N=4 串行首波；使用 generate 因 Mautic 未连接无法核对复用资产。",
+      "evidence": "画像包参数表 references/audience-content-map.json（CORP_GRP score=1.0, HNW_FAMILY score=0.765，均≥0.6，取 levers 并集）；N=4 来自服务端预计算 D=258天、C=0.01→基准5−1=4（夹取[1,5]）；Mautic 资产 data_missing→generate。"
+    },
+    {
+      "cid": "c2",
+      "name": "中国甲A足球赛-阶段2-赛程揭晓",
+      "content_brief": "已关注赛事但不知具体赛程与焦点对决，需揭晓对阵亮点制造观赛期待。",
+      "content_emphasis": ["团体价格", "议程建议", "真实企业 logo", "深度价值", "数据对比", "长期主义"],
+      "segment": {"mode": "propose", "ref": "SEG_甲A_engage_CN_ZH"},
+      "send_conditions": {
+        "delay_hours": 72,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["09:00-18:00", "19:00-21:00"]
+      },
+      "tags_to_write": ["甲A_c2_赛程", "甲A_兴趣未转化"],
+      "email_mode": "generate",
+      "email_ref": "",
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "甲A赛程揭晓 · 焦点对决一图看懂",
+          "angle": "赛程/对阵亮点 + 观赛价值",
+          "cta": "获取团购方案",
+          "locale": ["zh_CN"]
+        }
+      },
+      "landing_page": {"mode": "generate", "ref": null, "url": "http://localhost:8080/s/c2-zh"},
+      "landing_page_url": "http://localhost:8080/s/c2-zh",
+      "content_variant": {"id": "v2", "angle": "赛程揭晓 · 制造期待", "headline": "焦点对决 赛程揭晓", "summary": "对阵亮点、焦点战、观赛议程建议。"},
+      "window": {"start": "2049-10-01", "end": "2049-12-15"},
+      "main_endpoint": {
+        "form": "FORM_甲A足球赛",
+        "terminal": true,
+        "judgment": {"signal": "form.submit", "op": ">=", "value": 1},
+        "note": "提交表单即流程终点，引导商务线下人工跟进"
+      },
+      "depends_on": "c1",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "阶段2串行依赖 c1，窗口 2049-10~12；内容转向赛程/对阵，继续用 generate（data_missing）。",
+      "evidence": "画像包并集 levers/CTA（CORP_GRP+HNW_FAMILY）；N=4 串行链 c2 depends_on c1；Mautic 资产 data_missing→generate。"
+    },
+    {
+      "cid": "c3",
+      "name": "中国甲A足球赛-阶段3-早鸟团购",
+      "content_brief": "有观赛意愿但犹豫购票，需以团购/早鸟权益降低决策门槛并导向表单。",
+      "content_emphasis": ["团体价格", "议程建议", "真实企业 logo", "深度价值", "数据对比", "长期主义"],
+      "segment": {"mode": "propose", "ref": "SEG_甲A_intent_CN_ZH"},
+      "send_conditions": {
+        "delay_hours": 72,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["09:00-18:00", "19:00-21:00"]
+      },
+      "tags_to_write": ["甲A_c3_团购", "甲A_兴趣未转化"],
+      "email_mode": "generate",
+      "email_ref": "",
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "甲A团购方案 · 早鸟权益已生成",
+          "angle": "团体价格 + 权益对比（表格化）",
+          "cta": "获取团购方案",
+          "locale": ["zh_CN"]
+        }
+      },
+      "landing_page": {"mode": "generate", "ref": null, "url": "http://localhost:8080/s/c3-zh"},
+      "landing_page_url": "http://localhost:8080/s/c3-zh",
+      "content_variant": {"id": "v3", "angle": "早鸟团购 · 降低门槛", "headline": "早鸟权益 团购方案", "summary": "成团价与议程对比表、真实企业 logo、权益清单。"},
+      "window": {"start": "2049-12-16", "end": "2050-02-15"},
+      "main_endpoint": {
+        "form": "FORM_甲A足球赛",
+        "terminal": true,
+        "judgment": {"signal": "form.submit", "op": ">=", "value": 1},
+        "note": "提交表单即流程终点，引导商务线下人工跟进"
+      },
+      "depends_on": "c2",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "阶段3串行依赖 c2，窗口 2049-12~2050-02；落 CORP_GRP「团体价格/议程建议」lever，表格化呈现成团价，导向表单；generate（data_missing）。",
+      "evidence": "画像包并集 levers（CORP_GRP 团体价格/议程建议 + HNW_FAMILY 深度价值/数据对比）；N=4 串行链 c3 depends_on c2；Mautic 资产 data_missing→generate。"
+    },
+    {
+      "cid": "c4",
+      "name": "中国甲A足球赛-阶段4-开赛冲刺",
+      "content_brief": "临近开赛仍未提交信息，需最后提醒与稀缺感促成表单提交。",
+      "content_emphasis": ["团体价格", "议程建议", "真实企业 logo", "深度价值", "数据对比", "长期主义"],
+      "segment": {"mode": "propose", "ref": "SEG_甲A_confirm_CN_ZH"},
+      "send_conditions": {
+        "delay_hours": 48,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["09:00-18:00", "19:00-21:00"]
+      },
+      "tags_to_write": ["甲A_c4_冲刺", "甲A_兴趣未转化"],
+      "email_mode": "generate",
+      "email_ref": "",
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "开赛在即 · 最后提交席位登记",
+          "angle": "赛前冲刺 + 最后机会",
+          "cta": "获取团购方案",
+          "locale": ["zh_CN"]
+        }
+      },
+      "landing_page": {"mode": "generate", "ref": null, "url": "http://localhost:8080/s/c4-zh"},
+      "landing_page_url": "http://localhost:8080/s/c4-zh",
+      "content_variant": {"id": "v4", "angle": "开赛冲刺 · 最后机会", "headline": "开赛在即 最后登记", "summary": "赛前提醒、剩余席位/权益、提交入口。"},
+      "window": {"start": "2050-02-16", "end": "2050-03-15"},
+      "main_endpoint": {
+        "form": "FORM_甲A足球赛",
+        "terminal": true,
+        "judgment": {"signal": "form.submit", "op": ">=", "value": 1},
+        "note": "提交表单即流程终点，引导商务线下人工跟进"
+      },
+      "depends_on": "c3",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "阶段4串行依赖 c3，窗口 2050-02-16~03-15（赛前收口）；短 delay 冲刺，导向表单；generate（data_missing）。",
+      "evidence": "画像包并集 levers/CTA；N=4 串行链 c4 depends_on c3；Mautic 资产 data_missing→generate。"
+    }
+  ]
+}

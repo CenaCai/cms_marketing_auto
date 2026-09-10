@@ -4218,104 +4218,6 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
         except Exception as e:  # noqa: BLE001
             self._send(200, _page("删除失败", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/'>返回</a></p>"))
-def _tt_key(x: dict) -> tuple:
-    """tag_triggers 中一条绑定的去重键。"""
-    if not isinstance(x, dict):
-        return ("", "", "")
-    return (x.get("event") or x.get("on"),
-            x.get("tag") or x.get("tags"),
-            x.get("email_name") or x.get("name"))
-
-
-def _compute_strategy_diff(old_s: dict, new_s: dict, cid: str = "") -> list:
-    """比较两份 strategy，返回直白中文调整项列表（用于二次确认）。空列表 = 无变化。"""
-    items = []
-    if not isinstance(old_s, dict) or not isinstance(new_s, dict):
-        return items
-
-    def g(d, *ks, default=None):
-        cur = d
-        for k in ks:
-            if not isinstance(cur, dict):
-                return default
-            cur = cur.get(k, default)
-        return cur
-
-    # 1) 邮件发送频次
-    old_m = g(old_s, "send_conditions", "max_per_24h", default=1)
-    new_m = g(new_s, "send_conditions", "max_per_24h", default=1)
-    if old_m != new_m:
-        items.append(f"调整邮件发送频次（原先：每天 {old_m} 份、现在每天 {new_m} 份）")
-
-    # 2) 标签 新增/移除
-    old_tags = set(old_s.get("tags_to_write") or [])
-    new_tags = set(new_s.get("tags_to_write") or [])
-    for t in sorted(new_tags - old_tags):
-        items.append(f'新增标签 "{t}"')
-    for t in sorted(old_tags - new_tags):
-        items.append(f'移除标签 "{t}"')
-
-    # 3) 折扣策略
-    old_d = old_s.get("discount") if isinstance(old_s.get("discount"), dict) else {}
-    new_d = new_s.get("discount") if isinstance(new_s.get("discount"), dict) else {}
-    old_on = bool(old_d.get("enabled")) and (old_d.get("pct") is not None)
-    new_on = bool(new_d.get("enabled")) and (new_d.get("pct") is not None)
-    old_pct = old_d.get("pct") if old_on else None
-    new_pct = new_d.get("pct") if new_on else None
-
-    def _dlabel(on, pct):
-        return f"开启 {pct}%" if on else "关闭"
-
-    if old_on != new_on or (old_on and new_on and old_pct != new_pct):
-        items.append(f"折扣策略（原先：{_dlabel(old_on, old_pct)}、现在：{_dlabel(new_on, new_pct)}）")
-
-    # 4) 内容变体
-    if old_s.get("content_variant") != new_s.get("content_variant"):
-        items.append(f"切换内容变体（原先：v{old_s.get('content_variant')}、现在：v{new_s.get('content_variant')}）")
-
-    # 5) 邮件内容角度
-    old_a = g(old_s, "email_brief", "angle")
-    new_a = g(new_s, "email_brief", "angle")
-    if old_a and new_a and old_a != new_a:
-        items.append(f'调整邮件内容角度（原先：「{old_a}」、现在：「{new_a}」）')
-
-    # 6) 扩/收窄分组
-    if not old_s.get("segment_broaden") and new_s.get("segment_broaden"):
-        items.append("标记「扩分组」：向更广受众投放")
-    if not old_s.get("segment_narrow") and new_s.get("segment_narrow"):
-        items.append("标记「收窄分组」：聚焦高意向受众")
-
-    # 7) 邮件事件绑定标签（tag_triggers）
-    old_tt = old_s.get("tag_triggers") or []
-    new_tt = new_s.get("tag_triggers") or []
-    old_keys = {_tt_key(x) for x in old_tt if isinstance(x, dict)}
-    for x in new_tt:
-        if isinstance(x, dict) and _tt_key(x) not in old_keys:
-            ev = x.get("event") or x.get("on") or "触发"
-            tag = x.get("tag") or x.get("tags")
-            if isinstance(tag, list):
-                tag = "/".join(tag)
-            items.append(f'当用户{ev}邮件「{x.get("email_name") or x.get("name") or ""}」会绑定标签 "{tag}"')
-
-    # 8) 资产变化（邮件/落地页/分群）
-    for fld, label in (("email_ref", "邮件"), ("landing_page_ref", "落地页"), ("segment", "分群")):
-        if old_s.get(fld) != new_s.get(fld):
-            items.append(f'调整{label}资产（原先：{old_s.get(fld) or "无"}、现在：{new_s.get(fld) or "无"}）')
-
-    # 9) 邮件主题
-    if old_s.get("subject") != new_s.get("subject"):
-        items.append(f'调整邮件主题（原先：「{old_s.get("subject")}」、现在：「{new_s.get("subject")}」）')
-
-    return items
-
-
-def _diff_list_html(items: list, empty_txt: str = "无变化") -> str:
-    if not items:
-        return f"<p class='note' style='color:var(--ok)'>✅ {_esc(empty_txt)}</p>"
-    li = "".join(f"<li>{_esc(x)}</li>" for x in items)
-    return f"<ol class='diff' style='margin:6px 0 0 18px'>{li}</ol>"
-
-
     def _handle_complete(self, form):
         # path 形如 /program/<gid>/complete
         # 两步流：先预览「改写当前campaign」的 diff → 确认后才落库（不影响下游）
@@ -4646,6 +4548,104 @@ def _sync_resolved_assets_to_strategy(c, result):
 
 
 
+
+
+def _tt_key(x: dict) -> tuple:
+    """tag_triggers 中一条绑定的去重键。"""
+    if not isinstance(x, dict):
+        return ("", "", "")
+    return (x.get("event") or x.get("on"),
+            x.get("tag") or x.get("tags"),
+            x.get("email_name") or x.get("name"))
+
+
+def _compute_strategy_diff(old_s: dict, new_s: dict, cid: str = "") -> list:
+    """比较两份 strategy，返回直白中文调整项列表（用于二次确认）。空列表 = 无变化。"""
+    items = []
+    if not isinstance(old_s, dict) or not isinstance(new_s, dict):
+        return items
+
+    def g(d, *ks, default=None):
+        cur = d
+        for k in ks:
+            if not isinstance(cur, dict):
+                return default
+            cur = cur.get(k, default)
+        return cur
+
+    # 1) 邮件发送频次
+    old_m = g(old_s, "send_conditions", "max_per_24h", default=1)
+    new_m = g(new_s, "send_conditions", "max_per_24h", default=1)
+    if old_m != new_m:
+        items.append(f"调整邮件发送频次（原先：每天 {old_m} 份、现在每天 {new_m} 份）")
+
+    # 2) 标签 新增/移除
+    old_tags = set(old_s.get("tags_to_write") or [])
+    new_tags = set(new_s.get("tags_to_write") or [])
+    for t in sorted(new_tags - old_tags):
+        items.append(f'新增标签 "{t}"')
+    for t in sorted(old_tags - new_tags):
+        items.append(f'移除标签 "{t}"')
+
+    # 3) 折扣策略
+    old_d = old_s.get("discount") if isinstance(old_s.get("discount"), dict) else {}
+    new_d = new_s.get("discount") if isinstance(new_s.get("discount"), dict) else {}
+    old_on = bool(old_d.get("enabled")) and (old_d.get("pct") is not None)
+    new_on = bool(new_d.get("enabled")) and (new_d.get("pct") is not None)
+    old_pct = old_d.get("pct") if old_on else None
+    new_pct = new_d.get("pct") if new_on else None
+
+    def _dlabel(on, pct):
+        return f"开启 {pct}%" if on else "关闭"
+
+    if old_on != new_on or (old_on and new_on and old_pct != new_pct):
+        items.append(f"折扣策略（原先：{_dlabel(old_on, old_pct)}、现在：{_dlabel(new_on, new_pct)}）")
+
+    # 4) 内容变体
+    if old_s.get("content_variant") != new_s.get("content_variant"):
+        items.append(f"切换内容变体（原先：v{old_s.get('content_variant')}、现在：v{new_s.get('content_variant')}）")
+
+    # 5) 邮件内容角度
+    old_a = g(old_s, "email_brief", "angle")
+    new_a = g(new_s, "email_brief", "angle")
+    if old_a and new_a and old_a != new_a:
+        items.append(f'调整邮件内容角度（原先：「{old_a}」、现在：「{new_a}」）')
+
+    # 6) 扩/收窄分组
+    if not old_s.get("segment_broaden") and new_s.get("segment_broaden"):
+        items.append("标记「扩分组」：向更广受众投放")
+    if not old_s.get("segment_narrow") and new_s.get("segment_narrow"):
+        items.append("标记「收窄分组」：聚焦高意向受众")
+
+    # 7) 邮件事件绑定标签（tag_triggers）
+    old_tt = old_s.get("tag_triggers") or []
+    new_tt = new_s.get("tag_triggers") or []
+    old_keys = {_tt_key(x) for x in old_tt if isinstance(x, dict)}
+    for x in new_tt:
+        if isinstance(x, dict) and _tt_key(x) not in old_keys:
+            ev = x.get("event") or x.get("on") or "触发"
+            tag = x.get("tag") or x.get("tags")
+            if isinstance(tag, list):
+                tag = "/".join(tag)
+            items.append(f'当用户{ev}邮件「{x.get("email_name") or x.get("name") or ""}」会绑定标签 "{tag}"')
+
+    # 8) 资产变化（邮件/落地页/分群）
+    for fld, label in (("email_ref", "邮件"), ("landing_page_ref", "落地页"), ("segment", "分群")):
+        if old_s.get(fld) != new_s.get(fld):
+            items.append(f'调整{label}资产（原先：{old_s.get(fld) or "无"}、现在：{new_s.get(fld) or "无"}）')
+
+    # 9) 邮件主题
+    if old_s.get("subject") != new_s.get("subject"):
+        items.append(f'调整邮件主题（原先：「{old_s.get("subject")}」、现在：「{new_s.get("subject")}」）')
+
+    return items
+
+
+def _diff_list_html(items: list, empty_txt: str = "无变化") -> str:
+    if not items:
+        return f"<p class='note' style='color:var(--ok)'>✅ {_esc(empty_txt)}</p>"
+    li = "".join(f"<li>{_esc(x)}</li>" for x in items)
+    return f"<ol class='diff' style='margin:6px 0 0 18px'>{li}</ol>"
 
 def main():
     ap = argparse.ArgumentParser()

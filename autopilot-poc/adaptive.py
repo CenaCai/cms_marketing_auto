@@ -593,3 +593,55 @@ def evaluate_and_replan(program: dict, completed_cid: str, result: dict) -> dict
         "new_campaigns": new_campaigns,
         "pruned_campaigns": pruned_campaigns,
     }
+
+
+def adjust_strategy_for_verdict(s: dict, verdict: str) -> dict:
+    """Return a *copy* of strategy s with verdict-driven knobs applied
+    (same rules as evaluate_and_replan's per-campaign loop). Pure / no side effects.
+
+    用于「标记完成并回写→ 改写当前campaign」：把判定结果映射成**当前** campaign 自己的
+    策略调整（回写达成），供 diff 预览 + 二次确认。不触碰下游、不增删分支。
+    """
+    s = dict(s)
+    sc = dict(s.get("send_conditions", {}) or {})
+    tags = list(s.get("tags_to_write", []) or [])
+    m24 = sc.get("max_per_24h", 1)
+    disc = s.get("discount") if isinstance(s.get("discount"), dict) else {}
+    if verdict == "baseline":
+        pass  # 无目标：不做 knob 改写
+    elif verdict == "burn":
+        sc["max_per_24h"] = max(1, m24 - 1)
+        if "suppressed" not in tags:
+            tags.append("suppressed")
+        s["segment_narrow"] = True
+        if disc.get("enabled"):
+            new_pct = max(0, int(disc.get("pct", 0)) // 2)
+            if new_pct <= 0:
+                disc["enabled"] = False
+            else:
+                disc["pct"] = new_pct
+        _soften_angle(s)
+    elif verdict == "strong":
+        sc["max_per_24h"] = max(1, m24 - 1)
+    elif verdict == "ok":
+        sc["max_per_24h"] = m24 + 1
+        s = _bump_variant(s)
+        if "urgency" not in tags:
+            tags.append("urgency")
+    else:  # weak
+        sc["max_per_24h"] = m24 + 2
+        for t in ("broaden", "reengage"):
+            if t not in tags:
+                tags.append(t)
+        s = _bump_variant(s)
+        s["segment_broaden"] = True
+        if not disc.get("enabled"):
+            disc = {"enabled": True, "pct": 10, "note": "修正：转化乏力，开启挽回折扣"}
+        else:
+            disc["pct"] = int(disc.get("pct", 0)) + 5
+        _steer_angle_discount(s)
+    if disc:
+        s["discount"] = disc
+    s["send_conditions"] = sc
+    s["tags_to_write"] = tags
+    return s
