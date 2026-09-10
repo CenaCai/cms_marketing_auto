@@ -42,7 +42,26 @@ def cockpit_log(level: str, msg: str) -> None:
     """记录一条开发日志（INFO / WARN / ERROR / OK）。level 用于面板配色。"""
     ts = time.strftime("%H:%M:%S")
     COCKPIT_LOG.append((ts, level, msg))
-OUT_DIR = os.path.join(HERE, "output")
+def _resolve_output_dir() -> str:
+    """定位驾驶舱数据目录 output/。优先 HERE/output；若该目录为空（无 program_*.json），
+    则向上逐级查找父目录中的 output/，避免项目被嵌套/移动后旧进程仍指向空目录、
+    导致首页「暂无 Program」的问题。"""
+    candidates = [os.path.join(HERE, "output")]
+    cur = HERE
+    while True:
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        candidates.append(os.path.join(parent, "output"))
+        cur = parent
+    for c in candidates:
+        if os.path.isdir(c) and any(
+            fn.startswith("program_") and fn.endswith(".json")
+            for fn in os.listdir(c)
+        ):
+            return c
+    return candidates[0]
+OUT_DIR = _resolve_output_dir()
 
 from goal_intake import parse_brief, GoalSpec
 from plan_compiler import compile, dump_proposal
