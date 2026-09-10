@@ -51,12 +51,12 @@ C.mautic_read_assets = lambda env: {
 _idx = C._mautic_asset_index()
 check("外链索引 email 解析", _idx["email"].get("EM_X") == 99, f"id={_idx['email'].get('EM_X')}")
 check("外链索引 segment 解析", _idx["segment"].get("SEG_Y") == 7)
-check("外链 战役 URL", "/s/campaigns/123" in C._mautic_ext_link("campaign", "123", _idx),
+check("外链 战役 URL", "/s/campaigns/view/123" in C._mautic_ext_link("campaign", "123", _idx),
       C._mautic_ext_link("campaign", "123", _idx))
-check("外链 邮件 URL", "/s/emails/99/view" in C._mautic_ext_link("email", "EM_X", _idx),
+check("外链 邮件 URL", "/s/emails/view/99" in C._mautic_ext_link("email", "EM_X", _idx),
       C._mautic_ext_link("email", "EM_X", _idx))
-check("外链 分群 URL", "/s/segments/7" in C._mautic_ext_link("segment", "SEG_Y", _idx))
-check("外链 落页 URL", "/s/landingpages/3" in C._mautic_ext_link("landingpage", "LP_Z", _idx))
+check("外链 分群 URL", "/s/segments/view/7" in C._mautic_ext_link("segment", "SEG_Y", _idx))
+check("外链 落页 URL", "/s/landingpages/view/3" in C._mautic_ext_link("landingpage", "LP_Z", _idx))
 check("外链 未连接返回空", C._mautic_ext_link("email", "NOPE", _idx) == "")
 
 # ---------- 单元：约束红线 → quiet_hours 确定性解析（防 LLM 把午夜写成 09:00） ----------
@@ -78,6 +78,25 @@ _ss = strategies_from_spec({"campaigns": [{"cid": "c1", "send_conditions": {"qui
 check("strategies_from_spec 自动派生红线", _ss[0]["send_conditions"]["quiet_hours"] == "20:00-00:00",
       _ss[0]["send_conditions"]["quiet_hours"])
 check("外链 未找到返回空", C._mautic_ext_link("email", "MISSING", _idx) == "")
+
+# ---------- 单元：策略摘要资产引用可点击（创建页/Program 页需求 #10） ----------
+_ss = {
+    "segment": "SEG_Y", "segment_mode": "propose",
+    "send_conditions": {"max_per_24h": 1, "max_per_7d": 3, "delay_hours": 24},
+    "email_ref": "EM_X", "email_mode": "reuse",
+    "landing_page_ref": "LP_Z",
+}
+_ss_html = C._strategy_summary(_ss, _idx)
+check("摘要 分群可点击", "/s/segments/view/7" in _ss_html and "SEG_Y" in _ss_html,
+      "期望 a 链接指向 /s/segments/view/7")
+check("摘要 邮件可点击", "/s/emails/view/99" in _ss_html and "EM_X" in _ss_html,
+      "期望 a 链接指向 /s/emails/view/99")
+check("摘要 落页可点击", "/s/landingpages/view/3" in _ss_html and "LP_Z" in _ss_html,
+      "期望 a 链接指向 /s/landingpages/view/3")
+# 未连 Mautic（available=False）时退化为纯文本 <code>，不生成外链
+_idx_off = dict(_idx); _idx_off["available"] = False
+_ss_off = C._strategy_summary(_ss, _idx_off)
+check("摘要 未连时退化为纯文本", "<a " not in _ss_off and "<code>SEG_Y</code>" in _ss_off)
 # 直接渲染 program 验证 wave→campaign 重命名（不依赖 Mautic 连通）
 _p = C._load_program("ucl2028_svctest")
 if _p:
@@ -88,7 +107,7 @@ if _p:
     _demo = _copy.deepcopy(_p)
     _demo["campaigns"][0]["proposal"]["deploy_result"] = {"campaign_id": "555", "dry_run": False}
     _demo_html = C._program_body(_demo, "")
-    check("已推送 campaign 渲染战役外链", "/s/campaigns/555" in _demo_html,
+    check("已推送 campaign 渲染战役外链", "/s/campaigns/view/555" in _demo_html,
           "campaign_id=555 → /s/campaigns/555")
 else:
     check("program 渲染 wave→campaign 重命名", False, "（output/program_ucl2028_svctest.json 缺失）")

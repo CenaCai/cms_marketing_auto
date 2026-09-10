@@ -14,7 +14,8 @@ Campaign Cockpit — 活动驾驶舱（独立部署 :8090）
   POST /program/<id>/campaign/<cid>/feedback  单 campaign 人工回填执行结果（Plan 3 手动保存）
   GET  /program/<id>/campaign/<cid>/feedback?autofill=1&date=YYYY-MM-DD   从 Mautic 拉数据预填表单（Plan 2 一键预填）
   POST /program/<id>/auto-feedback?date=YYYY-MM-DD   自动汇总某 program 的所有 campaign 昨日/指定日 Mautic 真实数（Plan 1 每日定时任务入口）
-  POST /program/<id>/complete                   标记某 campaign 完成 → 自适应改写下游
+  POST /program/<id>/complete                   标记某 campaign 完成 → 回写达成并改写【当前】campaign 策略（两步：先预览 diff，确认后才落库）
+  POST /program/<id>/confirm-strategy            粘贴 AI 策略 JSON → 应用到【剩余所有】campaign（两步：先预览 diff，确认后才落库）
   GET  /proposal/<id>           遗留单 campaign 提案（run_poc 产出的）
   POST /proposal/<id>/approve|/push            遗留单 campaign 审批/推送
 """
@@ -53,7 +54,7 @@ from mautic_client import (push, load_config, ensure_project, mautic_read_assets
                            invalidate_asset_cache)
 from adaptive import (build_program, evaluate_and_replan, default_strategies,
                       DEFAULT_N_CAMPAIGNS, derive_plan, _split_windows,
-                      ASSUMED_LP_CONV)
+                      ASSUMED_LP_CONV, adjust_strategy_for_verdict, _verdict_for)
 
 # 与 adaptive.derive_plan 一致的策略阈值（Agent 可达性校验用）
 RC_MAX = 0.50
@@ -1797,8 +1798,10 @@ def _build_replan_prompt(program: dict, gid: str, cid: str) -> str:
     return "\n".join(lines)
 
 
-def _strategy_summary(s: dict) -> str:
-    """Program 页每 campaign 的策略摘要：理由/依据/分群/邮件/变体/发送条件/tag。"""
+def _strategy_summary(s: dict, idx: dict = None) -> str:
+    """Program 页每 campaign 的策略摘要：理由/依据/分群/邮件/变体/发送条件/tag。
+    idx（Mautic 资产索引，来自 _mautic_asset_index）非空时，分群/邮件/落页引用
+    渲染成可跳转 :8080 详情页的外链；idx 为 None（导出/纯文本场景）时退化为纯文本。"""
     s = s or {}
     sc = s.get("send_conditions", {}) or {}
     cv = s.get("content_variant_spec") or {}
@@ -1818,13 +1821,13 @@ def _strategy_summary(s: dict) -> str:
         variant_txt = (f"变体 <code>{_esc(cv_id)}</code>"
                        f"{(' ' + _esc(cv.get('angle') or '')) if cv.get('angle') else ''}"
                        f"{((' — ' + _esc(cv['headline'])) if cv.get('headline') else '')}")
-    base = (f"分群 <code>{_esc(s.get('segment',''))}</code>"
+    base = (f"分群 {_ref_link('segment', s.get('segment',''), s.get('segment','') or '—', idx)}"
             f"<span class='pill'>({_esc(s.get('segment_mode','reuse'))})</span>"
             f" · 频 <code>{sc.get('max_per_24h',1)}/24h·{sc.get('max_per_7d',3)}/7d</code>"
             f" · 延迟 <code>{sc.get('delay_hours',24)}h</code>"
             f"{(' · 免打扰 <code>' + _esc(sc['quiet_hours']) + '</code>') if sc.get('quiet_hours') else ''}"
-            f" · 邮件 <code>{_esc(email_display(s))}</code>"
-            f" · 落页 <code>{_esc(s.get('landing_page_ref','') or '—')}</code>"
+            f" · 邮件 {_ref_link('email', s.get('email_ref',''), email_display(s), idx)}"
+            f" · 落页 {_ref_link('landingpage', s.get('landing_page_ref',''), s.get('landing_page_ref','') or '—', idx)}"
             f" · {variant_txt}"
             f" · tag {tags}")
     why = ""
@@ -2096,13 +2099,15 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
 
 
 # --------------------------- Mautic 外链（资产已在 :8080/s/ 生成 → 跳转详情页） ---------------------------
+# Mautic 7 后台详情页真实路由：/s/{section}/view/{id}（已与用户 :8080 实例核对：
+# 分群 http://localhost:8080/s/segments/view/124 、邮件 http://localhost:8080/s/emails/view/122）
 _MAUTIC_ADMIN_ROUTES = {
-    "campaign": "/s/campaigns/{id}",
-    "email": "/s/emails/{id}/view",
-    "segment": "/s/segments/{id}",
-    "landingpage": "/s/landingpages/{id}",
-    "sms": "/s/sms/{id}/view",
-    "form": "/s/forms/{id}/view",
+    "campaign": "/s/campaigns/view/{id}",
+    "email": "/s/emails/view/{id}",
+    "segment": "/s/segments/view/{id}",
+    "landingpage": "/s/landingpages/view/{id}",
+    "sms": "/s/sms/view/{id}",
+    "form": "/s/forms/view/{id}",
 }
 
 def _mautic_base() -> str:
@@ -2153,6 +2158,26 @@ def _mautic_ext_link(kind: str, ref, idx: dict) -> str:
         return (f"<a class='ext' href='{base}{routes[kind].format(id=mid)}' "
                 f"target='_blank' rel='noopener'>详情</a>")
     return ""
+
+def _ref_link(kind: str, name, display: str, idx: dict) -> str:
+    """把资产名渲染成可点击的 Mautic 详情页链接（链接文字即 display）；
+    不可解析（未连接/未找到/未知类型/name 为空）时退化为 <code> 纯文本。
+    用于 _strategy_summary 的 分群/邮件/落页 引用 —— 让创建页/Program 页的
+    策略摘要里的资产名可直接跳转 :8080 详情页（与用户期望一致：
+    分群→/s/segments/view/{id}、邮件→/s/emails/view/{id}）。
+    kind: segment | email | landingpage（落页在 idx 里用 'page' 键）。"""
+    _disp = _esc(display if display is not None else "")
+    if not name:
+        return f"<code>{_disp}</code>"
+    if not idx or not idx.get("available"):
+        return f"<code>{_disp}</code>"
+    key = "page" if kind == "landingpage" else kind
+    mid = idx.get(key, {}).get(str(name))
+    if not mid:
+        return f"<code>{_disp}</code>"
+    base = _mautic_base()
+    href = f"{base}{_MAUTIC_ADMIN_ROUTES[kind].format(id=mid)}"
+    return (f"<a class='ext' href='{href}' target='_blank' rel='noopener'>{_disp}</a>")
 
 
 def _asset_note(kind: str, ref, idx: dict) -> str:
@@ -2502,7 +2527,8 @@ def _program_body(program: dict, msg: str = "") -> str:
     gid = program["goal_id"]
     goal = program["goal"]
     # 自适应规则说明
-    rules = ("<p class='note'>自适应规则（确定性，可审计）：上游完成后按「达成率/退订率」改写下游 —— "
+    rules = ("<p class='note'>自适应规则（确定性，可审计）：上游完成并回写达成后，按「达成率/退订率」"
+             "改写<b>当前</b>campaign 策略（需二次确认）；剩余 campaign 由「确认剩余策略（应用 AI策略）」粘贴 JSON 推进 —— "
              "达标→保持略降本；未达标(≥50%)→提频+换内容+urgency；乏力→大幅提频+扩分组(broaden/reengage)+换内容；"
              "退订超阈→降频+suppression。</p>")
     # 派生计划摘要（单 campaign 点击率由系统反推 + 合理性判定 + Agent 优化说明）
@@ -2674,7 +2700,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                 fa_html += (f"<details style='margin-top:4px'><summary class='pill'>历史（{len(fa)} 天）</summary>"
                             f"<table class='kv'><tr><th>日期</th><th>发送</th><th>打开</th><th>点击</th>"
                             f"<th>转化</th><th>退订</th><th>达成率</th><th>退订率</th></tr>{hist}</table></details>")
-        # 方案优化预览（_optimize_preview，只读预判；「采纳并应用」才真正回写下游）
+        # 方案优化预览（_optimize_preview，只读预判；「采纳并应用」才真正改写当前 campaign）
         opt_preview = c.get("_optimize_preview") or {}
         opt_html = ""
         if opt_preview:
@@ -2688,27 +2714,31 @@ def _program_body(program: dict, msg: str = "") -> str:
                             f"<input type='hidden' name='cid' value='{_esc(c['cid'])}'>"
                             f"<input type='hidden' name='conversion' value='{_esc(opt_preview.get('conv',0))}'>"
                             f"<input type='hidden' name='unsub' value='{_esc(opt_preview.get('unsub',0))}'>"
-                            f"<button class='btn sm' type='submit'>采纳并应用（回写下游）</button></form>")
+                            f"<input type='hidden' name='confirm' value=''>"
+                            f"<button class='btn sm' type='submit'>采纳并应用（改写当前campaign）</button></form>")
         complete_f = (f"<form method='post' action='/program/{gid}/complete' style='margin-top:8px'>"
                       f"<input type='hidden' name='cid' value='{_esc(c['cid'])}'>"
+                      f"<input type='hidden' name='confirm' value=''>"
                       f"<input name='conversion' placeholder='达成率0~1（留空用回填）' style='width:150px;display:inline-block'>"
                       f"<input name='unsub' placeholder='退订率0~1' style='width:120px;display:inline-block'>"
-                      f"<button class='btn sm ghost' type='submit'>标记完成并回写达成 → 改写下游</button></form>")
-        # AI策略 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成下一阶段策略，贴回后确认应用
+                      f"<button class='btn sm ghost' type='submit'>标记完成并回写→ 改写当前campaign</button></form>")
+        # AI策略 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成策略，贴回后确认应用到【剩余所有】campaign
         replan_ui = (
             f"<div style='margin-top:10px;border-top:1px dashed var(--line);padding-top:8px'>"
-            f"<p class='note'>AI策略 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成下一阶段策略，贴回后确认应用。</p>"
+            f"<p class='note'>AI策略 辅助路径（替代上方全自动启发式）：复制上下文去 WorkBuddy 生成策略，贴回后确认应用到"
+            f"<b>剩余所有</b>待推进 campaign（两步：先预览 diff，确认后才落库）。</p>"
             f"<button type='button' class='btn sm sec' "
             f"onclick=\"copyReplanPrompt('{_esc(gid)}','{_esc(c['cid'])}')\">"
             f"📋 复制信息（去 WorkBuddy 生成）</button>"
             f"<span id='replan-status-{_esc(c['cid'])}' class='pill'></span>"
             f"<form method='post' action='/program/{_esc(gid)}/confirm-strategy' style='margin-top:8px'>"
             f"<input type='hidden' name='cid' value='{_esc(c['cid'])}'>"
+            f"<input type='hidden' name='confirm' value=''>"
             f"<input name='conversion' placeholder='达成率0~1（可选）' style='width:150px;display:inline-block'>"
             f"<input name='unsub' placeholder='退订率0~1' style='width:120px;display:inline-block'>"
             f"<textarea name='strategy_spec' placeholder='粘贴 WorkBuddy 返回的策略 JSON（StrategySpec）' "
             f"style='width:100%;height:84px;margin-top:6px;display:block'></textarea>"
-            f"<button class='btn sm' type='submit'>确认下阶段策略（应用 AI策略）</button></form></div>"
+            f"<button class='btn sm' type='submit'>确认剩余策略（应用 AI策略）</button></form></div>"
         )
         result_txt = ""
         if c.get("result"):
@@ -2755,7 +2785,7 @@ def _program_body(program: dict, msg: str = "") -> str:
         ext_html = ("<p class='pill'>Mautic 外链：" + " · ".join(ext_bits) + "</p>") if ext_bits else ""
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
-                  f"<p style='margin:8px 0'>{_strategy_summary(c['strategy'])}</p>"
+                  f"<p style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
                   f"{_provenance_line(c['strategy'])}"
                   f"{_compile_notes_html(prop)}"
                   f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap_txt} {result_txt}</p>"
@@ -2830,7 +2860,7 @@ def _program_body(program: dict, msg: str = "") -> str:
             if e.get("source") == "l1_workbuddy":
                 extra = []
                 if e.get("applied"):
-                    extra.append(f"改写下游：{_esc('；'.join(e['applied']))}")
+                    extra.append(f"改写剩余：{_esc('；'.join(e['applied']))}")
                 if e.get("added"):
                     extra.append(f"新增分支：{_esc('；'.join(e['added']))}")
                 lines = "".join(f"<li>{x}</li>" for x in extra) or "<li>（仅标记完成，无下游改写）</li>"
@@ -4080,7 +4110,7 @@ class Handler(BaseHTTPRequestHandler):
         进入：点 campaign 卡片「📈 从自动回填载入方案优化」按钮。
         行为：取 feedback_auto[date]（date 缺省=最新一日）→ 算达成率/退订率 → 与 KPI 目标比对 →
               判定 无需优化 / 需优化，预览存 c['_optimize_preview'] 渲染在卡片上。
-              「采纳并应用」按钮 POST /complete（带 conv/unsub）才真正回写下游。
+              「采纳并应用」按钮 POST /complete（带 conv/unsub）才真正改写当前 campaign（两步：预览 diff → 确认落库）。
         """
         p = _load_program(gid)
         if not p:
@@ -4188,8 +4218,107 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
         except Exception as e:  # noqa: BLE001
             self._send(200, _page("删除失败", f"<p class='b-bad'>{_esc(e)}</p><p><a href='/'>返回</a></p>"))
+def _tt_key(x: dict) -> tuple:
+    """tag_triggers 中一条绑定的去重键。"""
+    if not isinstance(x, dict):
+        return ("", "", "")
+    return (x.get("event") or x.get("on"),
+            x.get("tag") or x.get("tags"),
+            x.get("email_name") or x.get("name"))
+
+
+def _compute_strategy_diff(old_s: dict, new_s: dict, cid: str = "") -> list:
+    """比较两份 strategy，返回直白中文调整项列表（用于二次确认）。空列表 = 无变化。"""
+    items = []
+    if not isinstance(old_s, dict) or not isinstance(new_s, dict):
+        return items
+
+    def g(d, *ks, default=None):
+        cur = d
+        for k in ks:
+            if not isinstance(cur, dict):
+                return default
+            cur = cur.get(k, default)
+        return cur
+
+    # 1) 邮件发送频次
+    old_m = g(old_s, "send_conditions", "max_per_24h", default=1)
+    new_m = g(new_s, "send_conditions", "max_per_24h", default=1)
+    if old_m != new_m:
+        items.append(f"调整邮件发送频次（原先：每天 {old_m} 份、现在每天 {new_m} 份）")
+
+    # 2) 标签 新增/移除
+    old_tags = set(old_s.get("tags_to_write") or [])
+    new_tags = set(new_s.get("tags_to_write") or [])
+    for t in sorted(new_tags - old_tags):
+        items.append(f'新增标签 "{t}"')
+    for t in sorted(old_tags - new_tags):
+        items.append(f'移除标签 "{t}"')
+
+    # 3) 折扣策略
+    old_d = old_s.get("discount") if isinstance(old_s.get("discount"), dict) else {}
+    new_d = new_s.get("discount") if isinstance(new_s.get("discount"), dict) else {}
+    old_on = bool(old_d.get("enabled")) and (old_d.get("pct") is not None)
+    new_on = bool(new_d.get("enabled")) and (new_d.get("pct") is not None)
+    old_pct = old_d.get("pct") if old_on else None
+    new_pct = new_d.get("pct") if new_on else None
+
+    def _dlabel(on, pct):
+        return f"开启 {pct}%" if on else "关闭"
+
+    if old_on != new_on or (old_on and new_on and old_pct != new_pct):
+        items.append(f"折扣策略（原先：{_dlabel(old_on, old_pct)}、现在：{_dlabel(new_on, new_pct)}）")
+
+    # 4) 内容变体
+    if old_s.get("content_variant") != new_s.get("content_variant"):
+        items.append(f"切换内容变体（原先：v{old_s.get('content_variant')}、现在：v{new_s.get('content_variant')}）")
+
+    # 5) 邮件内容角度
+    old_a = g(old_s, "email_brief", "angle")
+    new_a = g(new_s, "email_brief", "angle")
+    if old_a and new_a and old_a != new_a:
+        items.append(f'调整邮件内容角度（原先：「{old_a}」、现在：「{new_a}」）')
+
+    # 6) 扩/收窄分组
+    if not old_s.get("segment_broaden") and new_s.get("segment_broaden"):
+        items.append("标记「扩分组」：向更广受众投放")
+    if not old_s.get("segment_narrow") and new_s.get("segment_narrow"):
+        items.append("标记「收窄分组」：聚焦高意向受众")
+
+    # 7) 邮件事件绑定标签（tag_triggers）
+    old_tt = old_s.get("tag_triggers") or []
+    new_tt = new_s.get("tag_triggers") or []
+    old_keys = {_tt_key(x) for x in old_tt if isinstance(x, dict)}
+    for x in new_tt:
+        if isinstance(x, dict) and _tt_key(x) not in old_keys:
+            ev = x.get("event") or x.get("on") or "触发"
+            tag = x.get("tag") or x.get("tags")
+            if isinstance(tag, list):
+                tag = "/".join(tag)
+            items.append(f'当用户{ev}邮件「{x.get("email_name") or x.get("name") or ""}」会绑定标签 "{tag}"')
+
+    # 8) 资产变化（邮件/落地页/分群）
+    for fld, label in (("email_ref", "邮件"), ("landing_page_ref", "落地页"), ("segment", "分群")):
+        if old_s.get(fld) != new_s.get(fld):
+            items.append(f'调整{label}资产（原先：{old_s.get(fld) or "无"}、现在：{new_s.get(fld) or "无"}）')
+
+    # 9) 邮件主题
+    if old_s.get("subject") != new_s.get("subject"):
+        items.append(f'调整邮件主题（原先：「{old_s.get("subject")}」、现在：「{new_s.get("subject")}」）')
+
+    return items
+
+
+def _diff_list_html(items: list, empty_txt: str = "无变化") -> str:
+    if not items:
+        return f"<p class='note' style='color:var(--ok)'>✅ {_esc(empty_txt)}</p>"
+    li = "".join(f"<li>{_esc(x)}</li>" for x in items)
+    return f"<ol class='diff' style='margin:6px 0 0 18px'>{li}</ol>"
+
+
     def _handle_complete(self, form):
         # path 形如 /program/<gid>/complete
+        # 两步流：先预览「改写当前campaign」的 diff → 确认后才落库（不影响下游）
         gid = self.path.split("/")[2] if self.path.startswith("/program/") else ""
         p = _load_program(gid)
         if not p:
@@ -4206,29 +4335,70 @@ class Handler(BaseHTTPRequestHandler):
         if not unsub_raw and c.get("feedback"):
             unsub_raw = c["feedback"].get("unsub_rate", 0)
         result = {"conversion": float(conv_raw or 0), "unsub": float(unsub_raw or 0)}
-        cockpit_log("INFO", f"complete {cid}：evaluate_and_replan 开始（conv={result['conversion']}, unsub={result['unsub']}）")
-        out = evaluate_and_replan(p, cid, result)
-        if "error" in out:
-            cockpit_log("ERROR", f"complete {cid} 失败：{out['error']}")
-            msg = f"<div class='card'><p class='b-bad'>{_esc(out['error'])}</p></div>"
+        # 判定（与 evaluate_and_replan 同阈值）
+        kpi = (p["goal"] or {}).get("kpi") or {}
+        target = kpi.get("target", 0.15)
+        target_unset = target is None or kpi.get("target_unset") or float(target or 0) <= 0
+        cmp_target = c.get("conv_target")
+        if cmp_target is None:
+            cmp_target = target
+        met = (float(result["conversion"] or 0) >= float(cmp_target or 0))
+        verdict = "baseline" if target_unset else _verdict_for(target, result["conversion"], result["unsub"])
+        done_lbl = STATUS.get(c.get("status", ""), ("", ""))[0] or ("达成" if met else "未达标")
+        # 仅改写【当前】campaign 的策略（回写达成），产出 diff 供二次确认
+        new_s = adjust_strategy_for_verdict(c["strategy"], verdict)
+        diff = _compute_strategy_diff(c["strategy"], new_s, cid)
+        confirm = (form.get("confirm") or "").strip()
+        if confirm != "1":
+            # Step A：预览 diff（不落库）
+            cockpit_log("INFO", f"complete {cid}：预览（verdict={verdict} · diff={len(diff)}）")
+            title = "改写当前campaign · 预览"
+            if not diff:
+                head = (f"上游 <b>{_esc(cid)}</b> 完成（{_esc(done_lbl)}）· 判定 <b>{_esc(verdict)}</b>："
+                        f"<span class='b-ok'>当前 campaign 策略无变化</span>。")
+                body = (f"<p class='note'>按判定结果（{_esc(verdict)}）计算，当前 campaign 的策略旋钮无需调整，"
+                        f"直接标记完成即可。</p>")
+                form_html = (f"<form method='post' action='/program/{_esc(gid)}/complete'>"
+                             f"<input type='hidden' name='cid' value='{_esc(cid)}'>"
+                             f"<input type='hidden' name='conversion' value='{_esc(conv_raw)}'>"
+                             f"<input type='hidden' name='unsub' value='{_esc(unsub_raw)}'>"
+                             f"<input type='hidden' name='confirm' value='1'>"
+                             f"<button class='btn sm' type='submit'>确认完成（无改动）</button></form>")
+            else:
+                head = (f"上游 <b>{_esc(cid)}</b> 完成（{_esc(done_lbl)}）· 判定 <b>{_esc(verdict)}</b>："
+                        f"将改写<b>当前 campaign</b> 策略如下，请确认。")
+                body = (f"<p class='note'>以下为按达成结果（{_esc(verdict)}）回写当前 campaign 的调整项"
+                        f"（不影响下游其余 campaign）：</p>{_diff_list_html(diff)}")
+                form_html = (f"<form method='post' action='/program/{_esc(gid)}/complete'>"
+                             f"<input type='hidden' name='cid' value='{_esc(cid)}'>"
+                             f"<input type='hidden' name='conversion' value='{_esc(conv_raw)}'>"
+                             f"<input type='hidden' name='unsub' value='{_esc(unsub_raw)}'>"
+                             f"<input type='hidden' name='confirm' value='1'>"
+                             f"<button class='btn sm' type='submit'>确认改写并提交</button></form>"
+                             f"<a class='btn sm ghost' href='/program/{_esc(gid)}/campaign/{_esc(cid)}'>取消</a>")
+            msg = (f"<div class='card' style='border-color:var(--warn)'>"
+                   f"<h3 style='margin:0 0 6px'>{_esc(title)}</h3>"
+                   f"<p>{head}</p>{body}{form_html}</div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
+        # Step B：确认 → 落库（仅当前 campaign）
+        from goal_intake import GoalSpec
+        from plan_compiler import compile
+        goal = GoalSpec(**(p["goal"] or {}))
+        c["strategy"] = new_s
+        c["proposal"] = compile(goal, new_s)
+        c["status"] = "done_met" if met else "done_below"
+        c["result"] = result
+        p["changelog"].append({
+            "completed_cid": cid, "result": result, "verdict": verdict,
+            "target_unset": bool(target_unset), "scope": "current_only",
+            "changes": [{"cid": cid, "notes": diff}], "at": time.time(),
+        })
         _save_program(p)
-        cockpit_log("OK", f"complete {cid}：verdict={out.get('verdict')} · changes={len(out.get('changes', []))} · new={len(out.get('new_campaigns', []))} · pruned={len(out.get('pruned_campaigns', []))}")
-        changed = "; ".join(f"{ch['cid']}:{'/'.join(ch['notes'])}" for ch in out["changes"]) or "无下游待改写"
-        ratio_txt = ("未设置（KPI 目标 R 未给，不做达成率改写）" if out.get("target_unset")
-                     else str(out["ratio"]))
-        done_lbl = STATUS.get(p and next((x["status"] for x in p["campaigns"] if x["cid"] == cid), ""), ("", ""))[0]
-        # 分支维度（第 3 轴）：新增折扣挽回分支 / 剪掉挂起兜底分支
-        branch_lines = []
-        for nb in out.get("new_campaigns", []):
-            branch_lines.append(f"➕ 新增修正分支 <b>{_esc(nb['cid'])}</b>（折扣挽回，覆盖未转化联系人）")
-        for pr in out.get("pruned_campaigns", []):
-            branch_lines.append(f"✂️ 剪掉挂起分支 <b>{_esc(pr['cid'])}</b>（已达标，不再需要）")
-        branch_txt = ("<br>" + "<br>".join(branch_lines)) if branch_lines else ""
-        verdict_lbl = out.get("verdict")
-        msg = (f"<div class='card'><p class='b-ok'>上游 {_esc(cid)} 完成（{_esc(done_lbl)}），"
-               f"判定 <b>{_esc(verdict_lbl or '—')}</b>，达成率 {_esc(ratio_txt)}<br>"
-               f"下游改写：{_esc(changed)}{branch_txt}</p></div>")
+        cockpit_log("OK", f"complete {cid}：verdict={verdict} · 改写当前campaign · diff={len(diff)}")
+        msg = (f"<div class='card'><p class='b-ok'>✅ <b>{_esc(cid)}</b> 已标记完成（{_esc(done_lbl)}），"
+               f"判定 <b>{_esc(verdict)}</b>，已回写当前 campaign 策略"
+               f"（{ '无改动' if not diff else str(len(diff)) + ' 项调整' }）。</p>"
+               f"{_diff_list_html(diff, empty_txt='无策略调整') if diff else ''}</div>")
         self._send(200, _page("Program", _program_body(p, msg)))
     def _handle_replan_prompt(self, gid, cid, body):
         """构建「下一阶段策略」自包含提示词，供运营复制到 WorkBuddy 生成后贴回。返回 JSON。"""
@@ -4241,7 +4411,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"ok": False, "error": f"构建提示词失败：{e}"})
         return self._send_json({"ok": True, "prompt": prompt})
     def _handle_confirm_strategy(self, form):
-        """L1 辅助路径（替代启发式）：粘贴 WorkBuddy 返回的策略 JSON，标记上游完成并应用到下游。"""
+        """L1 辅助路径：粘贴 WorkBuddy 返回的策略 JSON，标记上游完成并应用到【剩余所有】campaign。
+        两步流：先预览每个剩余 campaign 的 diff → 确认后才落库。"""
         gid = self.path.split("/")[2] if self.path.startswith("/program/") else ""
         p = _load_program(gid)
         if not p:
@@ -4253,7 +4424,7 @@ class Handler(BaseHTTPRequestHandler):
         raw = (form.get("strategy_spec") or "").strip()
         if not raw:
             msg = ("<div class='card'><p class='b-bad'>请先粘贴 WorkBuddy 返回的策略 JSON，"
-                   "再点「确认下阶段策略」。</p></div>")
+                   "再点「确认剩余策略」。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         # 解析 StrategySpec
         try:
@@ -4271,7 +4442,7 @@ class Handler(BaseHTTPRequestHandler):
         if conflicts:
             msg = _conflicts_card_html(
                 conflicts, title="策略规格与基础信息冲突，未应用该策略",
-                note="Program 未做任何改动：不改写下游、不记录变更。请修正策略 JSON 后重新提交。")
+                note="Program 未做任何改动：不应用到剩余 campaign、不记录变更。请修正策略 JSON 后重新提交。")
             return self._send(200, _page("Program", _program_body(p, msg)))
         # 记录上游完成结果（与 _handle_complete 同口径）
         conv_raw = (form.get("conversion", "") or "").strip()
@@ -4285,11 +4456,67 @@ class Handler(BaseHTTPRequestHandler):
         if cmp_target is None:
             cmp_target = (p["goal"].get("kpi") or {}).get("target")
         met = (float(result["conversion"] or 0) >= float(cmp_target or 0))
-        c["status"] = "done_met" if met else "done_below"
-        c["result"] = result
-        # 应用 spec 到下游（仅改待推进且 cid 匹配者；spec 独有的 cid 视为 L1 新增分支）
-        from plan_compiler import compile
+        done_lbl = "达成" if met else "未达标"
         spec_map = {s["cid"]: s for s in strategies}
+        existing = {x["cid"] for x in p["campaigns"]}
+        # 预览：逐个剩余 campaign 的 diff + spec 独有（新增分支）
+        changed_blocks = []
+        total_changes = 0
+        for c2 in p["campaigns"]:
+            if c2["cid"] == cid:
+                continue
+            if c2["status"] not in ("unreviewed", "reviewed", "pending"):
+                continue
+            if c2["cid"] in spec_map:
+                diff = _compute_strategy_diff(c2["strategy"], spec_map[c2["cid"]], c2["cid"])
+                if diff:
+                    total_changes += len(diff)
+                    name = spec_map[c2["cid"]].get("campaign_name") or spec_map[c2["cid"]].get("intent") or c2["cid"]
+                    changed_blocks.append(
+                        f"<div class='card' style='margin-top:8px;border-color:var(--warn)'>"
+                        f"<p style='margin:0 0 4px'><b>{_esc(c2['cid'])}</b> "
+                        f"（{_esc(str(name))}）：{len(diff)} 项调整</p>{_diff_list_html(diff)}</div>")
+        new_branches = [s for s in strategies if s["cid"] not in existing]
+        branch_html = "".join(
+            f"<p class='note' style='color:var(--ok);margin-top:6px'>➕ 新增分支 <b>{_esc(s['cid'])}</b>"
+            f"（{_esc(str(s.get('campaign_name') or s.get('intent') or ''))}）</p>"
+            for s in new_branches)
+        confirm = (form.get("confirm") or "").strip()
+        if confirm != "1":
+            # Step A：预览（不落库）
+            cockpit_log("INFO", f"confirm-strategy {cid}：预览（changed_campaigns={len(changed_blocks)} · new_branches={len(new_branches)}）")
+            if not changed_blocks and not new_branches:
+                head = (f"上游 <b>{_esc(cid)}</b> 完成（{_esc(done_lbl)}）：粘贴的策略与【剩余所有】campaign 当前策略"
+                        f"<span class='b-ok'>无差异</span>。可直接推进下一阶段（用原有策略跑）。")
+                body = ""
+                form_html = (f"<form method='post' action='/program/{_esc(gid)}/confirm-strategy'>"
+                             f"<input type='hidden' name='cid' value='{_esc(cid)}'>"
+                             f"<input type='hidden' name='conversion' value='{_esc(conv_raw)}'>"
+                             f"<input type='hidden' name='unsub' value='{_esc(unsub_raw)}'>"
+                             f"<input type='hidden' name='strategy_spec' value='{_esc(raw)}'>"
+                             f"<input type='hidden' name='confirm' value='1'>"
+                             f"<button class='btn sm' type='submit'>确认推进（无改动）</button></form>"
+                             f"<a class='btn sm ghost' href='/program/{_esc(gid)}/campaign/{_esc(cid)}'>取消</a>")
+            else:
+                head = (f"上游 <b>{_esc(cid)}</b> 完成（{_esc(done_lbl)}）：将把粘贴的策略应用到【剩余所有】"
+                        f"{len(changed_blocks)} 个待改 campaign"
+                        f"{(' + ' + str(len(new_branches)) + ' 个新增分支') if new_branches else ''}，请确认。")
+                body = "".join(changed_blocks) + branch_html
+                form_html = (f"<form method='post' action='/program/{_esc(gid)}/confirm-strategy'>"
+                             f"<input type='hidden' name='cid' value='{_esc(cid)}'>"
+                             f"<input type='hidden' name='conversion' value='{_esc(conv_raw)}'>"
+                             f"<input type='hidden' name='unsub' value='{_esc(unsub_raw)}'>"
+                             f"<input type='hidden' name='strategy_spec' value='{_esc(raw)}'>"
+                             f"<input type='hidden' name='confirm' value='1'>"
+                             f"<button class='btn sm' type='submit'>确认应用（改写剩余 {len(changed_blocks)} 个campaign"
+                             f"{(' + 新增 ' + str(len(new_branches)) + ' 分支') if new_branches else ''}）</button></form>"
+                             f"<a class='btn sm ghost' href='/program/{_esc(gid)}/campaign/{_esc(cid)}'>取消</a>")
+            msg = (f"<div class='card' style='border-color:var(--warn)'>"
+                   f"<h3 style='margin:0 0 6px'>确认剩余策略 · 预览</h3>"
+                   f"<p>{head}</p>{body}{form_html}</div>")
+            return self._send(200, _page("Program", _program_body(p, msg)))
+        # Step B：确认 → 落库（应用 spec 到剩余所有待推进且 cid 匹配者；spec 独有 cid = 新增分支）
+        from plan_compiler import compile
         applied, added = [], []
         for c2 in p["campaigns"]:
             if c2["cid"] == cid:
@@ -4301,7 +4528,6 @@ class Handler(BaseHTTPRequestHandler):
                 c2["strategy"] = new_s
                 c2["proposal"] = compile(goal, new_s)
                 applied.append(c2["cid"])
-        existing = {x["cid"] for x in p["campaigns"]}
         for s in strategies:
             if s["cid"] not in existing:
                 prop = compile(goal, s)
@@ -4312,16 +4538,20 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 added.append(s["cid"])
         p["n_campaigns"] = len(p["campaigns"])
+        c["status"] = "done_met" if met else "done_below"
+        c["result"] = result
         p["changelog"].append({
             "completed_cid": cid, "result": result, "ratio": None,
-            "verdict": "l1_workbuddy", "target_unset": False,
-            "changes": [], "applied": applied, "added": added,
+            "verdict": "l1_workbuddy", "target_unset": False, "scope": "remaining_all",
+            "changes": [{"cid": x, "notes": ["见预览"]} for x in applied],
+            "applied": applied, "added": added,
             "source": "l1_workbuddy", "at": time.time(),
         })
         _save_program(p)
-        msg = (f"<div class='card'><p class='b-ok'>上游 {_esc(cid)} 完成（AI策略已应用）· "
+        cockpit_log("OK", f"confirm-strategy {cid}：applied={applied} · added={added}")
+        msg = (f"<div class='card'><p class='b-ok'>✅ 上游 <b>{_esc(cid)}</b> 完成（AI策略已应用）· "
                f"达成率 {result['conversion']} · 退订率 {result['unsub']}<br>"
-               f"改写下游：{_esc('；'.join(applied) or '无匹配下游')}<br>"
+               f"改写剩余：{_esc('；'.join(applied) or '无匹配剩余')}<br>"
                f"新增分支：{_esc('；'.join(added) or '无')}</p></div>")
         self._send(200, _page("Program", _program_body(p, msg)))
     def _handle_legacy_approve(self, gid, form):
