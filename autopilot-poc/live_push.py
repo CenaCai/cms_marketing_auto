@@ -53,7 +53,7 @@ strategy = {
     "subject": "OAuth2 活推送连线验证",
     "wave_id": "wave_1",
     "tags_to_write": ["oauth_live_test"],
-    "landing_page_url": "http://localhost:8080/s/ucl2028-bridge",
+    "landing_page_url": "http://localhost:8080/ucl2028-bridge",
     "send_conditions": {"delay_hours": 24},
 }
 

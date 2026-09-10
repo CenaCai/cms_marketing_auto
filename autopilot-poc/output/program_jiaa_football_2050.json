@@ -17,7 +17,7 @@
     "reserved_channels": [
       "sms"
     ],
-    "landing_page_url": "http://localhost:8080/s/c1-zh",
+    "landing_page_url": "",
     "budget": 0.0,
     "is_revenue": false,
     "start_date": "2049-07-01",
@@ -172,7 +172,7 @@
         "landing_page_ref": "LP_中国甲A足球赛-阶段1-官方启幕",
         "landing_page_mode": "generate",
         "landing_page_note": "",
-        "landing_page_url": "http://localhost:8080/s/c1-zh",
+        "landing_page_url": "",
         "send_conditions": {
           "delay_hours": 0,
           "max_per_24h": 1,
@@ -336,7 +336,7 @@
           "reserved_channels": [
             "sms"
           ],
-          "landing_page_url": "http://localhost:8080/s/c1-zh",
+          "landing_page_url": "",
           "kpi": {
             "type": "conversion",
             "target": 0.01,
@@ -380,7 +380,7 @@
             "landing_page_ref": "LP_中国甲A足球赛-阶段1-官方启幕",
             "landing_page_mode": "generate",
             "landing_page_note": "",
-            "landing_page_url": "http://localhost:8080/s/c1-zh",
+            "landing_page_url": "",
             "send_conditions": {
               "delay_hours": 0,
               "max_per_24h": 1,
@@ -615,8 +615,8 @@
               ],
               "cta": {
                 "label": "查看/购票",
-                "landing_page_url": "http://localhost:8080/s/c1-zh",
-                "tracked_url": "http://localhost:8080/s/c1-zh?mtc_campaign=c1&mtc_wave=wave_1&mtc_variant=v1&mtc_locale=zh_CN"
+                "landing_page_url": "",
+                "tracked_url": ""
               },
               "embed_fields": [
                 "campaign_id",
@@ -658,7 +658,7 @@
               "summary": "赛事回归官宣、参赛阵容前瞻、关注/登记入口。",
               "email_ref": "EM_c1_PLACEHOLDER",
               "subject": "甲A回归 官方启幕",
-              "landing_page_url": "http://localhost:8080/s/c1-zh",
+              "landing_page_url": "",
               "note": "变体邮件（A/B）：透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘。"
             },
             "governance": false,
@@ -707,7 +707,7 @@
             "id": "n_lp",
             "type": "page.hit",
             "params": {
-              "landing_page_url": "http://localhost:8080/s/c1-zh",
+              "landing_page_url": "",
               "landing_page_ref": "LP_中国甲A足球赛-阶段1-官方启幕",
               "attribution": "last_touch_30d",
               "embed_fields": [
@@ -929,7 +929,7 @@
           "reserved_channels": [
             "sms"
           ],
-          "landing_page_url": "http://localhost:8080/s/c1-zh",
+          "landing_page_url": "",
           "budget": 0.0,
           "is_revenue": false,
           "start_date": "2049-07-01",
@@ -2626,7 +2626,7 @@
                       "translationParent": null,
                       "translationChildren": [],
                       "template": null,
-                      "customHtml": "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>1月1日~3月15日，中国甲A-开场-普通票-落地页</title><meta http-equiv=\"refresh\" content=\"0;url=http://localhost:8080/s/c1-zh\"></head><body style=\"font-family:-apple-system,'PingFang SC',sans-serif;background:#f7f7f5;margin:0;padding:40px\"><div style=\"max-width:600px;margin:0 auto;background:#ffffff;border-radius:8px;padding:40px 32px\"><h1 style=\"font-size:24px;margin:0 0 12px\">1月1日~3月15日，中国甲A-开场-普通票-落地页</h1><p style=\"color:#555;line-height:1.7\">活动详情与购票入口即将开放，敬请期待。</p><div style=\"margin-top:24px;padding:20px;background:#fafafa;border:1px solid #eee;border-radius:8px\">\n\n<style type=\"text/css\" scoped>\n    .mauticform-field-hidden { display:none }\n</style>\n<div id=\"mauticform_wrapper_formjiaazuqiusai\" class=\"mauticform_wrapper\">\n    <form autocomplete=\"false\" role=\"form\" method=\"post\" action=\"http://localhost:8080/form/submit?formId=19\" id=\"mauticform_formjiaazuqiusai\" data-mautic-form=\"formjiaazuqiusai\" enctype=\"multipart/form-data\" ><div class=\"mauticform-error\" id=\"mauticform_formjiaazuqiusai_error\"></div>\n            <div class=\"mauticform-message\" id=\"mauticform_formjiaazuqiusai_message\"></div><div class=\"mauticform-innerform\">\n            <div class=\"mauticform-page-wrapper mauticform-page-1\" data-mautic-form-page=\"1\" >\n                  \n\n\n      \n  \n    \n\n\n    \n\n\n                    \n<div id=\"mauticform_formjiaazuqiusai_firstname\"class=\"mauticform-row mauticform-text mauticform-field-1 mauticform-required\"style=\"width: 100%\"data-validate=\"firstname\"data-validation-type=\"text\">\n  <label id=\"mauticform_label_formjiaazuqiusai_firstname\"for=\"mauticform_input_formjiaazuqiusai_firstname\"class=\"mauticform-label\">姓名</label>\n  \n      <input type=\"text\" name=\"mauticform[firstname]\"value=\"\"id=\"mauticform_input_formjiaazuqiusai_firstname\"class=\"mauticform-input\" />\n  \n  <span class=\"mauticform-errormsg\" aria-live=\"polite\" aria-atomic=\"true\" aria-hidden=\"true\" style=\"display:none;\">本项为必填。</span>\n</div>\n\n                  \n\n\n      \n  \n    \n\n\n    \n\n\n\n<div id=\"mauticform_formjiaazuqiusai_phone\"class=\"mauticform-row mauticform-tel mauticform-field-2\"style=\"width: 100%\">\n  <label id=\"mauticform_label_formjiaazuqiusai_phone\"for=\"mauticform_input_formjiaazuqiusai_phone\"class=\"mauticform-label\">手机</label>\n  \n      <input type=\"tel\" name=\"mauticform[phone]\"value=\"\"id=\"mauticform_input_formjiaazuqiusai_phone\"class=\"mauticform-input\" />\n  \n  <span class=\"mauticform-errormsg\" aria-live=\"polite\" aria-atomic=\"true\" aria-hidden=\"true\" style=\"display:none;\"></span>\n</div>\n\n                  \n\n\n      \n  \n    \n\n\n    \n\n\n                    \n<div id=\"mauticform_formjiaazuqiusai_email\"class=\"mauticform-row mauticform-email mauticform-field-3 mauticform-required\"style=\"width: 100%\"data-validate=\"email\"data-validation-type=\"email\">\n  <label id=\"mauticform_label_formjiaazuqiusai_email\"for=\"mauticform_input_formjiaazuqiusai_email\"class=\"mauticform-label\">邮箱</label>\n  \n      <input type=\"email\" name=\"mauticform[email]\"value=\"\"id=\"mauticform_input_formjiaazuqiusai_email\"class=\"mauticform-input\" />\n  \n  <span class=\"mauticform-errormsg\" aria-live=\"polite\" aria-atomic=\"true\" aria-hidden=\"true\" style=\"display:none;\">本项为必填。</span>\n</div>\n                  </div></div><input type=\"hidden\" name=\"mauticform[formId]\" id=\"mauticform_formjiaazuqiusai_id\" value=\"19\"/>\n        <input type=\"hidden\" name=\"mauticform[return]\" id=\"mauticform_formjiaazuqiusai_return\" value=\"\"/>\n        <input type=\"hidden\" name=\"mauticform[formName]\" id=\"mauticform_formjiaazuqiusai_name\" value=\"formjiaazuqiusai\"/>\n        \n    </form>\n</div>\n</div><a href=\"#\" style=\"display:inline-block;margin-top:16px;padding:12px 28px;background:#b12704;color:#ffffff;text-decoration:none;border-radius:4px\">立即购票</a></div></body></html>",
+                      "customHtml": "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>1月1日~3月15日，中国甲A-开场-普通票-落地页</title><meta http-equiv=\"refresh\" content=\"0;url=\"></head><body style=\"font-family:-apple-system,'PingFang SC',sans-serif;background:#f7f7f5;margin:0;padding:40px\"><div style=\"max-width:600px;margin:0 auto;background:#ffffff;border-radius:8px;padding:40px 32px\"><h1 style=\"font-size:24px;margin:0 0 12px\">1月1日~3月15日，中国甲A-开场-普通票-落地页</h1><p style=\"color:#555;line-height:1.7\">活动详情与购票入口即将开放，敬请期待。</p><div style=\"margin-top:24px;padding:20px;background:#fafafa;border:1px solid #eee;border-radius:8px\">\n\n<style type=\"text/css\" scoped>\n    .mauticform-field-hidden { display:none }\n</style>\n<div id=\"mauticform_wrapper_formjiaazuqiusai\" class=\"mauticform_wrapper\">\n    <form autocomplete=\"false\" role=\"form\" method=\"post\" action=\"http://localhost:8080/form/submit?formId=19\" id=\"mauticform_formjiaazuqiusai\" data-mautic-form=\"formjiaazuqiusai\" enctype=\"multipart/form-data\" ><div class=\"mauticform-error\" id=\"mauticform_formjiaazuqiusai_error\"></div>\n            <div class=\"mauticform-message\" id=\"mauticform_formjiaazuqiusai_message\"></div><div class=\"mauticform-innerform\">\n            <div class=\"mauticform-page-wrapper mauticform-page-1\" data-mautic-form-page=\"1\" >\n                  \n\n\n      \n  \n    \n\n\n    \n\n\n                    \n<div id=\"mauticform_formjiaazuqiusai_firstname\"class=\"mauticform-row mauticform-text mauticform-field-1 mauticform-required\"style=\"width: 100%\"data-validate=\"firstname\"data-validation-type=\"text\">\n  <label id=\"mauticform_label_formjiaazuqiusai_firstname\"for=\"mauticform_input_formjiaazuqiusai_firstname\"class=\"mauticform-label\">姓名</label>\n  \n      <input type=\"text\" name=\"mauticform[firstname]\"value=\"\"id=\"mauticform_input_formjiaazuqiusai_firstname\"class=\"mauticform-input\" />\n  \n  <span class=\"mauticform-errormsg\" aria-live=\"polite\" aria-atomic=\"true\" aria-hidden=\"true\" style=\"display:none;\">本项为必填。</span>\n</div>\n\n                  \n\n\n      \n  \n    \n\n\n    \n\n\n\n<div id=\"mauticform_formjiaazuqiusai_phone\"class=\"mauticform-row mauticform-tel mauticform-field-2\"style=\"width: 100%\">\n  <label id=\"mauticform_label_formjiaazuqiusai_phone\"for=\"mauticform_input_formjiaazuqiusai_phone\"class=\"mauticform-label\">手机</label>\n  \n      <input type=\"tel\" name=\"mauticform[phone]\"value=\"\"id=\"mauticform_input_formjiaazuqiusai_phone\"class=\"mauticform-input\" />\n  \n  <span class=\"mauticform-errormsg\" aria-live=\"polite\" aria-atomic=\"true\" aria-hidden=\"true\" style=\"display:none;\"></span>\n</div>\n\n                  \n\n\n      \n  \n    \n\n\n    \n\n\n                    \n<div id=\"mauticform_formjiaazuqiusai_email\"class=\"mauticform-row mauticform-email mauticform-field-3 mauticform-required\"style=\"width: 100%\"data-validate=\"email\"data-validation-type=\"email\">\n  <label id=\"mauticform_label_formjiaazuqiusai_email\"for=\"mauticform_input_formjiaazuqiusai_email\"class=\"mauticform-label\">邮箱</label>\n  \n      <input type=\"email\" name=\"mauticform[email]\"value=\"\"id=\"mauticform_input_formjiaazuqiusai_email\"class=\"mauticform-input\" />\n  \n  <span class=\"mauticform-errormsg\" aria-live=\"polite\" aria-atomic=\"true\" aria-hidden=\"true\" style=\"display:none;\">本项为必填。</span>\n</div>\n                  </div></div><input type=\"hidden\" name=\"mauticform[formId]\" id=\"mauticform_formjiaazuqiusai_id\" value=\"19\"/>\n        <input type=\"hidden\" name=\"mauticform[return]\" id=\"mauticform_formjiaazuqiusai_return\" value=\"\"/>\n        <input type=\"hidden\" name=\"mauticform[formName]\" id=\"mauticform_formjiaazuqiusai_name\" value=\"formjiaazuqiusai\"/>\n        \n    </form>\n</div>\n</div><a href=\"#\" style=\"display:inline-block;margin-top:16px;padding:12px 28px;background:#b12704;color:#ffffff;text-decoration:none;border-radius:4px\">立即购票</a></div></body></html>",
                       "projects": [
                         {
                           "id": 12,
@@ -2882,7 +2882,7 @@
         "landing_page_ref": "LP_中国甲A足球赛-阶段2-赛程揭晓",
         "landing_page_mode": "generate",
         "landing_page_note": "",
-        "landing_page_url": "http://localhost:8080/s/c2-zh",
+        "landing_page_url": "",
         "send_conditions": {
           "delay_hours": 72,
           "max_per_24h": 1,
@@ -3044,7 +3044,7 @@
           "reserved_channels": [
             "sms"
           ],
-          "landing_page_url": "http://localhost:8080/s/c2-zh",
+          "landing_page_url": "",
           "kpi": {
             "type": "conversion",
             "target": 0.01,
@@ -3088,7 +3088,7 @@
             "landing_page_ref": "LP_中国甲A足球赛-阶段2-赛程揭晓",
             "landing_page_mode": "generate",
             "landing_page_note": "",
-            "landing_page_url": "http://localhost:8080/s/c2-zh",
+            "landing_page_url": "",
             "send_conditions": {
               "delay_hours": 72,
               "max_per_24h": 1,
@@ -3323,8 +3323,8 @@
               ],
               "cta": {
                 "label": "查看/购票",
-                "landing_page_url": "http://localhost:8080/s/c2-zh",
-                "tracked_url": "http://localhost:8080/s/c2-zh?mtc_campaign=c2&mtc_wave=wave_2&mtc_variant=v2&mtc_locale=zh_CN"
+                "landing_page_url": "",
+                "tracked_url": ""
               },
               "embed_fields": [
                 "campaign_id",
@@ -3366,7 +3366,7 @@
               "summary": "对阵亮点、焦点战、观赛议程建议。",
               "email_ref": "EM_c2_PLACEHOLDER",
               "subject": "焦点对决 赛程揭晓",
-              "landing_page_url": "http://localhost:8080/s/c2-zh",
+              "landing_page_url": "",
               "note": "变体邮件（A/B）：透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘。"
             },
             "governance": false,
@@ -3415,7 +3415,7 @@
             "id": "n_lp",
             "type": "page.hit",
             "params": {
-              "landing_page_url": "http://localhost:8080/s/c2-zh",
+              "landing_page_url": "",
               "landing_page_ref": "LP_中国甲A足球赛-阶段2-赛程揭晓",
               "attribution": "last_touch_30d",
               "embed_fields": [
@@ -3637,7 +3637,7 @@
           "reserved_channels": [
             "sms"
           ],
-          "landing_page_url": "http://localhost:8080/s/c1-zh",
+          "landing_page_url": "",
           "budget": 0.0,
           "is_revenue": false,
           "start_date": "2049-07-01",
@@ -4473,7 +4473,7 @@
         "landing_page_ref": "LP_中国甲A足球赛-阶段3-早鸟团购",
         "landing_page_mode": "generate",
         "landing_page_note": "",
-        "landing_page_url": "http://localhost:8080/s/c3-zh",
+        "landing_page_url": "",
         "send_conditions": {
           "delay_hours": 72,
           "max_per_24h": 1,
@@ -4635,7 +4635,7 @@
           "reserved_channels": [
             "sms"
           ],
-          "landing_page_url": "http://localhost:8080/s/c3-zh",
+          "landing_page_url": "",
           "kpi": {
             "type": "conversion",
             "target": 0.01,
@@ -4679,7 +4679,7 @@
             "landing_page_ref": "LP_中国甲A足球赛-阶段3-早鸟团购",
             "landing_page_mode": "generate",
             "landing_page_note": "",
-            "landing_page_url": "http://localhost:8080/s/c3-zh",
+            "landing_page_url": "",
             "send_conditions": {
               "delay_hours": 72,
               "max_per_24h": 1,
@@ -4914,8 +4914,8 @@
               ],
               "cta": {
                 "label": "查看/购票",
-                "landing_page_url": "http://localhost:8080/s/c3-zh",
-                "tracked_url": "http://localhost:8080/s/c3-zh?mtc_campaign=c3&mtc_wave=wave_3&mtc_variant=v3&mtc_locale=zh_CN"
+                "landing_page_url": "",
+                "tracked_url": ""
               },
               "embed_fields": [
                 "campaign_id",
@@ -4957,7 +4957,7 @@
               "summary": "成团价与议程对比表、真实企业 logo、权益清单。",
               "email_ref": "EM_c3_PLACEHOLDER",
               "subject": "早鸟权益 团购方案",
-              "landing_page_url": "http://localhost:8080/s/c3-zh",
+              "landing_page_url": "",
               "note": "变体邮件（A/B）：透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘。"
             },
             "governance": false,
@@ -5006,7 +5006,7 @@
             "id": "n_lp",
             "type": "page.hit",
             "params": {
-              "landing_page_url": "http://localhost:8080/s/c3-zh",
+              "landing_page_url": "",
               "landing_page_ref": "LP_中国甲A足球赛-阶段3-早鸟团购",
               "attribution": "last_touch_30d",
               "embed_fields": [
@@ -5228,7 +5228,7 @@
           "reserved_channels": [
             "sms"
           ],
-          "landing_page_url": "http://localhost:8080/s/c1-zh",
+          "landing_page_url": "",
           "budget": 0.0,
           "is_revenue": false,
           "start_date": "2049-07-01",
@@ -6064,7 +6064,7 @@
         "landing_page_ref": "LP_中国甲A足球赛-阶段4-开赛冲刺",
         "landing_page_mode": "generate",
         "landing_page_note": "",
-        "landing_page_url": "http://localhost:8080/s/c4-zh",
+        "landing_page_url": "",
         "send_conditions": {
           "delay_hours": 48,
           "max_per_24h": 1,
@@ -6226,7 +6226,7 @@
           "reserved_channels": [
             "sms"
           ],
-          "landing_page_url": "http://localhost:8080/s/c4-zh",
+          "landing_page_url": "",
           "kpi": {
             "type": "conversion",
             "target": 0.01,
@@ -6270,7 +6270,7 @@
             "landing_page_ref": "LP_中国甲A足球赛-阶段4-开赛冲刺",
             "landing_page_mode": "generate",
             "landing_page_note": "",
-            "landing_page_url": "http://localhost:8080/s/c4-zh",
+            "landing_page_url": "",
             "send_conditions": {
               "delay_hours": 48,
               "max_per_24h": 1,
@@ -6505,8 +6505,8 @@
               ],
               "cta": {
                 "label": "查看/购票",
-                "landing_page_url": "http://localhost:8080/s/c4-zh",
-                "tracked_url": "http://localhost:8080/s/c4-zh?mtc_campaign=c4&mtc_wave=wave_4&mtc_variant=v4&mtc_locale=zh_CN"
+                "landing_page_url": "",
+                "tracked_url": ""
               },
               "embed_fields": [
                 "campaign_id",
@@ -6548,7 +6548,7 @@
               "summary": "赛前提醒、剩余席位/权益、提交入口。",
               "email_ref": "EM_c4_PLACEHOLDER",
               "subject": "开赛在即 最后登记",
-              "landing_page_url": "http://localhost:8080/s/c4-zh",
+              "landing_page_url": "",
               "note": "变体邮件（A/B）：透明节点，不建真实 Mautic 事件；内容随主邮件节点透传供审批/复盘。"
             },
             "governance": false,
@@ -6597,7 +6597,7 @@
             "id": "n_lp",
             "type": "page.hit",
             "params": {
-              "landing_page_url": "http://localhost:8080/s/c4-zh",
+              "landing_page_url": "",
               "landing_page_ref": "LP_中国甲A足球赛-阶段4-开赛冲刺",
               "attribution": "last_touch_30d",
               "embed_fields": [
@@ -6819,7 +6819,7 @@
           "reserved_channels": [
             "sms"
           ],
-          "landing_page_url": "http://localhost:8080/s/c1-zh",
+          "landing_page_url": "",
           "budget": 0.0,
           "is_revenue": false,
           "start_date": "2049-07-01",

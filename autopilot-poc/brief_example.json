@@ -5,7 +5,7 @@
   "locale": "zh_CN",
   "channels": ["email"],
   "reserved_channels": ["sms"],
-  "landing_page_url": "http://localhost:8080/s/eurocup-2028-lp",
+  "landing_page_url": "",
   "budget": 0,
   "start_date": "2028-05-01",
   "end_date": "2028-07-09",

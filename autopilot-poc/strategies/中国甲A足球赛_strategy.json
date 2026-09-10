@@ -50,8 +50,8 @@
           "locale": ["zh_CN"]
         }
       },
-      "landing_page": {"mode": "generate", "ref": null, "url": "http://localhost:8080/s/c1-zh"},
-      "landing_page_url": "http://localhost:8080/s/c1-zh",
+      "landing_page": {"mode": "generate", "ref": null, "url": ""},
+      "landing_page_url": "",
       "content_variant": {"id": "v1", "angle": "官方启幕 · 建立认知", "headline": "甲A回归 官方启幕", "summary": "赛事回归官宣、参赛阵容前瞻、关注/登记入口。"},
       "window": {"start": "2049-07-01", "end": "2049-09-30"},
       "main_endpoint": {
@@ -93,8 +93,8 @@
           "locale": ["zh_CN"]
         }
       },
-      "landing_page": {"mode": "generate", "ref": null, "url": "http://localhost:8080/s/c2-zh"},
-      "landing_page_url": "http://localhost:8080/s/c2-zh",
+      "landing_page": {"mode": "generate", "ref": null, "url": ""},
+      "landing_page_url": "",
       "content_variant": {"id": "v2", "angle": "赛程揭晓 · 制造期待", "headline": "焦点对决 赛程揭晓", "summary": "对阵亮点、焦点战、观赛议程建议。"},
       "window": {"start": "2049-10-01", "end": "2049-12-15"},
       "main_endpoint": {
@@ -136,8 +136,8 @@
           "locale": ["zh_CN"]
         }
       },
-      "landing_page": {"mode": "generate", "ref": null, "url": "http://localhost:8080/s/c3-zh"},
-      "landing_page_url": "http://localhost:8080/s/c3-zh",
+      "landing_page": {"mode": "generate", "ref": null, "url": ""},
+      "landing_page_url": "",
       "content_variant": {"id": "v3", "angle": "早鸟团购 · 降低门槛", "headline": "早鸟权益 团购方案", "summary": "成团价与议程对比表、真实企业 logo、权益清单。"},
       "window": {"start": "2049-12-16", "end": "2050-02-15"},
       "main_endpoint": {
@@ -179,8 +179,8 @@
           "locale": ["zh_CN"]
         }
       },
-      "landing_page": {"mode": "generate", "ref": null, "url": "http://localhost:8080/s/c4-zh"},
-      "landing_page_url": "http://localhost:8080/s/c4-zh",
+      "landing_page": {"mode": "generate", "ref": null, "url": ""},
+      "landing_page_url": "",
       "content_variant": {"id": "v4", "angle": "开赛冲刺 · 最后机会", "headline": "开赛在即 最后登记", "summary": "赛前提醒、剩余席位/权益、提交入口。"},
       "window": {"start": "2050-02-16", "end": "2050-03-15"},
       "main_endpoint": {

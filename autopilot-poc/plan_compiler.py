@@ -1442,7 +1442,7 @@ if __name__ == "__main__":
     spec = parse_brief({
         "objective": "demo compile",
         "audience_segment": "SEG_DEMO",
-        "landing_page_url": "http://localhost:8080/s/demo-lp",
+        "landing_page_url": "",
     })
     p = compile(spec)
     print(json.dumps(p, ensure_ascii=False, indent=2))

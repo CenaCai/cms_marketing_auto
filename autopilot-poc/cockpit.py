@@ -42,7 +42,26 @@ def cockpit_log(level: str, msg: str) -> None:
     """记录一条开发日志（INFO / WARN / ERROR / OK）。level 用于面板配色。"""
     ts = time.strftime("%H:%M:%S")
     COCKPIT_LOG.append((ts, level, msg))
-OUT_DIR = os.path.join(HERE, "output")
+def _resolve_output_dir() -> str:
+    """定位驾驶舱数据目录 output/。优先 HERE/output；若该目录为空（无 program_*.json），
+    则向上逐级查找父目录中的 output/，避免项目被嵌套/移动后旧进程仍指向空目录、
+    导致首页「暂无 Program」的问题。"""
+    candidates = [os.path.join(HERE, "output")]
+    cur = HERE
+    while True:
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        candidates.append(os.path.join(parent, "output"))
+        cur = parent
+    for c in candidates:
+        if os.path.isdir(c) and any(
+            fn.startswith("program_") and fn.endswith(".json")
+            for fn in os.listdir(c)
+        ):
+            return c
+    return candidates[0]
+OUT_DIR = _resolve_output_dir()
 
 from goal_intake import parse_brief, GoalSpec
 from plan_compiler import compile, dump_proposal
@@ -1040,7 +1059,12 @@ def campaign_count(start_date: str, end_date: str, overall_conv: str) -> dict:
             "reason": f"{base_txt}；{adj_txt}；夹取 [1,5] → {n}"}
 
 
-# ---- 方向 A：增长运营专家团上下文注入 + WorkBuddy 专家 hook（预留） ----
+# ---- 方向 A：增长运营专家团 进程内 crew（已落地，可经 config.json [workbuddy].crew_enabled 关闭） ----
+# 设计：4 个独立 persona、各自一次 LLM 调用、顺序编排，主理人(阿岚)综合裁定。
+#   顺序：growth-data-analyst(可达性/节奏/护栏) → growth-content-strategist 谭心(内容)
+#        → poc-impl(实施校验/资产决策) → 阿岚(主理人合成最终 StrategySpec)
+# 任一子 agent 失败 → 该角色结论降级为 None，仍由主理人基于其余上下文合成（不整链崩溃）。
+# WorkBuddy 专家 hook 仍可作为上层替代（当 crew_enabled=false 且配置了专家运行时时），此处先给自包含可跑实现。
 
 def load_workbuddy_config() -> dict:
     """
@@ -1049,7 +1073,8 @@ def load_workbuddy_config() -> dict:
     返回 {mautic_env, strategy_context:{mautic_assets,history}}；缺省全部启用。
     """
     cfg: dict = {"mautic_env": "local",
-                 "strategy_context": {"mautic_assets": True, "history": True}}
+                 "strategy_context": {"mautic_assets": True, "history": True},
+                 "crew_enabled": True}
     try:
         with open(os.path.join(HERE, "config.json"), encoding="utf-8") as f:
             allcfg = json.load(f)
@@ -1058,6 +1083,8 @@ def load_workbuddy_config() -> dict:
             cfg["mautic_env"] = wb["mautic_env"]
         if isinstance(wb.get("strategy_context"), dict):
             cfg["strategy_context"].update(wb["strategy_context"])
+        if "crew_enabled" in wb:
+            cfg["crew_enabled"] = bool(wb["crew_enabled"])
     except Exception:  # noqa: BLE001
         pass
     return cfg
@@ -1199,7 +1226,7 @@ def build_strategy_prompt(brief: dict, mautic_context: str = "", history_context
         "命名与工程规范（Mautic CSTS 定制版，务必遵守）：\n"
         "- campaign / segment / email / form 资产命名前缀分别为 CMP_ / SEG_ / EM_ / FORM_；reuse-first，避免重复新建。\n"
         "- 落地页 alias 由驾驶舱 `_aliasify(\"{{campaign_name}}-落地页\")` 自动生成，"
-        "**不要**在 StrategySpec 的 landing_page_url 里硬编码 alias；只给主语言 slug（如 /s/c1-en）。\n"
+        "**不要**在 StrategySpec 的 landing_page_url 里硬编码 alias；只给主语言 slug（如 c1-en，公开页路径，不要带 /s/ 后台前缀）。\n"
         "- Mautic 7 已知坑（违反会导致 push 500 或静默失败）：\n"
         "  · PUT 仅传 partial payload 会触发 jms_serializer 500，必须传完整对象；\n"
         "  · email 字段需平铺（不要嵌套）；\n"
@@ -1236,11 +1263,11 @@ def build_strategy_prompt(brief: dict, mautic_context: str = "", history_context
         "     - locale 仅 zh_CN → 主内容中文；\n"
         "     - locale 仅 en_US → 主内容英文；\n"
         "     - locale 同时含 zh_CN 和 en_US → 默认主内容英文，附加中文翻译稿。生成时先排英文主 campaign（c1/c2/...），再排对应的中文翻译 campaign（c1_zh/c2_zh/...），英文优先执行、中文翻译稿作为双语备选。\n"
-        "2. 落地页 URL 按 campaign 主语言区分，使用 Mautic 公开页路径 http://localhost:8080/s/<slug>。"
+        "2. 落地页 URL 按 campaign 主语言区分，使用 Mautic 公开页路径 http://localhost:8080/<slug>（注意 /s/ 是后台前缀，公开落地页用 /{slug}）。"
         "必须用当前 campaign 的 cid 生成 URL：\n"
-        "   · 英文主 campaign c1 → http://localhost:8080/s/c1-en\n"
-        "   · 英文主 campaign c2 → http://localhost:8080/s/c2-en\n"
-        "   · 中文翻译 campaign c1_zh → http://localhost:8080/s/c1_zh-zh\n"
+        "   · 英文主 campaign c1 → http://localhost:8080/c1-en\n"
+        "   · 英文主 campaign c2 → http://localhost:8080/c2-en\n"
+        "   · 中文翻译 campaign c1_zh → http://localhost:8080/c1_zh-zh\n"
         "   同一 campaign 的所有落地页链接必须一致，不要全部复用 c1。\n"
         "3. 分群命名体现 region+locale，如 SEG_{goal_id}_CN_ZH、SEG_{goal_id}_GLOBAL_EN。\n"
         "【输出要求】\n"
@@ -1309,8 +1336,8 @@ def _extract_strategy_spec(raw: str):
     return None
 
 
-def _build_strategy_prompt_from_brief(brief: dict) -> str:
-    """注入多画像推断，再拼出自包含策略合成提示词（生成 / 复制共用）。"""
+def _infer_brief(brief: dict) -> dict:
+    """注入多画像推断 + locale 兜底，返回推断后的 brief 副本（生成 / crew 共用，避免 crew 漏推断）。"""
     from goal_intake import infer_audience_package
     brief = dict(brief)
     # 语言/地区由 audience_region 兜底：不含「中国大陆」时强制移除 zh_CN，只走英文
@@ -1329,10 +1356,206 @@ def _build_strategy_prompt_from_brief(brief: dict) -> str:
     brief["audience_package"] = inferred.get("code", "GENERIC")
     brief["audience_packages"] = inferred.get("codes", [])
     brief["audience_match"] = inferred
+    return brief
+
+
+def _build_strategy_prompt_from_brief(brief: dict) -> str:
+    """注入多画像推断，再拼出自包含策略合成提示词（生成 / 复制共用）。"""
+    brief = _infer_brief(brief)
     wb_cfg = load_workbuddy_config()
     mautic_ctx = _collect_mautic_context() if wb_cfg["strategy_context"].get("mautic_assets", True) else ""
     history_ctx = _collect_history_context() if wb_cfg["strategy_context"].get("history", True) else ""
     return build_strategy_prompt(brief, mautic_context=mautic_ctx, history_context=history_ctx)
+
+
+# ---- 增长运营专家团：进程内多 agent crew ----
+
+# 单 agent 合成系统提示词（crew 关闭或子链失败时的兜底，与原行为一致）
+_SINGLE_SYNTH_SYS = ("你是营销 Agent 的 AI策略合成器。只输出严格 JSON，不要解释文字、"
+                     "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。")
+
+
+def _crew_user_brief(brief: dict) -> str:
+    """把 brief 渲染成紧凑的【Brief】文本块，供专家团各 agent 作为 user 内容。"""
+    def _s(v, d=""):
+        if v is None:
+            return d
+        if isinstance(v, (list, tuple)):
+            return "、".join(str(x) for x in v if str(x)) or d
+        return str(v).strip() or d
+    oc = _s(brief.get("overall_conv"))
+    aud_prof = brief.get("audience_profile") or {}
+    aud_lines = []
+    for k, lbl in [("age", "年龄段"), ("gender", "性别"), ("income", "月收入档"),
+                   ("education", "教育经历"), ("industry", "行业"),
+                   ("source", "首选来源"), ("region", "国家/地区")]:
+        v = aud_prof.get(k)
+        if isinstance(v, (list, tuple)):
+            v = "、".join(str(x) for x in v if str(x))
+        else:
+            v = _s(v)
+        if v:
+            aud_lines.append(f"{lbl}={v}")
+    aud_block = "；".join(aud_lines) or "（运营未填）"
+    cc = campaign_count(_s(brief.get("start_date")), _s(brief.get("end_date")), oc)
+    n = cc["n"]
+    cid_list = "、".join(f"c{i}" for i in range(1, n + 1))
+    return (
+        "【Brief】\n"
+        f"- 营销/活动名称：{_s(brief.get('goal_name'), '(未命名)')}\n"
+        f"- 营销目标：{_s(brief.get('objective'), '(未填写)')}\n"
+        f"- 开始~结束：{_s(brief.get('start_date'), '(未填)')} ~ {_s(brief.get('end_date'), '(未填)')}\n"
+        f"- 总体目标转化率：{oc or '0.0'}（0~1；空=仅曝光/品牌）\n"
+        f"- 语言/地区：{_s(brief.get('locale')) or 'zh_CN'}\n"
+        f"- 是否营收目标：{_s(brief.get('is_revenue'), '0')}\n"
+        f"- 预算：{_s(brief.get('budget'), '0')} ¥\n"
+        f"- 目标画像包：{_s(brief.get('audience_package'), 'GENERIC')}\n"
+        f"- 目标人群特点：{aud_block}\n"
+        f"- 约束/红线：{_s(brief.get('constraints')) or '（无）'}\n"
+        f"- 服务端已算 campaign 数量 N={n}（cid：{cid_list}），硬约束必须恰好生成 {n} 个。\n"
+    )
+
+
+# 4 个独立 persona 的 system 提示词（静态，brief 走 user 内容；避免 f-string 转义麻烦）
+_CREW_SYS = {
+    "data": (
+        "你是增长运营专家团的数据增长分析师（growth-data-analyst）。"
+        "只负责「可达性校验 + 发送节奏 + 分群 + 护栏」，不写文案/内容/实施细节。\n"
+        "必须严格按增长运营行为准则：工具无返回数据时写「数据缺失（data_missing）」，禁止凭空估算人数或转化率。\n"
+        "基于下方【Brief】输出严格 JSON（不要解释文字、不要 markdown 包裹，只输出 json.loads 可解析对象）：\n"
+        "{\n"
+        '  "reachable": true,\n'
+        '  "reachability_note": "目标是否数学可达及依据",\n'
+        '  "campaign_count": 3,\n'
+        '  "cadence": {"max_per_24h": 1, "max_per_7d": 3, "quiet_hours": "22:00-09:00", "send_window": {"start": "09:00", "end": "22:00"}},\n'
+        '  "segmentation": {"primary_logic": "seed/broad/no-reach/host-confirm 等天然互斥分群", "broaden": false, "narrow": false},\n'
+        '  "circuit_breaker": {"unsubscribe_rate": "0.003 熔断", "bounce": "监控", "spam_complaint": "监控"},\n'
+        '  "kpi_target": 0.08,\n'
+        '  "needs_operator_review": false,\n'
+        '  "operator_review_notes": ""\n'
+        "}\n"
+        "campaign 数量规则（与画像包解耦，硬约束）：D=周期天数；D≤14→2；15≤D≤45→3；46≤D≤90→4；D>90→5；"
+        "C≥0.10→+1；C 为空或≤0.02→−1；夹取[1,5]。\n"
+        "护栏/红线（必须原样遵守）：免打扰 22:00-09:00；退订率 0.3% 熔断；抑制名单/清洗；"
+        "决策节点分支不可混合 decision+action（否则静默失败 count=0）。\n"
+        "若目标数学不可达或需人拍板，置 reachable=false 且 needs_operator_review=true（在 reachability_note 写明）。\n"
+    ),
+    "content": (
+        "你是增长运营专家团的内容策略师（growth-content-strategist，谭心）。"
+        "只负责「每波次内容策略」，不决定 campaign 数量/节奏（那是数据 agent 的），不写 Mautic 实施细节。\n"
+        "基于【Brief】+【数据可达性结论】，严格按画像包→内容取向映射产出内容"
+        "（命中画像包必须沿用其 levers/tone/CTA，禁止凭感觉改写；命中 0 个用 GENERIC 兜底；命中≥2 个取并集）。\n"
+        "输出严格 JSON（不要解释、不要 markdown 包裹）：\n"
+        "{\n"
+        '  "business_topic": "一句话业务主题，贯穿全案",\n'
+        '  "content_plan": [\n'
+        '    {"cid": "c1", "audience_package": "回显", "content_emphasis": ["..."], "levers": ["..."], "tone": "...", "cta_template": "...", "subject_examples": ["..."], "variant_hints": {"headline": "...", "body": "..."}}\n'
+        "  ],\n"
+        '  "locale_notes": "中英文/落地页语言优先级说明"\n'
+        "}\n"
+        "content_plan 数组长度必须严格等于数据 agent 给的 campaign_count。\n"
+        "business_topic 必须顶层写明并贯穿 objective/name/subject/CTA/落地页文案；主题不清一律不可用。\n"
+    ),
+    "impl": (
+        "你是增长运营专家团落地实施者（poc-impl），负责 Mautic 事件图构建与校验。"
+        "只负责「资产决策 + 实施校验」，不重写策略本体。\n"
+        "基于【Brief】+【Mautic 实例上下文】+【数据/内容结论】，输出严格 JSON（不要解释、不要 markdown 包裹）：\n"
+        "{\n"
+        '  "asset_decisions": [{"kind": "email/segment/page", "ref_or_alias": "...", "action": "reuse|generate", "reason": "..."}],\n'
+        '  "build_plan": {"event_graph_notes": "...", "decision_node_rules": "决策节点分支不混合 decision+action"},\n'
+        '  "pitfalls_checklist": ["PUT 必须传完整对象", "email 字段平铺", "campaign 事件图只能整体 PUT/POST"],\n'
+        '  "validation_gates": ["...编译前校验项"],\n'
+        '  "needs_operator_review": false,\n'
+        '  "operator_review_notes": "需人拍板事项"\n'
+        "}\n"
+        "Mautic 资产清单若缺失（data_missing）→ 一律 generate（新建），needs_operator_review=true 并在 notes 标注"
+        "「未连接 Mautic，复用/新建待人工确认」。命名前缀 CMP_/SEG_/EM_/FORM_，reuse-first。\n"
+    ),
+    "lead": (
+        "你是阿岚（增长操盘手），增长运营专家团主理人。下面已有关三位独立结论："
+        "数据增长分析师(growth-data-analyst)、内容策略师(谭心)、落地实施者(poc-impl)。\n"
+        "你的职责是**综合裁定**成一份可编译的 StrategySpec JSON（供活动驾驶舱编译成 Mautic 事件图）。必须吸收三方结论：\n"
+        "- 节奏/护栏/分群 取 数据 agent；\n"
+        "- 内容/文案/CTA/画像包内容取向 取 内容 agent（谭心）；\n"
+        "- 资产复用/新建决策、校验门禁、pitfalls 取 实施 agent（poc-impl）。\n"
+        "冲突时以治理护栏优先（免打扰/退订熔断/抑制/决策节点规则），并在相关 campaign 的 rationale 说明取舍。\n"
+        "输出严格 StrategySpec JSON（不要解释文字、不要 markdown 包裹，只输出 json.loads 可解析对象），schema：\n"
+        "{goal_id, objective, business_topic, kpi:{metric,target}, locale:[...], audience_package, audience_profile, campaigns:[...], service_sequences:[...]}\n"
+        "campaigns 数量必须严格等于数据 agent 给的 campaign_count；每个 campaign 必带 rationale+evidence（决策纪律）；"
+        "顶层须有 needs_operator_review(bool) 与 operator_review_notes。\n"
+        "命名前缀 CMP_/SEG_/EM_/FORM_；落地页 url 用 http://localhost:8080/s/<cid>-<lang>；"
+        "quiet_hours 原样填约束值（跨午夜用 '-'）。\n"
+    ),
+}
+
+
+def _run_strategy_crew(brief: dict, mautic_context: str = "", history_context: str = "",
+                        temperature: float = 0.0):
+    """
+    增长运营专家团 进程内 crew：4 个独立 persona 顺序编排，各自一次 LLM 调用，主理人(阿岚)综合裁定。
+    顺序：growth-data-analyst → growth-content-strategist(谭心) → poc-impl → 阿岚(主理人合成)。
+    返回 (final_spec_text, meta)：final_spec_text 为阿岚产出的 StrategySpec JSON 字符串（与单 agent 同 schema）；
+      meta={agents:{name:raw}, fell_back:[...], via:"crew"} 供观测。
+    任一子 agent 失败 → 该角色结论降级为 None，仍由主理人基于其余上下文合成（不整链崩溃）。
+    主理人(阿岚)失败 → 抛 RuntimeError，由调用方降级到单 agent 路径。
+    """
+    meta = {"agents": {}, "fell_back": [], "via": "crew"}
+    user_brief = _crew_user_brief(brief)
+
+    # 1) 数据增长分析师：可达性 / 节奏 / 护栏
+    data_raw = None
+    try:
+        data_raw = _deepseek_completion(_CREW_SYS["data"], user_brief, temperature=temperature)
+        meta["agents"]["growth-data-analyst"] = data_raw
+    except Exception as e:  # noqa: BLE001
+        meta["fell_back"].append("growth-data-analyst:%s" % e)
+        _log_ai_error("crew data-analyst 失败 %s: %s" % (type(e).__name__, e))
+
+    # 2) 内容策略师（谭心）：每波内容
+    content_raw = None
+    try:
+        ctx = (user_brief
+               + "\n\n【数据可达性结论·growth-data-analyst】\n"
+               + (data_raw or "（缺失：数据 agent 未返回，请按通用规则推导节奏/护栏）"))
+        content_raw = _deepseek_completion(_CREW_SYS["content"], ctx, temperature=temperature)
+        meta["agents"]["growth-content-strategist"] = content_raw
+    except Exception as e:  # noqa: BLE001
+        meta["fell_back"].append("growth-content-strategist:%s" % e)
+        _log_ai_error("crew content-strategist 失败 %s: %s" % (type(e).__name__, e))
+
+    # 3) 落地实施者（poc-impl）：资产决策 / 实施校验
+    impl_raw = None
+    try:
+        ctx = (user_brief
+               + "\n\n【Mautic 实例上下文】\n" + (mautic_context or "（缺失）")
+               + "\n\n【数据可达性结论·growth-data-analyst】\n" + (data_raw or "（缺失）")
+               + "\n\n【内容策略结论·谭心】\n" + (content_raw or "（缺失）"))
+        impl_raw = _deepseek_completion(_CREW_SYS["impl"], ctx, temperature=temperature)
+        meta["agents"]["poc-impl"] = impl_raw
+    except Exception as e:  # noqa: BLE001
+        meta["fell_back"].append("poc-impl:%s" % e)
+        _log_ai_error("crew poc-impl 失败 %s: %s" % (type(e).__name__, e))
+
+    # 4) 主理人（阿岚）：综合裁定最终 StrategySpec
+    lead_ctx = (user_brief
+                + "\n\n【数据可达性结论·growth-data-analyst】\n" + (data_raw or "（缺失）")
+                + "\n\n【内容策略结论·谭心(growth-content-strategist)】\n" + (content_raw or "（缺失）")
+                + "\n\n【实施校验结论·poc-impl】\n" + (impl_raw or "（缺失）")
+                + "\n\n【Mautic 实例上下文】\n" + (mautic_context or "（缺失）")
+                + "\n\n【历史 program 反馈】\n" + (history_context or "（缺失）"))
+    try:
+        final = _deepseek_completion(_CREW_SYS["lead"], lead_ctx, temperature=temperature)
+    except Exception as e:  # noqa: BLE001
+        meta["fell_back"].append("lead:%s" % e)
+        _log_ai_error("crew lead(阿岚) 失败 %s: %s" % (type(e).__name__, e))
+        raise RuntimeError("专家团主理人(阿岚)合成失败：%s；已降级子 agent：%s"
+                           % (e, meta["fell_back"]))
+    meta["agents"]["lead(阿岚)"] = final
+    if meta["fell_back"]:
+        cockpit_log("WARN", "crew 部分子 agent 降级：%s" % meta["fell_back"])
+    else:
+        cockpit_log("OK", "crew 合成完成 agents=%s" % list(meta["agents"].keys()))
+    return final, meta
 
 
 def _brief_from_parsed(parsed: dict, objective: str) -> dict:
@@ -3519,12 +3742,23 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
                                         "error": str(e)})
-        # 无外部端点：直连 DeepSeek 合成（复用 deepseek key + build_strategy_prompt）
+        # 无外部端点：增长运营专家团 crew → 单 agent 兜底
+        wb_cfg = load_workbuddy_config()
+        mautic_ctx = _collect_mautic_context() if wb_cfg["strategy_context"].get("mautic_assets", True) else ""
+        history_ctx = _collect_history_context() if wb_cfg["strategy_context"].get("history", True) else ""
         try:
-            content = _deepseek_completion(
-                "你是营销 Agent 的 AI策略合成器。只输出严格 JSON，不要解释文字、"
-                "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
-                prompt)
+            if wb_cfg.get("crew_enabled", True) and load_deepseek_config()["enabled"]:
+                try:
+                    content, _meta = _run_strategy_crew(
+                        _infer_brief(brief), mautic_context=mautic_ctx, history_context=history_ctx)
+                    spec = _extract_strategy_spec(content)
+                    if spec is not None:
+                        return self._send_json({"ok": True, "strategy_spec": spec,
+                                                "prompt": prompt, "via": "crew"})
+                except Exception as e:  # noqa: BLE001
+                    _log_ai_error("crew 失败降级单 agent %s: %s" % (type(e).__name__, e))
+            # crew 未启用 / 产出不可解析 / 异常 → 单 agent 兜底（与原行为一致）
+            content = _deepseek_completion(_SINGLE_SYNTH_SYS, prompt)
             spec = _extract_strategy_spec(content)
             if spec is None:
                 return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
@@ -3707,11 +3941,20 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 brief = _brief_from_parsed(out, objective)
                 prompt = _build_strategy_prompt_from_brief(brief)
-                content = _deepseek_completion(
-                    "你是营销 Agent 的 AI策略合成器。只输出严格 JSON，不要解释文字、"
-                    "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
-                    prompt)
-                spec = _extract_strategy_spec(content)
+                spec = None
+                # 专家团 crew 优先（失败/未启用 → 单 agent 兜底）
+                if load_workbuddy_config().get("crew_enabled", True) and load_deepseek_config()["enabled"]:
+                    try:
+                        content, _m = _run_strategy_crew(
+                            _infer_brief(brief),
+                            mautic_context=_collect_mautic_context(),
+                            history_context=_collect_history_context())
+                        spec = _extract_strategy_spec(content)
+                    except Exception as e:  # noqa: BLE001
+                        _log_ai_error(f"crew 自动合成失败 {type(e).__name__}: {e}")
+                if spec is None:
+                    content = _deepseek_completion(_SINGLE_SYNTH_SYS, prompt)
+                    spec = _extract_strategy_spec(content)
                 if spec:
                     out["strategy_spec"] = spec
                     strategy_auto = True
@@ -3782,7 +4025,7 @@ class Handler(BaseHTTPRequestHandler):
         # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
         _mok, _mwhy = _mautic_reachable("local")
         if not _mok:
-            msg = (f"<div class='card'><p class='b-bad'>❌ 服务序列 {_esc(sid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+            msg = (f"<div class='card'><p class='b-bad'>❌ 服务序列 {_esc(sid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（运行 start-mautic-nginx.bat 或 start-all.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。序列未真正创建，可重试。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         pid = _resolve_program_project(p, "local")
@@ -3823,7 +4066,7 @@ class Handler(BaseHTTPRequestHandler):
         # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
         _mok, _mwhy = _mautic_reachable("local")
         if not _mok:
-            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（运行 start-mautic-nginx.bat 或 start-all.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。campaign 未真正创建，状态保持原样，可重试。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         # 解析 program 对应的 Mautic project（没有则现建），把所有资产挂其下
@@ -3916,7 +4159,7 @@ class Handler(BaseHTTPRequestHandler):
                                               "error": f"Mautic 不可达：{_mwhy}", "steps": []}
             c["proposal"]["deployed"] = False
             _save_program(p)
-            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（运行 start-mautic-nginx.bat 或 start-all.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。未真正创建 campaign，状态保持「已审批待创建」。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         # 解析 program 对应的 Mautic project（没有则现建），把所有资产挂其下
@@ -4478,7 +4721,7 @@ class Handler(BaseHTTPRequestHandler):
         # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
         _mok, _mwhy = _mautic_reachable("local")
         if not _mok:
-            msg = (f"<div class='card'><p class='b-bad'>❌ 提案 {_esc(gid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+            msg = (f"<div class='card'><p class='b-bad'>❌ 提案 {_esc(gid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（运行 start-mautic-nginx.bat 或 start-all.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。提案未真正创建，可重试。</p></div>")
             return self._send(200, _page("提案", _proposal_body(d, msg)))
         result = push(d, env="local", approved=True, project_id=d.get("mautic_project_id"))
