@@ -318,11 +318,28 @@ def _build_landing_page_html(activity: str, cta_label: str = "立即购票",
     规避该 token 经 Mautic API 保存时被内容过滤器剥离（实测 /api/pages/new 会把 {form=...} 整段丢弃）。
     """
     form_block = ""
+    form_id = ""
     if form_html:
+        if "<form" in form_html:
+            form_html = form_html.replace("<form", '<form id="autopilot-lp-form"', 1)
+            form_id = "autopilot-lp-form"
         form_block = (
             '<div style="margin-top:24px;padding:20px;background:#fafafa;'
             'border:1px solid #eee;border-radius:8px">'
             f'{form_html}</div>'
+        )
+    if form_id:
+        cta = (
+            f'<button type="submit" form="{form_id}" '
+            'style="display:inline-block;margin-top:16px;padding:12px 28px;'
+            'background:#b12704;color:#ffffff;text-decoration:none;border:none;border-radius:4px;'
+            f'font-size:15px;cursor:pointer">{cta_label}</button>'
+        )
+    else:
+        cta = (
+            '<a href="#" style="display:inline-block;margin-top:16px;padding:12px 28px;'
+            'background:#b12704;color:#ffffff;text-decoration:none;border-radius:4px">'
+            f'{cta_label}</a>'
         )
     return (
         '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
@@ -334,9 +351,7 @@ def _build_landing_page_html(activity: str, cta_label: str = "立即购票",
         f'<h1 style="font-size:24px;margin:0 0 12px">{activity}</h1>'
         '<p style="color:#555;line-height:1.7">活动详情与购票入口即将开放，敬请期待。</p>'
         f'{form_block}'
-        '<a href="#" style="display:inline-block;margin-top:16px;padding:12px 28px;'
-        'background:#b12704;color:#ffffff;text-decoration:none;border-radius:4px">'
-        f'{cta_label}</a>'
+        f'{cta}'
         '</div></body></html>'
     )
 
@@ -1161,10 +1176,14 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
                 ensure_log.append({"asset": "form_html_fetch", "warn": "cachedHtml 为空，落地页将不内嵌表单"})
 
     # 0.2.1 落地页：结构化 HTML + 可选 meta-refresh 跳转；邮件 CTA 指向它
+    # 表单型（form.submit 终点）落地页：不注入 meta-refresh 外跳——否则会顶到无效路由
+    # （如原 landing_page_url=http://localhost:8080/s/c1-zh，/s/ 是 Mautic 后台前缀→报错），
+    # 由内嵌 FORM 承接转化；只有「非表单型且显式给了外部跳转地址」才保留 meta-refresh。
+    lp_redirect_url = lp_url if (lp_url and not _needs_form) else ""
     lp_name = f"{campaign_name}-落地页"
     lp_public_url = ""
     rlp = ensure_landing_page(
-        lp_name, url=lp_url, env=env, timeout=60, form_html=form_html, project_id=project_id)
+        lp_name, url=lp_redirect_url, env=env, timeout=60, form_html=form_html, project_id=project_id)
     ensure_log.append({"asset": "landing_page", "name": lp_name, **rlp})
     if rlp.get("id"):
         if project_id and not rlp.get("created"):
