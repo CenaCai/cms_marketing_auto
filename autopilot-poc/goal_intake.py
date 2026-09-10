@@ -364,7 +364,7 @@ if __name__ == "__main__":
     import sys
     src = sys.argv[1] if len(sys.argv) > 1 else None
     brief = load_brief(src) if src else {
-        "objective": "demo", "audience_segment": "SEG_DEMO", "landing_page_url": "http://localhost:8080/s/demo-lp"
+        "objective": "demo", "audience_segment": "SEG_DEMO", "landing_page_url": ""
     }
     spec = parse_brief(brief)
     print(json.dumps(spec.to_dict(), ensure_ascii=False, indent=2))

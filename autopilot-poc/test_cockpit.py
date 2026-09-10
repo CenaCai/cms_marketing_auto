@@ -576,7 +576,7 @@ check("c3/c4/c5 为 generate",
       and modes4.get("ucl2028_c5") == "generate", f"{modes4}")
 lp4 = sorted({c["strategy"]["landing_page_url"] for c in cs4})
 check("落页 URL 来自 content_map",
-      lp4 == ["http://localhost:8080/s/ucl2028-bridge"], f"{lp4}")
+      lp4 == ["http://localhost:8080/ucl2028-bridge"], f"{lp4}")
 c5_4 = next(c for c in cs4 if c["cid"] == "ucl2028_c5")
 check("c5 状态 deferred", c5_4["status"] == "deferred")
 check("c5 带启用条件说明", bool(c5_4["strategy"].get("deferred_enable_condition")))

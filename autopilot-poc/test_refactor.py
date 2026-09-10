@@ -18,7 +18,7 @@ GOAL = parse_brief({
     "objective": "UCL2028 决赛门票促销",
     "kpi": {"type": "conversion_rate", "target": 0.15},
     "audience_segment": "SEG_UCL_FANS",
-    "landing_page_url": "http://localhost:8080/s/ucl-lp",
+    "landing_page_url": "",
 })
 
 SPEC = {

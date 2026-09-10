@@ -55,7 +55,7 @@
       "landing_page": {
         "mode": "reuse",
         "ref": "LP_UCL2028_BRIDGE",
-        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "url": "http://localhost:8080/ucl2028-bridge",
         "note": "复用 Page #24（alias ucl2028-bridge）。表单分级：必填 L1 捕获=姓名+邮箱；选填 L2 资质=出发城市/出行人数/预算档位/是否关注冠军节（全选择题）；不收集 L3 实名（出票前才要）。首屏须见确定性锚 + 价值句 + 姓名邮箱一键提交，移动端首屏即按钮。页脚合规说明：本页为意向登记非购票、2028 票务未开放、席位以 UEFA 及官方公布为准。"
       },
       "tags_to_write": ["ucl2028_invited", "ucl2028_opened", "ucl2028_clicked"],
@@ -105,7 +105,7 @@
       "landing_page": {
         "mode": "reuse",
         "ref": "LP_UCL2028_BRIDGE",
-        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "url": "http://localhost:8080/ucl2028-bridge",
         "note": "与 c1 同一落地页，字段不变。"
       },
       "tags_to_write": ["ucl2028_invited"],
@@ -153,7 +153,7 @@
       "landing_page": {
         "mode": "reuse",
         "ref": "LP_UCL2028_BRIDGE",
-        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "url": "http://localhost:8080/ucl2028-bridge",
         "note": "复用 #24。本波沟通重点是强调表单仅需姓名+邮箱，页面本身不新增字段。"
       },
       "tags_to_write": ["ucl2028_lp_abandoned"],
@@ -201,7 +201,7 @@
       "landing_page": {
         "mode": "reuse",
         "ref": "LP_UCL2028_BRIDGE",
-        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "url": "http://localhost:8080/ucl2028-bridge",
         "note": "同一落地页，字段不变。"
       },
       "tags_to_write": ["ucl2028_reminded"],
@@ -248,7 +248,7 @@
       "landing_page": {
         "mode": "reuse",
         "ref": "LP_UCL2028_BRIDGE",
-        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "url": "http://localhost:8080/ucl2028-bridge",
         "note": "复用 #24；host 确认后仅需更新页内确定性锚文案，不新建页。"
       },
       "tags_to_write": ["ucl2028_host_confirmed"],
@@ -305,7 +305,7 @@
       "landing_page": {
         "mode": "reuse",
         "ref": "LP_UCL2028_BRIDGE",
-        "url": "http://localhost:8080/s/ucl2028-bridge",
+        "url": "http://localhost:8080/ucl2028-bridge",
         "note": "确认件 CTA 指向同一 bridge 页（不改字段）。该链接仅用于查看/补充 L2 偏好（出发城市、出行人数、预算档位、冠军节关注），不得作为再次登记或促销 CTA 呈现——已登记用户已被 suppress_promo 抑制，写成「立即登记/再次登记」既自相矛盾，也违反服务件禁促销硬约束。"
       },
       "tags_to_write": ["ucl2028_registered"],
