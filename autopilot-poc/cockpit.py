@@ -547,16 +547,36 @@ function copyRobust(text, onOk, onFail){
   // 永久 pending（既不通告成功也不通告失败），导致「正在生成」卡死。
   // 这里加 1s 超时，超时或 reject 一律走手动兜底（已全选的文本框，一次按键即可复制）。
   var settled=false;
-  var timer=setTimeout(function(){ if(!settled){ settled=true; if(onFail) onFail(); } }, 1000);
+  function fail(){ if(!settled){ settled=true; if(onFail) onFail(); } }
+  var timer=setTimeout(fail, 1000);
+  function legacyExec(t){
+    // 同步兜底：在 iframe / 非安全上下文里，execCommand('copy') 对剪贴板的限制
+    // 通常比 navigator.clipboard 更松，往往仍能写入；失败再走手动全选。
+    try{
+      var ta=document.createElement('textarea');
+      ta.value=t; ta.setAttribute('readonly','');
+      ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      try{ ta.setSelectionRange(0, ta.value.length); }catch(e){}
+      var ok=document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    }catch(e){ return false; }
+  }
   if(navigator.clipboard && navigator.clipboard.writeText){
     try{
       var p=navigator.clipboard.writeText(text);
       if(p && p.then){
         p.then(function(){ if(settled) return; settled=true; clearTimeout(timer); if(onOk) onOk(); },
-                 function(){ if(settled) return; settled=true; clearTimeout(timer); if(onFail) onFail(); });
-      } else { if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
-    }catch(e){ if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
-  } else { if(!settled){ settled=true; clearTimeout(timer); if(onFail) onFail(); } }
+                 function(){ if(settled) return;
+                             if(legacyExec(text)){ settled=true; clearTimeout(timer); if(onOk) onOk(); }
+                             else { fail(); } });
+        return;
+      }
+    }catch(e){ /* fall through to legacy */ }
+  }
+  if(legacyExec(text)){ if(!settled){ settled=true; clearTimeout(timer); if(onOk) onOk(); } }
+  else { fail(); }
 }
 function doGen(force){
   force = !!force;
