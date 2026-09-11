@@ -4205,8 +4205,9 @@ class Handler(BaseHTTPRequestHandler):
         # 判定（与 evaluate_and_replan 同阈值，但只读预览）
         if target_unset:
             verdict, detail = "无需优化", "KPI 目标未设置（R 未给）：仅做基线观测，不触发改写。"
-        elif unsub > 0.003:
-            verdict, detail = "需优化", f"退订率 {unsub:.2%} 超熔断 0.3%：建议 降频 + 加 suppression tag（收窄）。"
+        elif unsub > c.get("unsub_cap", 0.003):
+            _cap = c.get("unsub_cap", 0.003)
+            verdict, detail = "需优化", f"退订率 {unsub:.2%} 超熔断 {_cap:.2%}：建议 降频 + 加 suppression tag（收窄）。"
         elif ratio >= 1.0:
             verdict, detail = "无需优化", (f"达成率 {conv:.2%} ≥ 目标 {cmp_target:.2%}，"
                                           f"退订率 {unsub:.2%} 安全：保持策略，无需调整（可略降本）。")
@@ -4297,7 +4298,7 @@ class Handler(BaseHTTPRequestHandler):
         if cmp_target is None:
             cmp_target = target
         met = (float(result["conversion"] or 0) >= float(cmp_target or 0))
-        verdict = "baseline" if target_unset else _verdict_for(target, result["conversion"], result["unsub"])
+        verdict = "baseline" if target_unset else _verdict_for(target, result["conversion"], result["unsub"], c.get("unsub_cap", 0.003))
         done_lbl = STATUS.get(c.get("status", ""), ("", ""))[0] or ("达成" if met else "未达标")
         # 仅改写【当前】campaign 的策略（回写达成），产出 diff 供二次确认
         new_s = adjust_strategy_for_verdict(c["strategy"], verdict)
