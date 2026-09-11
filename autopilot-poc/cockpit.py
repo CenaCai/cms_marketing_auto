@@ -231,7 +231,7 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:var(--brand);box-
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--brand);color:#fff;
  padding:10px 18px;border-radius:var(--radius-sm);border:0;font-size:13px;font-weight:500;cursor:pointer;
  text-decoration:none;transition:background .15s,transform .08s,box-shadow .15s;box-shadow:0 1px 2px rgba(37,99,235,.25)}
-.btn:hover{background:var(--brand-2);box-shadow:0 4px 12px rgba(37,99,235,.32)}
+.btn:hover{background:var(--brand-2);color:#fff;box-shadow:0 4px 12px rgba(37,99,235,.32)}
 .btn:active{transform:translateY(1px);box-shadow:none}
 .btn.sec{background:var(--brand-soft);color:var(--brand);box-shadow:none}
 .btn.sec:hover{background:#dbeafe}
