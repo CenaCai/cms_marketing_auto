@@ -95,6 +95,7 @@ STATUS = {
     "unreviewed":   ("未审核", "b-idle"),
     "reviewed":     ("已审核", "b-ok"),
     "approved_idle": ("已审核-未执行", "b-warn"),
+    "armed":        ("已就绪·待触发", "b-gov"),
     "executing":    ("执行中", "b-gov"),
     "done_met":     ("已完成-已达标", "b-ok"),
     "done_below":   ("已完成-未达标", "b-bad"),
@@ -2865,7 +2866,8 @@ def _program_body(program: dict, msg: str = "") -> str:
                    "<span class='pill'>需先审批</span>")
         svc += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                 f"<strong>服务序列 · <code>{_esc(s['sid'])}</code></strong>"
-                f"<span class='badge b-gov'>{_esc(s['status'])}</span></div>"
+                f"<span class='badge {STATUS.get(s.get('status', ''), ('x', 'b-idle'))[1]}'>"
+                f"{_esc(STATUS.get(s.get('status', ''), (s.get('status', '') or 'armed', ''))[0])}</span></div>"
                 f"<p class='note'>{_esc(s['strategy'].get('campaign_name',''))}</p>"
                 f"<p class='pill'>触发 <code>{_esc(trig.get('mode','event'))}</code> "
                 f"{_esc(trig.get('event',''))} · 延迟 {trig.get('delay_hours',0)}h · 不配 segment</p>"
@@ -3807,6 +3809,10 @@ class Handler(BaseHTTPRequestHandler):
         else:
             decision = bind_and_approve(goal, s["proposal"], form.get("approver", ""))
         s["proposal"]["approval"] = decision.to_dict()
+        # 修复：审批通过后翻转服务序列状态，否则 badge 一直显示「armed」且与实际审批不符
+        # （decision.status 仅存在 proposal.approval 里，而 badge 读的是 s["status"]）。
+        if decision.status == "APPROVED":
+            s["status"] = "reviewed"
         _save_program(p)
         msg = (f"<div class='card'><p class='{'b-ok' if decision.status=='APPROVED' else 'b-bad'}'>"
                f"服务序列审批：{_esc(decision.status)}/{_esc(decision.level)} — "
@@ -3836,6 +3842,7 @@ class Handler(BaseHTTPRequestHandler):
         push_ok, push_err = _check_push_result(result)
         if push_ok:
             s["proposal"]["deployed"] = True
+            s["status"] = "approved_idle"   # 已审批并已推送到 Mautic（草稿待事件触发），对齐 campaign 状态机
             # 回写解析出的真实资产 ref（修 [待生成]/无链接 bug，对齐 _handle_campaign_push）
             _sync_resolved_assets_to_strategy(s, result)
             _save_program(p)
