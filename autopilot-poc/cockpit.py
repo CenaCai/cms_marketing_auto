@@ -3783,6 +3783,10 @@ class Handler(BaseHTTPRequestHandler):
         else:
             decision = bind_and_approve(goal, c["proposal"], form.get("approver", ""))
         c["proposal"]["approval"] = decision.to_dict()
+        # 修复：审批通过后必须翻转 campaign 状态，否则 badge 一直显示「未审核」
+        # （decision.status 仅存在 proposal.approval 里，而列表/badge 读的是 c["status"]）。
+        if decision.status == "APPROVED":
+            c["status"] = "reviewed"
         _save_program(p)
         msg = (f"<div class='card'><p class='{'b-ok' if decision.status=='APPROVED' else 'b-bad'}'>"
                f"审批：{_esc(decision.status)}/{_esc(decision.level)} — {_esc(decision.reason)}</p></div>")
