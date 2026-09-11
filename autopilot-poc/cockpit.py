@@ -1275,7 +1275,7 @@ def build_strategy_prompt(brief: dict, mautic_context: str = "", history_context
         "     - locale 仅 zh_CN → 主内容中文；\n"
         "     - locale 仅 en_US → 主内容英文；\n"
         "     - locale 同时含 zh_CN 和 en_US → 默认主内容英文，附加中文翻译稿。生成时先排英文主 campaign（c1/c2/...），再排对应的中文翻译 campaign（c1_zh/c2_zh/...），英文优先执行、中文翻译稿作为双语备选。\n"
-        "2. 落地页 URL 按 campaign 主语言区分，使用 Mautic 公开页路径 http://localhost:8080/<slug>（注意 /s/ 是后台前缀，公开落地页用 /{slug}）。"
+        "2. 落地页 URL 按 campaign 主语言区分，使用 Mautic 公开页路径 http://localhost:8080/<slug>（注意 /s/ 是后台前缀，公开落地页用 /{{slug}}）。"
         "必须用当前 campaign 的 cid 生成 URL：\n"
         "   · 英文主 campaign c1 → http://localhost:8080/c1-en\n"
         "   · 英文主 campaign c2 → http://localhost:8080/c2-en\n"
