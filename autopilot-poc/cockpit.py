@@ -2799,37 +2799,15 @@ def _program_body(program: dict, msg: str = "") -> str:
             cname_html = f"<span title='内部 cid={_esc(c['cid'])}'>{_esc(semantic_name)}</span> <code style='opacity:.5;font-size:11px'>{_esc(c['cid'])}</code>"
         else:
             cname_html = f"<code>{_esc(c['cid'])}</code>"
-        ext_bits = []
-        _em_ref = c["strategy"].get("email_ref", "")
-        _seg_ref = c["strategy"].get("segment", "")
-        _lp_ref = c["strategy"].get("landing_page_ref", "")
-        _lp_url = c["strategy"].get("landing_page_url", "")
-        _form_ref = c["strategy"].get("form_ref", "")
-        if _em_ref:
-            _lk = _mautic_ext_link("email", _em_ref, idx)
-            ext_bits.append(f"邮件 {_lk if _lk else _asset_note('email', _em_ref, idx)}")
-        if _seg_ref:
-            _lk = _mautic_ext_link("segment", _seg_ref, idx)
-            ext_bits.append(f"分群 {_lk if _lk else _asset_note('segment', _seg_ref, idx)}")
-        if _lp_ref or _lp_url:
-            _lk = _mautic_ext_link("landingpage", _lp_ref, idx) if _lp_ref else ""
-            if _lk:
-                ext_bits.append(f"落页 {_lk}")
-            elif _lp_url:
-                ext_bits.append(f"落页 <a class='ext' href='{_esc(_lp_url)}' target='_blank' rel='noopener'>详情</a>")
-            elif _lp_ref:
-                ext_bits.append(f"落页 {_asset_note('landingpage', _lp_ref, idx)}")
-        if _form_ref:
-            _lk = _mautic_ext_link("form", _form_ref, idx)
-            ext_bits.append(f"表单 {_lk if _lk else _asset_note('form', _form_ref, idx)}")
-        ext_html = ("<p class='pill'>Mautic 外链：" + " · ".join(ext_bits) + "</p>") if ext_bits else ""
+        # 资产外链去重：邮件/分群/落页 已在卡片主行 _strategy_summary 内渲染为可跳转 :8080 详情页；
+        # 表单(_form_ref) 此前仅在本块出现，删除整块后表单详情将不再有跳转入口（如需保留可并入主行）。
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
                   f"<p style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
                   f"{_provenance_line(c['strategy'])}"
                   f"{_compile_notes_html(prop)}"
                   f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap_txt} {result_txt}</p>"
-                  f"{goals_txt}{fb_txt}{ext_html}"
+                  f"{goals_txt}{fb_txt}"
                   f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
                   f"{_graph_svg(prop['graph'])}</details>"
                   f"{defer_note}{qh_c}{approve_f}{push_f}{create_f}{defer_f}{goals_f}{feedback_f}"
