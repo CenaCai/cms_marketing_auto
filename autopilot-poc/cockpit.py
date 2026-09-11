@@ -294,6 +294,7 @@ a:hover{text-decoration:underline;color:var(--brand-2)}
 .agent .row{display:flex;flex-wrap:wrap;gap:7px}
 .note{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6}
 .pill{font-size:11px;color:var(--muted)}
+.csum{font-size:12px;line-height:1.65}.csum .pill{font-size:12px}
 /* 开发日志面板：仅本地驾驶舱可见，方便开发看发生了什么/哪里报错 */
 .devlog{margin-top:28px;border:1px solid var(--line);border-radius:12px;background:#0e1726;color:#cfe0f2;overflow:hidden}
 .devlog>summary{cursor:pointer;padding:11px 16px;font-size:13px;font-weight:600;color:#cfe0f2;background:#13203a;user-select:none;list-style:decimal inside}
@@ -2803,8 +2804,8 @@ def _program_body(program: dict, msg: str = "") -> str:
         # 表单(_form_ref) 此前仅在本块出现，删除整块后表单详情将不再有跳转入口（如需保留可并入主行）。
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
-                  f"<p style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
-                  f"{_provenance_line(c['strategy'])}"
+                  f"<p class='csum' style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
+                  f"<div class='csum'>{_provenance_line(c['strategy'])}</div>"
                   f"{_compile_notes_html(prop)}"
                   f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap_txt} {result_txt}</p>"
                   f"{goals_txt}{fb_txt}"
