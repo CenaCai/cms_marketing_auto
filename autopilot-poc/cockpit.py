@@ -33,6 +33,16 @@ import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 本地 Mautic（127.0.0.1:8080 / localhost）必须直连，不能被 http_proxy 拦截：
+# 沙箱/企业环境的 http_proxy 指向出网代理，urllib 默认会把 loopback 也路由过去，
+# 导致探活/推送超时（curl 因默认对 loopback 硬绕过代理而正常）。
+# 必须用「赋值」而非 setdefault：宿主进程环境可能已存在 NO_PROXY（且不含 127.0.0.1），
+# setdefault 不会覆盖，仍会被代理拦截。强制写入 loopback 并重建默认 opener 使其生效
+# （ProxyHandler() 无参时读环境变量）。
+os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
+os.environ["no_proxy"] = "127.0.0.1,localhost,::1"
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler()))
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --------------------------- 开发日志（仅本地驾驶舱可见） ---------------------------
@@ -43,6 +53,27 @@ def cockpit_log(level: str, msg: str) -> None:
     """记录一条开发日志（INFO / WARN / ERROR / OK）。level 用于面板配色。"""
     ts = time.strftime("%H:%M:%S")
     COCKPIT_LOG.append((ts, level, msg))
+def _is_get_log_suppressed(path: str) -> bool:
+    """判断该 GET 是否不必再打一行通用的 `GET <path>`。
+
+    两类 GET 不打通用行：
+    1. 纯页面浏览（首屏 / Brief 表单 / Program 详情页 / favicon / 静态资源）——
+       每次手刷页面都产生若干条，会把 maxlen=200 的开发日志环形缓冲迅速刷满，
+       把真正有诊断价值的业务事件（AI 调用、推送、审批）挤出去。
+       动作类 GET（如 /program/<gid>/campaign/<cid>/feedback?autofill=1）不在此列，仍记录。
+    2. 自带专属日志行的路由（如 /brief/ai-parse-cached 会打「♻️ 命中会话缓存」），
+       再补一条通用行纯属重复。
+    """
+    if path in ("/", "", "/brief", "/favicon.ico", "/brief/ai-parse-cached"):
+        return True
+    if path.startswith("/static/"):
+        return True
+    # /program/<goal_id> 是详情页；更深的路径（campaign/.../feedback 等）是动作类
+    if path.startswith("/program/") and len([x for x in path.split("/") if x]) <= 2:
+        return True
+    return False
+
+
 def _resolve_output_dir() -> str:
     """定位驾驶舱数据目录 output/。优先 HERE/output；若该目录为空（无 program_*.json），
     则向上逐级查找父目录中的 output/，避免项目被嵌套/移动后旧进程仍指向空目录、
@@ -96,6 +127,7 @@ STATUS = {
     "unreviewed":   ("未审核", "b-idle"),
     "reviewed":     ("已审核", "b-ok"),
     "approved_idle": ("已审核-未执行", "b-warn"),
+    "armed":        ("已就绪·待触发", "b-gov"),
     "executing":    ("执行中", "b-gov"),
     "done_met":     ("已完成-已达标", "b-ok"),
     "done_below":   ("已完成-未达标", "b-bad"),
@@ -232,7 +264,7 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:var(--brand);box-
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--brand);color:#fff;
  padding:10px 18px;border-radius:var(--radius-sm);border:0;font-size:13px;font-weight:500;cursor:pointer;
  text-decoration:none;transition:background .15s,transform .08s,box-shadow .15s;box-shadow:0 1px 2px rgba(37,99,235,.25)}
-.btn:hover{background:var(--brand-2);box-shadow:0 4px 12px rgba(37,99,235,.32)}
+.btn:hover{background:var(--brand-2);color:#fff;box-shadow:0 4px 12px rgba(37,99,235,.32)}
 .btn:active{transform:translateY(1px);box-shadow:none}
 .btn.sec{background:var(--brand-soft);color:var(--brand);box-shadow:none}
 .btn.sec:hover{background:#dbeafe}
@@ -270,9 +302,11 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:var(--brand);box-
 .kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--brand)}
 .kpi-card.gov::before{background:var(--gov)} .kpi-card.warn::before{background:var(--warn)}
 .kpi-card.ok::before{background:var(--ok)} .kpi-card.bad::before{background:var(--bad)}
+.kpi-card.idle::before{background:var(--muted)}
 .kpi-num{font-size:30px;font-weight:700;line-height:1.1;color:var(--ink);margin:8px 0 2px;letter-spacing:-.5px}
 .kpi-card.gov .kpi-num{color:var(--gov)} .kpi-card.warn .kpi-num{color:var(--warn)}
 .kpi-card.ok .kpi-num{color:var(--ok)} .kpi-card.bad .kpi-num{color:var(--bad)}
+.kpi-card.idle .kpi-num{color:var(--muted)}
 .kpi-label{font-size:12px;color:var(--muted);font-weight:500}
 .kpi-sub{font-size:10px;color:var(--muted);margin-top:4px}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -294,6 +328,7 @@ a:hover{text-decoration:underline;color:var(--brand-2)}
 .agent .row{display:flex;flex-wrap:wrap;gap:7px}
 .note{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6}
 .pill{font-size:11px;color:var(--muted)}
+.csum{font-size:12px;line-height:1.65;color:var(--ink)}.csum .pill{font-size:12px;color:var(--muted)}
 /* 开发日志面板：仅本地驾驶舱可见，方便开发看发生了什么/哪里报错 */
 .devlog{margin-top:28px;border:1px solid var(--line);border-radius:12px;background:#0e1726;color:#cfe0f2;overflow:hidden}
 .devlog>summary{cursor:pointer;padding:11px 16px;font-size:13px;font-weight:600;color:#cfe0f2;background:#13203a;user-select:none;list-style:decimal inside}
@@ -342,15 +377,19 @@ def _dev_log_panel() -> str:
 # --------------------------- 页面 ---------------------------
 def _kpi_dashboard() -> str:
     """
-    首页 KPI 看板：6 张小卡（自动从 output/program_*.json 聚合）。
-    维度: Program 总数 / Campaign 总数 / 待审 / 执行中 / 已发 / 达标/未达标
+    首页 KPI 看板：5 张小卡（自动从 output/program_*.json 聚合）。
+    维度: Program 总数 / Campaign 总数 / 待审核 / 执行中 / 达标-未达标
+
+    注：原「已发」(proposal.deployed) 卡片已移除 —— 它与 status 是两套体系，
+        不构成状态分区（一个 campaign 可以既 deployed 又 executing）。
+        单列会让「待审 + 执行中 + 达标/未达标」与「已发」重复计数，
+        整行合计 > Campaign 总数，读起来自相矛盾。
     """
     progs = _list_programs()
     n_prog = len(progs)
     n_camp = 0
     n_pending = 0          # status == unreviewed
     n_executing = 0        # executing + approved_idle
-    n_deployed = 0         # proposal.deployed == True
     n_done_met = 0         # done_met
     n_done_below = 0       # done_below
     n_deferred = 0         # deferred (外部事件挂起)
@@ -368,17 +407,14 @@ def _kpi_dashboard() -> str:
                 n_done_below += 1
             elif st == "deferred":
                 n_deferred += 1
-            if (c.get("proposal") or {}).get("deployed"):
-                n_deployed += 1
-    pct_done = (round((n_done_met + n_done_below) * 1000 / n_camp) / 10
-                if n_camp > 0 else 0.0)
     cards = [
         ("brand",  str(n_prog),   "Program",     "已发起的目标数"),
         ("gov",    str(n_camp),   "Campaign",    "总战役数（含未审/执行中/已完成）"),
-        ("warn",   str(n_pending),"待审",         "需运营/审批人介入的 unreviewed"),
+        ("warn",   str(n_pending),"待审核",       "需运营/审批人介入的 unreviewed"),
         ("gov",    str(n_executing),"执行中",     "executing + approved_idle"),
-        ("ok",     str(n_deployed),"已发",        f"已部署到 Mautic（含 KPI 已达/未达 {pct_done}%）" if n_camp else "已部署到 Mautic"),
-        ("ok" if n_done_met >= n_done_below else "bad",
+        # 尚无已完成 campaign 时用中性灰，避免 0/0 被读成"已通过"
+        ("idle" if (n_done_met + n_done_below) == 0
+         else ("ok" if n_done_met >= n_done_below else "bad"),
          f"{n_done_met}<span style='font-size:14px;color:var(--muted)'>/{n_done_below}</span>",
          "达标/未达标", "done_met / done_below"),
     ]
@@ -958,6 +994,11 @@ function doParse(force){
       var msg='♻️ 会话内复用上次识别结果（未调用 DeepSeek）：'+filled+
               ' <a href="#" id="ai-parse-force" style="margin-left:8px">重新识别（忽略缓存）</a>';
       setStatus(msg, true);
+      // 轻量记账：缓存命中是纯前端行为、不向服务端发 AI 请求，过去在开发日志里完全隐形，
+      // 无法区分「真调用过 DeepSeek」还是「复用了上次结果」。这里补一条，仅为可观测性。
+      try{
+        fetch('/brief/ai-parse-cached?fields='+encodeURIComponent((cached.filled||[]).join(',')));
+      }catch(_err){ }
       var forceLink=document.getElementById('ai-parse-force');
       if(forceLink){
         forceLink.onclick=function(ev){
@@ -1284,7 +1325,7 @@ def build_strategy_prompt(brief: dict, mautic_context: str = "", history_context
         "     - locale 仅 zh_CN → 主内容中文；\n"
         "     - locale 仅 en_US → 主内容英文；\n"
         "     - locale 同时含 zh_CN 和 en_US → 默认主内容英文，附加中文翻译稿。生成时先排英文主 campaign（c1/c2/...），再排对应的中文翻译 campaign（c1_zh/c2_zh/...），英文优先执行、中文翻译稿作为双语备选。\n"
-        "2. 落地页 URL 按 campaign 主语言区分，使用 Mautic 公开页路径 http://localhost:8080/<slug>（注意 /s/ 是后台前缀，公开落地页用 /{slug}）。"
+        "2. 落地页 URL 按 campaign 主语言区分，使用 Mautic 公开页路径 http://localhost:8080/<slug>（注意 /s/ 是后台前缀，公开落地页用 /{{slug}}）。"
         "必须用当前 campaign 的 cid 生成 URL：\n"
         "   · 英文主 campaign c1 → http://localhost:8080/c1-en\n"
         "   · 英文主 campaign c2 → http://localhost:8080/c2-en\n"
@@ -2084,6 +2125,148 @@ def _strategy_summary(s: dict, idx: dict = None) -> str:
     return base + why
 
 
+# 节点类型 → 中文标签（粗流程图给非开发看，英文类型仍保留在 <title> 悬浮提示）
+_CN_LABEL = {
+    "decision.segment": "分群判定", "guardrail": "合规护栏",
+    "sourcemarketing.frequency_gate": "频次闸门", "anchor_arbitration": "锚点仲裁",
+    "email.send": "发送邮件", "decision.variant": "变体判定",
+    "email.variant": "变体邮件", "wait": "等待", "observer.click": "点击观测",
+    "decision.clicked": "点击分支", "page.hit": "落地页访问", "tag.write": "打标签",
+    "decision.form_submit": "表单提交判定", "form.submit": "表单提交",
+    "log_channel_send": "渠道日志", "sms.send.reserved": "短信(预留)",
+    "lead.changetags": "打标签",
+}
+_SUF_LABEL = {"send": "发送", "click": "点击决策", "changetags": "打标签", "submit": "提交判定", }
+
+
+def _cn_label(t: str) -> str:
+    if t in _CN_LABEL:
+        return _CN_LABEL[t]
+    suf = t.split(".")[-1]
+    return _SUF_LABEL.get(suf, t)
+
+
+def _graph_sequence(program: dict, c: dict) -> str:
+    """时序图：驾驶舱(Cockpit) 如何调用 Mautic、调用了哪些真实资产 ID。
+    数据来源：proposal.deploy_result / mautic_events / strategy 资产 ID。
+    未推送的 campaign（deploy_result 无 campaign_id）显示「待生成」，不编造 ID。"""
+    prop = c.get("proposal") or {}
+    s = c.get("strategy") or {}
+    dr = prop.get("deploy_result") or {}
+    cid = dr.get("campaign_id")
+    events = prop.get("mautic_events") or []
+    email_id = s.get("email_id")
+    email_followup_id = s.get("email_followup_id")
+    lp_id = s.get("landing_page_id")
+    form_id = s.get("form_id")
+    seg = s.get("segment")
+    cam_name = (prop.get("campaign") or {}).get("name") or s.get("campaign_name") or c.get("cid", "")
+    # ---- 消息序列 (dir: C2M=驾驶舱→Mautic, M2C=Mautic→驾驶舱) ----
+    L = []
+    if cid:
+        L.append(("C2M", "POST /api/campaigns/new",
+                  f"携带 {len(events)} 个事件(new1..new{len(events)}) → 返回 campaign_id={cid}"))
+        L.append(("M2C", "201 Created", f"campaign #{cid} 已建（{_esc(str(cam_name))}）"))
+    else:
+        L.append(("C2M", "POST /api/campaigns/new",
+                  f"携带 {len(events)} 个事件 → campaign_id=（推送后由 Mautic 生成）"))
+    for e in sorted(events, key=lambda x: x.get("order", 0)):
+        et = e.get("type")
+        p = e.get("properties") or {}
+        eid = e.get("id")
+        if et == "email.send":
+            aid = p.get("email") or email_id
+            L.append(("C2M", f"事件 {eid} · email.send", f"发送邮件 → email_id={aid if aid else '（待生成）'}"))
+        elif et == "email.click":
+            aid = p.get("email") or email_id
+            L.append(("C2M", f"事件 {eid} · email.click 决策", f"是否点击 → email_id={aid if aid else '?'}"))
+        elif et == "lead.changetags":
+            L.append(("C2M", f"事件 {eid} · lead.changetags",
+                      f"打标签 {_esc(json.dumps(p.get('add_tags', []), ensure_ascii=False))}"))
+        elif et == "form.submit":
+            fs = p.get("forms") or ([form_id] if form_id else [])
+            L.append(("C2M", f"事件 {eid} · form.submit 决策",
+                      f"是否提交表单 → form_id={', '.join(str(x) for x in fs) if fs else '（待生成）'}"))
+        else:
+            L.append(("C2M", f"事件 {eid} · {et}", _esc(str(e.get("name", ""))[:44])))
+    if cid:
+        L.append(("C2M", f"POST /api/campaigns/{cid}/edit", "isPublished=true（审批通过后上线）"))
+    else:
+        L.append(("C2M", "POST /api/campaigns/<id>/edit", "isPublished=true（审批通过后上线）"))
+    # ---- 资产摘要（底部）----
+    asset_summary = " | ".join([
+        f"campaign_id={cid if cid else '待生成'}",
+        f"email主/跟进={email_id or '?'}/{email_followup_id or '?'}",
+        f"landing_page={lp_id or '?'}",
+        f"form={form_id or '?'}",
+        f"segment={_esc(str(seg))}(reuse)",
+    ])
+    # ---- SVG ----
+    LX, RX = 168, 552
+    top = 56
+    row_h = 42
+    n = len(L)
+    H = top + n * row_h + 96
+    W = 720
+    svg = [f"<svg viewBox='0 0 {W} {H}' width='{W}' height='{H}' "
+           f"style='background:#fbfcfe;border:1px solid var(--line);border-radius:10px;"
+           f"max-width:100%;height:auto' font-family='inherit' font-size='11'>"]
+    svg.append("<defs><marker id='arw' markerWidth='8' markerHeight='8' refX='6' refY='3' orient='auto' "
+               "markerUnits='userSpaceOnUse'><path d='M0,0 L6,3 L0,6 Z' fill='#6b7280'/></marker></defs>")
+    svg.append(f"<rect x='{LX-70}' y='12' width='140' height='30' rx='8' fill='#185fa5'/>"
+               f"<text x='{LX}' y='32' text-anchor='middle' fill='#fff' font-weight='600'>驾驶舱 8090</text>")
+    svg.append(f"<rect x='{RX-70}' y='12' width='140' height='30' rx='8' fill='#1d9e75'/>"
+               f"<text x='{RX}' y='32' text-anchor='middle' fill='#fff' font-weight='600'>Mautic 8080</text>")
+    svg.append(f"<line x1='{LX}' y1='{top-8}' x2='{LX}' y2='{H-72}' stroke='#185fa5' "
+               f"stroke-dasharray='4 3' stroke-width='1.2'/>")
+    svg.append(f"<line x1='{RX}' y1='{top-8}' x2='{RX}' y2='{H-72}' stroke='#1d9e75' "
+               f"stroke-dasharray='4 3' stroke-width='1.2'/>")
+    for i, (d, method, detail) in enumerate(L):
+        y = top + i * row_h + row_h / 2
+        x1, x2, col = (LX, RX, "#185fa5") if d == "C2M" else (RX, LX, "#1d9e75")
+        svg.append(f"<circle cx='26' cy='{y}' r='10' fill='#fff' stroke='{col}' stroke-width='1.4'/>"
+                   f"<text x='26' y='{y+4}' text-anchor='middle' fill='{col}' "
+                   f"font-size='10' font-weight='600'>{i+1}</text>")
+        svg.append(f"<line x1='{x1}' y1='{y}' x2='{x2}' y2='{y}' stroke='{col}' "
+                   f"stroke-width='1.4' marker-end='url(#arw)'/>")
+        svg.append(f"<text x='{(LX+RX)/2}' y='{y-6}' text-anchor='middle' fill='{col}' "
+                   f"font-size='10.5' font-weight='600'><title>{_esc(detail)}</title>{_esc(method)}</text>")
+        svg.append(f"<text x='{(LX+RX)/2}' y='{y+14}' text-anchor='middle' fill='#52606d' "
+                   f"font-size='9.5'>{_esc(detail[:56])}</text>")
+    by = H - 56
+    svg.append(f"<rect x='16' y='{by}' width='{W-32}' height='44' rx='8' fill='#eef4fb' stroke='#cfe0f2'/>")
+    svg.append(f"<text x='26' y='{by+18}' fill='#1c2330' font-size='10.5' font-weight='600'>"
+               f"真实资产 ID（调用依据）</text>")
+    svg.append(f"<text x='26' y='{by+34}' fill='#33415c' font-size='9.5'>{asset_summary}</text>")
+    svg.append("</svg>")
+    inner = "".join(svg)
+    return f"<div style='max-height:680px;overflow:auto;border-radius:10px'>{inner}</div>"
+
+
+def _event_graph_toggle(program: dict, c: dict, cid) -> str:
+    """事件图双视图切换：🅰 时序图（怎么调用·什么ID）/ 🅱 粗流程图（框架·中文）。"""
+    prop = c.get("proposal") or {}
+    graph = prop.get("graph") or []
+    seq = _graph_sequence(program, c)
+    flow = _graph_svg(graph) if graph else "<p class='note'>（事件图为空）</p>"
+    n = len(graph)
+    cid_e = _esc(str(cid))
+    return (f"<details><summary class='pill'>事件图（{n} 节点 · 时序图 / 粗流程图）</summary>"
+            f"<div style='display:flex;gap:8px;margin:8px 0'>"
+            f"<button type='button' class='evg-tab' data-view='seq' "
+            f"style='background:#eef2f7;color:#1c2330;border:1px solid var(--line);border-radius:8px;"
+            f"padding:6px 12px;cursor:pointer;font-size:12px' "
+            f"onclick=\"evgSwitch('{cid_e}','seq')\">🅰 时序图（怎么调用·什么ID）</button>"
+            f"<button type='button' class='evg-tab active' data-view='flow' "
+            f"style='background:#185fa5;color:#fff;border:1px solid #185fa5;border-radius:8px;"
+            f"padding:6px 12px;cursor:pointer;font-size:12px' "
+            f"onclick=\"evgSwitch('{cid_e}','flow')\">🅱 流程图-框架</button>"
+            f"</div>"
+            f"<div id='evg-seq-{cid_e}' style='display:none'>{seq}</div>"
+            f"<div id='evg-flow-{cid_e}'>{flow}</div>"
+            f"</details>")
+
+
 def _graph_svg(graph: list) -> str:
     """Mautic 风格竖向时间线：入口(source)在顶，action 纵向串联，decision 画菱形，
     if_true/if_false 用绿/橙虚线分叉，配色对齐 Mautic。
@@ -2111,7 +2294,7 @@ def _graph_svg(graph: list) -> str:
 
     W, H = 130, 36                       # 节点框（原 156x46，压缩以适配多节点）
     HW, HH = W / 2, H / 2                # 半宽/半高（菱形同外接框）
-    COL_X, BR_X = 50, 282                # 主链列 x / 分支列 x
+    COL_X, BR_X = 78, 310                # 主链列 x / 分支列 x（右移补左缘，避免节点左缘被 viewBox 裁掉）
     TOP, ROW = 26, 52                    # 顶部留白 / 行距（原 34/66）
     pos = {}
     for i, nid in enumerate(spine):
@@ -2155,13 +2338,13 @@ def _graph_svg(graph: list) -> str:
         return s, e
 
     total_rows = max(len(spine), len(spine) + br_idx)
-    vw = BR_X + W + 40
+    vw = BR_X + HW + 14                 # 紧贴内容右缘 + 14 边距，使图表在 viewBox 内左右居中（左缘 COL_X-HW≈13）
     vh = TOP * 2 + total_rows * ROW
     # 按原始尺寸渲染（不再 width:100% 放大——18 节点时会被撑到 2300+px）；
     # max-width:100% + height:auto 保证窄屏仍可等比缩小。
     svg = [f"<svg viewBox='0 0 {vw} {vh}' width='{vw}' height='{vh}' "
            f"style='background:#fbfcfe;border:1px solid var(--line);border-radius:10px;"
-           f"max-width:100%;height:auto' "
+           f"max-width:100%;height:auto;display:block;margin:0 auto' "
            f"font-family='inherit' font-size='10'>"]
     svg.append("<defs>"
                "<marker id='arw' markerWidth='8' markerHeight='8' refX='6' refY='3' orient='auto' "
@@ -2236,7 +2419,7 @@ def _graph_svg(graph: list) -> str:
                 f"<polygon points='{cx},{cy-HH} {cx+HW},{cy} {cx},{cy+HH} {cx-HW},{cy}' "
                 f"fill='{stroke}' stroke='{fill}' stroke-width='1.6'/>"
                 f"<text x='{cx}' y='{cy-4}' text-anchor='middle' fill='{fill}' "
-                f"font-weight='600' font-size='10'>{_esc(_short(t))}</text>"
+                f"font-weight='600' font-size='10'>{_esc(_cn_label(t))}</text>"
                 f"<text x='{cx}' y='{cy+12}' text-anchor='middle' fill='#1c2330' "
                 f"font-size='8'>{_esc(nd['id'])}</text>")
         else:
@@ -2244,7 +2427,7 @@ def _graph_svg(graph: list) -> str:
                 f"<rect x='{cx-W/2}' y='{cy-H/2}' width='{W}' height='{H}' rx='9' "
                 f"fill='{stroke}' stroke='{fill}' stroke-width='1.5'/>"
                 f"<text x='{cx}' y='{cy-4}' text-anchor='middle' fill='{fill}' "
-                f"font-weight='600' font-size='10'>{_esc(_short(t))}</text>"
+                f"font-weight='600' font-size='10'>{_esc(_cn_label(t))}</text>"
                 f"<text x='{cx}' y='{cy+13}' text-anchor='middle' fill='#1c2330' "
                 f"font-size='8'>{_esc(nd['id'])}</text>")
         if transparent:
@@ -2286,6 +2469,10 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
             concl = "待建（占位）"
         elif resolved:
             concl = "调用已有"
+        elif not avail:
+            # Mautic 不可达（索引拉取失败/超时）→ 无法判定「复用是否存在」，
+            # 统一退化为「新建（按需）」，不再误报「调用已有（未找到）」。
+            concl = "新建（按需）"
         elif mode == "propose":
             # propose = 有则复用、无则推送时 ensure 创建；未解析时等同于「按需新建」
             concl = "新建（按需）"
@@ -2310,7 +2497,7 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
             if lk:
                 ref_cell = f"<code>{_esc(ref)}</code> {lk}"
         return (f"<tr><td>{kind}</td><td>{ref_cell}</td>"
-                f"<td>{_esc(mode)}</td><td>{concl}</td><td>{real}</td></tr>")
+                f"<td>{real}</td></tr>")
 
     rows = ""
     for c in program["campaigns"]:
@@ -2322,17 +2509,18 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
         lp = s.get("landing_page_ref", "")
         form_ref = s.get("form_ref", "")
         rows += _row("email", em_ref, em_mode)
-        rows += _row("分群", seg, seg_mode)
+        # 分群（contact source）与落地页/表单一致走「有则复用、无则推送时 ensure 创建」：
+        # push() 里 ensure_segment 是 find-or-create，故模式用 propose 而非 reuse ——
+        # 未解析时结论为「新建（按需）」而非「调用已有（未找到）」（与 2359/2370 注释的治理口径一致）。
+        rows += _row("分群", seg, "propose" if seg_mode != "generate" else seg_mode)
         if lp:
             # 着陆页与表单均按「有则复用、无则推送时 ensure 创建」处理（find-or-create），
             # 与分群/邮件一致；故模式用 propose 而非 reuse —— 未解析时结论应为「新建（按需）」，
             # 而非「调用已有（未找到）」。found→超链接、not found→新建，符合运营预期。
             rows += _row("着陆页", lp, "propose")
         else:
-            rows += ("<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
-                     "<td>新建</td><td>未连</td></tr>" if not avail else
-                     "<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
-                     "<td>新建</td><td>✗</td></tr>")
+            rows += ("<tr><td>着陆页</td><td><code>—</code></td><td>未连</td></tr>" if not avail else
+                     "<tr><td>着陆页</td><td><code>—</code></td><td>✗</td></tr>")
         # 表单：与邮件/落地页同属「内容资产」，按「哪个 campaign 用到就在哪个 campaign 显示」原则
         # 逐 campaign 展示（不特殊标注为独立/共享基础设施）。
         if form_ref:
@@ -2340,16 +2528,13 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
             # 未解析时结论为「新建（按需）」而非「调用已有（未找到）」。
             rows += _row("表单", form_ref, "propose")
         else:
-            rows += ("<tr><td>表单</td><td><code>—</code></td><td>generate</td>"
-                     "<td>新建</td><td>未连</td></tr>" if not avail else
-                     "<tr><td>表单</td><td><code>—</code></td><td>generate</td>"
-                     "<td>新建</td><td>✗</td></tr>")
+            rows += ("<tr><td>表单</td><td><code>—</code></td><td>未连</td></tr>" if not avail else
+                     "<tr><td>表单</td><td><code>—</code></td><td>✗</td></tr>")
     note = ("（未连接 Mautic 或缺少凭证：以下为基于策略规格的预期清单，无外链）" if not avail
             else "（已连接 Mautic，✓=实存 / 待建=推送时自动创建 / ✗=策略声明复用但 Mautic 中不存在；ref 可点击跳转详情页）")
-    return (f"<div class='card'><h3>Mautic 资产清单（新建 vs 调用）</h3>"
+    return (f"<div class='card'><h3>campaign资产清单</h3>"
             f"<p class='note'>{_esc(note)}</p>"
-            f"<table><tr><th>类型</th><th>引用(ref)</th><th>模式</th>"
-            f"<th>结论</th><th>实存</th></tr>{rows}</table></div>")
+            f"<table><tr><th>类型</th><th>名字</th><th>实存</th></tr>{rows}</table></div>")
 
 
 # --------------------------- Mautic 外链（资产已在 :8080/s/ 生成 → 跳转详情页） ---------------------------
@@ -2445,22 +2630,40 @@ def _asset_note(kind: str, ref, idx: dict) -> str:
 
 
 def _mautic_campaign_name(campaign_id) -> str:
-    """返回 Mautic campaign 的实时名字（单个 GET、不缓存，保证改名后同步到 Program 页）；
-    失败回退列表缓存；再失败返回空串。"""
+    """返回 Mautic campaign 的实时名字（保证改名后同步到 Program 页）；
+    失败/超时（单 php-cgi worker 常卡死）→ 返回空串，由调用方回退语义名，绝不拖挂 /program 渲染。"""
     if not campaign_id:
         return ""
-    nm = (mautic_get_campaign(campaign_id).get("name") or "").strip()
-    if not nm:
-        nm = mautic_read_campaigns("local").get("by_id", {}).get(str(campaign_id), "")
-    return nm
+    box = {}
+    def _run():
+        try:
+            nm = (mautic_get_campaign(campaign_id).get("name") or "").strip()
+            if not nm:
+                nm = mautic_read_campaigns("local").get("by_id", {}).get(str(campaign_id), "")
+            box["v"] = nm
+        except Exception:  # noqa: BLE001
+            box["v"] = ""
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(3)
+    if t.is_alive():
+        cockpit_log("WARN", f"mautic_get_campaign({campaign_id}) 超时（>3s，回退语义名）")
+        return ""
+    return box.get("v", "")
 
 
-def _mautic_reachable(env="local", timeout=10):
+def _mautic_reachable(env="local", timeout=30):
     """推送前的轻量探活：无凭证 GET /api/segments?limit=1。
 
     目的：把『Mautic 没启动』这类连接错误，从 push() 内部的 segment/form 逻辑错误里
     分离出来，避免误导用户去排查并不存在的 segment / 资产问题（正是 c1 推送失败那条
     「常见原因」静态清单会造成的误导）。
+
+    timeout=30 不要调回 10：本探活打的是 /api/segments（要过完整 Symfony API 栈），
+    prod 容器冷编译 / 单 php-cgi worker 忙时首请求实测 30-60s。用 10s 会把「慢」误判成
+    「不可达」，页面却显示「Mautic 没启动」，用户会去找根本不存在的故障（2026-09-11 实测）。
+    本函数只被推送路径调用（服务序列 / campaign 创建 / legacy 推送），放宽不拖慢页面渲染；
+    页面渲染走 _mautic_reachable_safe（显式 timeout=5，超即降级 data_missing）。
 
     返回 (ok, detail)：
       · ok=True  → 服务在线（含 401 未授权——端口通，交给 push() 正常报鉴权错）
@@ -2475,8 +2678,12 @@ def _mautic_reachable(env="local", timeout=10):
         return (True, "")
     url = f"{base}/api/segments?limit=1"
     req = urllib.request.Request(url, method="GET")
+    # 显式用「无代理」opener：ProxyHandler({}) 为空字典 = 不使用任何代理，
+    # 直连 127.0.0.1:8080，彻底绕过 http_proxy 对 loopback 的拦截
+    # （不依赖全局默认 opener / 环境变量，避免 import 顺序或宿主环境 NO_PROXY 缺失导致仍走代理）。
+    _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _opener.open(req, timeout=timeout) as resp:
             resp.read()  # 读到任何响应即代表服务在线（401 也算）
         return (True, "")
     except urllib.error.HTTPError:
@@ -2597,6 +2804,65 @@ def _mautic_asset_index_safe(env="local", timeout=6):
         cockpit_log("WARN", f"mautic 资产索引获取失败（降级空索引）：{box['err']}")
         return dict(_EMPTY_IDX)
     return box.get("v", dict(_EMPTY_IDX))
+
+
+def _merge_known_assets(idx: dict, program: dict) -> dict:
+    """把 Program 内各 campaign / service 序列「自己已知」的资产 id 并入资产索引。
+
+    为什么需要：本机 Mautic 是单 php-cgi worker，segments / pages 全量列表接口经常 >30s 超时、
+    emails ~18s，导致 _mautic_asset_index（bulk 列表）经常拉不到 → 资产表与卡片外链全部退化为
+    「未连接 / 调用已有（未找到）」。但 Program 自己的 strategy（email_id / landing_page_id /
+    form_id）与 deploy_result.ensure_log 已经记录了真实资产 id（推送时 ensure_* 返回的），
+    直接并入索引即可让外链正确渲染，无需依赖慢查询；live 索引仅作补充。"""
+    if not isinstance(idx, dict):
+        idx = {"available": False, "email": {}, "segment": {}, "page": {}, "form": {}}
+    for _k in ("email", "segment", "page", "form"):
+        idx.setdefault(_k, {})
+    _found = False
+
+    def _add(kind_map: str, name, aid):
+        nonlocal _found
+        if name and aid is not None:
+            idx[kind_map][str(name)] = aid
+            _found = True
+
+    for c in (program.get("campaigns") or []) + (program.get("service_sequences") or []):
+        if not isinstance(c, dict):
+            continue
+        s = c.get("strategy") or {}
+        prop = c.get("proposal") or {}
+        dr = prop.get("deploy_result") or {}
+        log = dr.get("ensure_log") or []
+        for it in log:
+            a = it.get("asset")
+            nm = it.get("name")
+            aid = it.get("id")
+            if a == "email":
+                _add("email", nm, aid)
+            elif a == "segment":
+                _add("segment", nm, aid)
+            elif a == "landing_page":
+                _add("page", nm, aid)
+            elif a == "form":
+                _add("form", nm, aid)
+        # strategy 字段（覆盖 / 补充）
+        if s.get("email_ref") and s.get("email_id") is not None:
+            _add("email", s["email_ref"], s["email_id"])
+        if s.get("landing_page_ref") and s.get("landing_page_id") is not None:
+            _add("page", s["landing_page_ref"], s["landing_page_id"])
+        if s.get("form_ref") and s.get("form_id") is not None:
+            _add("form", s["form_ref"], s["form_id"])
+        if s.get("segment"):
+            seg_id = None
+            for it in log:
+                if it.get("asset") == "segment" and it.get("name") == s.get("segment"):
+                    seg_id = it.get("id")
+            if seg_id is None and s.get("segment_id") is not None:
+                seg_id = s["segment_id"]
+            _add("segment", s["segment"], seg_id)
+    if _found:
+        idx["available"] = True
+    return idx
 
 
 def _check_push_result(result: dict):
@@ -2886,7 +3152,9 @@ def _program_body(program: dict, msg: str = "") -> str:
     campaigns = program["campaigns"]
     # Mautic 资产索引：统一走线程安全包裹，超时 / 不可达即降级空索引，绝不拖挂 /program 渲染。
     # 与 data_missing 设计一致：资产外链延后到推送时惰性补建（idx 为空时外链不显示）。
-    idx = _mautic_asset_index_safe("local", timeout=6)
+    # 资产索引：先取 live 索引（本机 Mautic 列表接口极慢，常超时 → 空），再把 Program 自身已知的
+    # 真实资产 id（strategy + ensure_log）并入，保证外链/结论不退化（详见 _merge_known_assets）。
+    idx = _merge_known_assets(_mautic_asset_index_safe("local", timeout=4), program)
     for i, c in enumerate(campaigns):
         prop = c["proposal"]
         ap = prop.get("approval")
@@ -3095,39 +3363,16 @@ def _program_body(program: dict, msg: str = "") -> str:
             cname_html = f"<span title='内部 cid={_esc(c['cid'])}'>{_esc(semantic_name)}</span> <code style='opacity:.5;font-size:11px'>{_esc(c['cid'])}</code>"
         else:
             cname_html = f"<code>{_esc(c['cid'])}</code>"
-        ext_bits = []
-        _em_ref = c["strategy"].get("email_ref", "")
-        _seg_ref = c["strategy"].get("segment", "")
-        _lp_ref = c["strategy"].get("landing_page_ref", "")
-        _lp_url = c["strategy"].get("landing_page_url", "")
-        _form_ref = c["strategy"].get("form_ref", "")
-        if _em_ref:
-            _lk = _mautic_ext_link("email", _em_ref, idx)
-            ext_bits.append(f"邮件 {_lk if _lk else _asset_note('email', _em_ref, idx)}")
-        if _seg_ref:
-            _lk = _mautic_ext_link("segment", _seg_ref, idx)
-            ext_bits.append(f"分群 {_lk if _lk else _asset_note('segment', _seg_ref, idx)}")
-        if _lp_ref or _lp_url:
-            _lk = _mautic_ext_link("landingpage", _lp_ref, idx) if _lp_ref else ""
-            if _lk:
-                ext_bits.append(f"落页 {_lk}")
-            elif _lp_url:
-                ext_bits.append(f"落页 <a class='ext' href='{_esc(_lp_url)}' target='_blank' rel='noopener'>详情</a>")
-            elif _lp_ref:
-                ext_bits.append(f"落页 {_asset_note('landingpage', _lp_ref, idx)}")
-        if _form_ref:
-            _lk = _mautic_ext_link("form", _form_ref, idx)
-            ext_bits.append(f"表单 {_lk if _lk else _asset_note('form', _form_ref, idx)}")
-        ext_html = ("<p class='pill'>Mautic 外链：" + " · ".join(ext_bits) + "</p>") if ext_bits else ""
+        # 资产外链去重：邮件/分群/落页 已在卡片主行 _strategy_summary 内渲染为可跳转 :8080 详情页；
+        # 表单(_form_ref) 此前仅在本块出现，删除整块后表单详情将不再有跳转入口（如需保留可并入主行）。
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
-                  f"<p style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
-                  f"{_provenance_line(c['strategy'])}"
+                  f"<p class='csum' style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
+                  f"<div class='csum'>{_provenance_line(c['strategy'])}</div>"
                   f"{_compile_notes_html(prop)}"
                   f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap_txt} {result_txt}</p>"
-                  f"{goals_txt}{fb_txt}{ext_html}"
-                  f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
-                  f"{_graph_svg(prop['graph'])}</details>"
+                  f"{goals_txt}{fb_txt}"
+                  f"{_event_graph_toggle(program, c, c['cid'])}"
                   f"{defer_note}{qh_c}{approve_f}{push_f}{create_f}{defer_f}{goals_f}{feedback_f}"
                   f"{optimize_btn}{fa_html}{opt_html}{complete_f}{replan_ui}</div>")
     # Mautic 资产清单（新建 vs 调用已有）—— 整 Program 汇总（#6）
@@ -3162,7 +3407,8 @@ def _program_body(program: dict, msg: str = "") -> str:
                    "<span class='pill'>需先审批</span>")
         svc += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                 f"<strong>服务序列 · <code>{_esc(s['sid'])}</code></strong>"
-                f"<span class='badge b-gov'>{_esc(s['status'])}</span></div>"
+                f"<span class='badge {STATUS.get(s.get('status', ''), ('x', 'b-idle'))[1]}'>"
+                f"{_esc(STATUS.get(s.get('status', ''), (s.get('status', '') or 'armed', ''))[0])}</span></div>"
                 f"<p class='note'>{_esc(s['strategy'].get('campaign_name',''))}</p>"
                 f"<p class='pill'>触发 <code>{_esc(trig.get('mode','event'))}</code> "
                 f"{_esc(trig.get('event',''))} · 延迟 {trig.get('delay_hours',0)}h · 不配 segment</p>"
@@ -3174,8 +3420,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                 f"<p class='pill'>治理节点：{_esc(', '.join(gtypes))}</p>"
                 f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap3_txt}</p>"
                 f"{qh}"
-                f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
-                f"{_graph_svg(prop['graph'])}</details>"
+                f"{_event_graph_toggle(program, s, s['sid'])}"
                 f"{approve3_f}{push3_f}</div>")
     if svc:
         svc = ("<div class='card' style='background:var(--gov-soft)'><h3>服务序列（service/transactional）</h3>"
@@ -3302,8 +3547,27 @@ def _program_body(program: dict, msg: str = "") -> str:
         "})();</script>"
     )
     total_html = _total_strategy_card(program)
+    evg_js = (
+        "<script>(function(){"
+        "window.evgSwitch=function(cid,view){"
+        "var seq=document.getElementById('evg-seq-'+cid);"
+        "var flow=document.getElementById('evg-flow-'+cid);"
+        "if(!seq||!flow)return;"
+        "var showSeq=(view==='seq');"
+        "seq.style.display=showSeq?'block':'none';"
+        "flow.style.display=showSeq?'none':'block';"
+        "var root=seq.parentNode;"
+        "var tabs=root.querySelectorAll('.evg-tab');"
+        "for(var i=0;i<tabs.length;i++){"
+        "var b=tabs[i];var on=(b.getAttribute('data-view')===view);"
+        "b.style.background=on?'#185fa5':'#eef2f7';"
+        "b.style.color=on?'#fff':'#1c2330';"
+        "}"
+        "};"
+        "})();</script>"
+    )
     return (f"{msg}{header_html}"
-            f"{plan_html}{total_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}{click_guard_js}{replan_js}")
+            f"{plan_html}{total_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}{click_guard_js}{replan_js}{evg_js}")
 
 
 def _proposal_body(d: dict, msg: str = "") -> str:
@@ -3492,7 +3756,11 @@ class Handler(BaseHTTPRequestHandler):
         # URL 解码：goal_id 可能是中文（slug 只剔非字母数字，中文属于 isalnum），
         # 浏览器会把 /program/中文 百分号编码后发回来，不解码就匹配不到 Program。
         path = urllib.parse.unquote(self.path.split("?")[0])
-        cockpit_log("INFO", f"GET {path}")
+        # GET 降噪：纯页面浏览 / 自带专属日志的路由不重复记
+        #（详见 _is_get_log_suppressed 说明），否则几次刷新就能把 200 条的
+        # 环形缓冲刷满、把业务事件挤出去。
+        if not _is_get_log_suppressed(path):
+            cockpit_log("INFO", f"GET {path}")
         if path in ("/", ""):
             return self._guard("dashboard", lambda: self._send(200, _page("驾驶舱", _dash_body())))
         if path == "/brief":
@@ -3530,6 +3798,15 @@ class Handler(BaseHTTPRequestHandler):
                         "ref_goal_id": goal_id_src,  # 告诉 form 这是改 Brief
                     }
             return self._send(200, _page("新建 Brief", _brief_form(strategies, err, meta, services, prefill)))
+        if path == "/brief/ai-parse-cached":
+            # 前端 ♻️ 命中 sessionStorage 缓存时的轻量记账请求 —— 不调用 DeepSeek、
+            # 不做任何计算，只为了让「本次压根没调模型」这件事在开发日志里可见
+            # （不记的话，这类调用在监听面板里等于隐形，无法区分「真调用」与「复用」）。
+            _fq = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            _fl = [x for x in (_fq.get("fields") or [""])[0].split(",") if x]
+            cockpit_log("INFO", "ai-parse：♻️ 命中会话缓存，未调用 DeepSeek · 复用回填 %d 项%s"
+                        % (len(_fl), "（%s%s）" % ("、".join(_fl[:6]), "…" if len(_fl) > 6 else "") if _fl else ""))
+            return self._send_json({"ok": True})
         if path.startswith("/program/"):
             # /program/<gid>/campaign/<cid>/feedback?autofill=1&date=YYYY-MM-DD  ← 拉 Mautic 最新数据预填表单
             parts = [x for x in path.split("/") if x]
@@ -3926,10 +4203,15 @@ class Handler(BaseHTTPRequestHandler):
         """
         objective = (body.get("objective") or "").strip()
         if not objective:
+            cockpit_log("WARN", "ai-parse：objective 为空，未调用 DeepSeek")
             return self._send_json({"ok": False, "error": "objective 为空"})
         cfg = load_deepseek_config()
         if not cfg["enabled"]:
+            cockpit_log("ERROR", "ai-parse：未配置 DeepSeek，识别中止")
             return self._send_json({"ok": False, "error": "未配置 DeepSeek（config.json [deepseek].api_key 或 DEEPSEEK_API_KEY）"})
+        _t_start = time.time()  # 端到端计时（含可能的策略自动合成）
+        cockpit_log("INFO", "ai-parse：开始 · model=%s · objective=“%s%s”"
+                    % (cfg["model"], objective[:28], "…" if len(objective) > 28 else ""))
         system_prompt = (
             "你是一个营销 Brief 意图识别器。阅读运营用自然语言写下的「营销目标」描述，"
             "抽取其中隐含的结构化字段，输出严格 JSON（只输出 JSON，不要解释、不要 markdown 代码块）。\n\n"
@@ -4015,19 +4297,28 @@ class Handler(BaseHTTPRequestHandler):
         req = _u.Request(url, data=data, method="POST")
         for k, v in cfg["headers"].items():
             req.add_header(k, v)
+        _t_llm = time.time()  # 仅 DeepSeek 往返耗时
         try:
             with _u.urlopen(req, timeout=cfg["timeout"]) as resp:
                 raw = resp.read().decode("utf-8", "replace")
+            _llm_ms = int((time.time() - _t_llm) * 1000)
+            cockpit_log("INFO", "ai-parse：DeepSeek 返回 · %dms · %dB" % (_llm_ms, len(raw)))
         except _ue.HTTPError as e:
             raw = e.read().decode("utf-8", "replace")
+            _raw_snip = raw.replace("\n", " ")[:160]
+            cockpit_log("ERROR", "ai-parse：DeepSeek HTTP %s · %s" % (e.code, _raw_snip))
             return self._send_json({"ok": False, "error": f"DeepSeek HTTP {e.code}: {raw[:500]}"})
         except Exception as e:  # noqa: BLE001
+            cockpit_log("ERROR", "ai-parse：DeepSeek 请求失败 · %s: %s" % (type(e).__name__, e))
             return self._send_json({"ok": False, "error": f"DeepSeek 请求失败：{e}"})
         try:
             outer = json.loads(raw)
             content = (outer.get("choices") or [{}])[0].get("message", {}).get("content", "")
             parsed = json.loads(content) if content else {}
         except Exception as e:  # noqa: BLE001
+            _raw_snip = raw.replace("\n", " ")[:160]
+            cockpit_log("ERROR", "ai-parse：DeepSeek 返回解析失败 · %s: %s · 原文：%s"
+                        % (type(e).__name__, e, _raw_snip))
             return self._send_json({"ok": False, "error": f"DeepSeek 返回解析失败：{e}；原文：{raw[:500]}"})
         fields = ("goal_name", "start_date", "end_date", "overall_conv", "is_revenue",
                   "budget", "locale", "audience_age_range", "audience_age", "audience_gender",
@@ -4061,6 +4352,9 @@ class Handler(BaseHTTPRequestHandler):
         # 方案 B：意图识别未直接产出 strategy_spec 时，按启发式自动合成多波策略
         strategy_auto = False
         if not out.get("strategy_spec") and _should_synthesize_strategy(out):
+            # 这步会串起第二轮模型调用（crew 或单 agent 兜底），是「总耗时 >> DeepSeek 耗时」的主因，
+            # 不记一行的话日志上会看到时间对不上、无法解释。
+            cockpit_log("INFO", "ai-parse：识别结果未含 strategy_spec → 触发策略自动合成（第二轮模型调用）")
             try:
                 brief = _brief_from_parsed(out, objective)
                 prompt = _build_strategy_prompt_from_brief(brief)
@@ -4091,6 +4385,11 @@ class Handler(BaseHTTPRequestHandler):
         if strategy_auto:
             resp["strategy_auto"] = True
             resp["filled"] = list(filled) + ["策略(自动合成)"]
+        _gl = resp["filled"]
+        cockpit_log("OK", "ai-parse：完成 · DeepSeek %dms / 端到端 %dms · 回填 %d 项%s%s"
+                    % (_llm_ms, int((time.time() - _t_start) * 1000), len(_gl),
+                       "（%s%s）" % ("、".join(_gl[:6]), "…" if len(_gl) > 6 else "") if _gl else "",
+                       " · 含自动合成策略" if strategy_auto else ""))
         return self._send_json(resp)
 
     def _handle_campaign_approve(self, gid, cid, form):
@@ -4108,6 +4407,10 @@ class Handler(BaseHTTPRequestHandler):
         else:
             decision = bind_and_approve(goal, c["proposal"], form.get("approver", ""))
         c["proposal"]["approval"] = decision.to_dict()
+        # 修复：审批通过后必须翻转 campaign 状态，否则 badge 一直显示「未审核」
+        # （decision.status 仅存在 proposal.approval 里，而列表/badge 读的是 c["status"]）。
+        if decision.status == "APPROVED":
+            c["status"] = "reviewed"
         _save_program(p)
         msg = (f"<div class='card'><p class='{'b-ok' if decision.status=='APPROVED' else 'b-bad'}'>"
                f"审批：{_esc(decision.status)}/{_esc(decision.level)} — {_esc(decision.reason)}</p></div>")
@@ -4128,6 +4431,10 @@ class Handler(BaseHTTPRequestHandler):
         else:
             decision = bind_and_approve(goal, s["proposal"], form.get("approver", ""))
         s["proposal"]["approval"] = decision.to_dict()
+        # 修复：审批通过后翻转服务序列状态，否则 badge 一直显示「armed」且与实际审批不符
+        # （decision.status 仅存在 proposal.approval 里，而 badge 读的是 s["status"]）。
+        if decision.status == "APPROVED":
+            s["status"] = "reviewed"
         _save_program(p)
         msg = (f"<div class='card'><p class='{'b-ok' if decision.status=='APPROVED' else 'b-bad'}'>"
                f"服务序列审批：{_esc(decision.status)}/{_esc(decision.level)} — "
@@ -4157,6 +4464,7 @@ class Handler(BaseHTTPRequestHandler):
         push_ok, push_err = _check_push_result(result)
         if push_ok:
             s["proposal"]["deployed"] = True
+            s["status"] = "approved_idle"   # 已审批并已推送到 Mautic（草稿待事件触发），对齐 campaign 状态机
             # 回写解析出的真实资产 ref（修 [待生成]/无链接 bug，对齐 _handle_campaign_push）
             _sync_resolved_assets_to_strategy(s, result)
             _save_program(p)
@@ -4294,6 +4602,14 @@ class Handler(BaseHTTPRequestHandler):
                       "note": f"push 执行异常：{type(exc).__name__}: {exc}",
                       "error": str(exc), "steps": [], "ensure_log": {}}
         c["proposal"]["deploy_result"] = result
+        # 回写解析出的真实资产 ref（修 [待生成]/无链接 bug，对齐 _handle_campaign_push）：
+        # push() 已把真实资产建好并把 id 写进 mautic_events，但从不回写 strategy 的展示字段，
+        # 导致卡片永远显示「[待生成]」占位、无外链。这里从 ensure_log 取回真实资产名/alias 回填。
+        # dry-run（无 ensure_log）时安全跳过。
+        try:
+            _sync_resolved_assets_to_strategy(c, result)
+        except Exception as _exc:  # noqa: BLE001
+            cockpit_log("WARN", f"campaign_create {cid}：回写资产展示字段失败：{type(_exc).__name__}: {_exc}")
         # 诚实反映 push 结果：
         #  · 只有【真实在 Mautic 创建了 campaign】（dry_run=False 且 campaign_id 非空）才标记「执行中」+ deployed=True
         #  · dry-run（无论有意未填凭证，还是 token/凭证超时）一律不标记执行中，避免误导
@@ -4519,8 +4835,9 @@ class Handler(BaseHTTPRequestHandler):
         # 判定（与 evaluate_and_replan 同阈值，但只读预览）
         if target_unset:
             verdict, detail = "无需优化", "KPI 目标未设置（R 未给）：仅做基线观测，不触发改写。"
-        elif unsub > 0.003:
-            verdict, detail = "需优化", f"退订率 {unsub:.2%} 超熔断 0.3%：建议 降频 + 加 suppression tag（收窄）。"
+        elif unsub > c.get("unsub_cap", 0.003):
+            _cap = c.get("unsub_cap", 0.003)
+            verdict, detail = "需优化", f"退订率 {unsub:.2%} 超熔断 {_cap:.2%}：建议 降频 + 加 suppression tag（收窄）。"
         elif ratio >= 1.0:
             verdict, detail = "无需优化", (f"达成率 {conv:.2%} ≥ 目标 {cmp_target:.2%}，"
                                           f"退订率 {unsub:.2%} 安全：保持策略，无需调整（可略降本）。")
@@ -4611,7 +4928,7 @@ class Handler(BaseHTTPRequestHandler):
         if cmp_target is None:
             cmp_target = target
         met = (float(result["conversion"] or 0) >= float(cmp_target or 0))
-        verdict = "baseline" if target_unset else _verdict_for(target, result["conversion"], result["unsub"])
+        verdict = "baseline" if target_unset else _verdict_for(target, result["conversion"], result["unsub"], c.get("unsub_cap", 0.003))
         done_lbl = STATUS.get(c.get("status", ""), ("", ""))[0] or ("达成" if met else "未达标")
         # 仅改写【当前】campaign 的策略（回写达成），产出 diff 供二次确认
         new_s = adjust_strategy_for_verdict(c["strategy"], verdict)

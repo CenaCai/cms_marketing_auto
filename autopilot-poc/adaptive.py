@@ -339,16 +339,16 @@ def _bump_variant(s: dict) -> dict:
     return s
 
 
-def _verdict_for(target, conv: float, unsub: float) -> str:
+def _verdict_for(target, conv: float, unsub: float, unsub_cap: float = 0.003) -> str:
     """
     由达成率 + 退订率给出修正判定（确定性，可审计）：
-      burn  = 退订率 > 0.003（熔断）
+      burn  = 退订率 > unsub_cap（熔断；campaign 级 unsub_cap，默认 0.003）
       strong= 达成率 >= 100%
       ok    = 50% <= 达成率 < 100%
       weak  = 达成率 < 50%
       baseline = 无目标（不触发改写）
     """
-    if unsub and unsub > 0.003:
+    if unsub and unsub > unsub_cap:
         return "burn"
     if target is None or target <= 0:
         return "baseline"
@@ -466,7 +466,7 @@ def evaluate_and_replan(program: dict, completed_cid: str, result: dict) -> dict
     done["result"] = result
 
     ratio = (round(conv / target, 3) if target else None)
-    verdict = "baseline" if target_unset else _verdict_for(target, conv, unsub)
+    verdict = "baseline" if target_unset else _verdict_for(target, conv, unsub, done.get("unsub_cap", 0.003))
 
     goal = GoalSpec(**program["goal"])
     changes = []

@@ -115,6 +115,69 @@ AUDIENCE_WEIGHTS = {
     "source": 0.10, "region": 0.05,
 }
 AUDIENCE_THRESHOLD = 0.6  # 命中阈值（>= 算命中；< 则走 GENERIC 兜底）
+# 命中所必需的「显式证据权重」下限（只算运营真正填写并命中的字段）。
+# 背景：留空字段按"全选"处理会给满分，导致填得越少分数越高（全空时每个包都是 1.00）。
+# 所以命中与否不能只看相对分，还必须要求有一定量的**真实证据**：
+#   ≥0.20 → age(0.20) / income(0.25) 这种强字段单独命中即可；
+#   <0.20 → 只填了 gender / source / region / education 这种弱字段，不足以下判断 → 走 GENERIC。
+MIN_EVIDENCE = 0.20
+
+
+# ===== locale-agnostic normalization for audience scoring =====
+# en_US briefs store persona fields with English key names / values
+# (income_tier, preferred_source, male, elite, China mainland) while the
+# match table (references/audience-content-map.json) uses Chinese keys/values
+# (income, source, 男, 名校, 中国大陆). Without this, the scorer cannot read
+# the fields -> treats them as blank -> every package "matches" -> garbage
+# scores -> GENERIC fallback. Normalize before scoring so both locales score.
+_PROFILE_KEY_ALIASES = {
+    "income_tier": "income",
+    "income_level": "income",
+    "income_band": "income",
+    "preferred_source": "source",
+    "source_channel": "source",
+    "src": "source",
+}
+_PROFILE_VALUE_MAPS = {
+    "gender": {
+        "male": "男", "m": "男", "man": "男",
+        "female": "女", "f": "女", "woman": "女",
+    },
+    "region": {
+        "china mainland": "中国大陆", "mainland china": "中国大陆",
+        "china": "中国大陆", "cn": "中国大陆", "prc": "中国大陆",
+    },
+    "education": {
+        "elite": "名校", "prestigious": "名校", "top university": "名校",
+        "bachelor": "普通本科", "undergraduate": "普通本科", "bsc": "普通本科",
+    },
+    "industry": {
+        "finance": "金融", "financial": "金融",
+        "education": "教育",
+        "healthcare": "医疗", "health": "医疗", "medical": "医疗",
+        "retail": "零售",
+        "manufacturing": "制造", "manufacture": "制造",
+        "tourism": "旅游", "travel": "旅游", "travel & tourism": "旅游",
+    },
+}
+
+
+def _normalize_profile_for_scoring(profile) -> dict:
+    """把 en_US 键名/值归一化为打分器约定（中文）；对中文输入幂等。
+
+    仅做已知别名的映射，未命中别名的字段/值原样保留（如 income L1、IT、MBA）。
+    """
+    if not isinstance(profile, dict):
+        return {}
+    out = {}
+    for k, v in profile.items():
+        nk = _PROFILE_KEY_ALIASES.get(str(k).strip().lower(), k)
+        vals = _profile_values(v)
+        if nk in _PROFILE_VALUE_MAPS:
+            mapper = _PROFILE_VALUE_MAPS[nk]
+            vals = [mapper.get(str(x).strip().lower(), str(x).strip()) for x in vals]
+        out[nk] = vals if isinstance(v, (list, tuple, set)) else (vals[0] if vals else "")
+    return out
 
 
 def _profile_values(val):
@@ -144,29 +207,39 @@ def infer_audience_package(profile) -> dict:
       fallback    bool  是否走 GENERIC 兜底
       near_miss   dict  仅兜底时出现：最接近但未达阈值的包 {code,label,score,evidence}；无候选时为 None
     """
-    if not isinstance(profile, dict):
-        profile = {}
+    profile = _normalize_profile_for_scoring(profile)
     rows = []
     for code, pkg in AUDIENCE_PACKAGES.items():
         if pkg.get("runtime_only"):
             continue
         match_map = pkg.get("match", {}) or {}
-        score, total, evidence = 0.0, 0.0, []
+        score, total, evidence, explicit = 0.0, 0.0, [], 0.0
         for field, weight in AUDIENCE_WEIGHTS.items():
             if field not in match_map:
                 continue  # 画像包未定义该字段 → 不计入分母（避免字段少的包被 7 字段分母压分）
             total += weight
             vals = _profile_values(profile.get(field))
+            if not vals:
+                # 留空 = 不限受众 = 全选（与 /brief 表单提示一致）→ 该字段视为命中，给满分。
+                # 注意：它计入分子也计入分母，绝不是 0 分。
+                score += weight
+                continue
             if any(v in match_map[field] for v in vals):
                 score += weight
+                explicit += weight
                 evidence.append(f"{field}={vals}")
         pct = (score / total) if total > 0 else 0.0
         rows.append({
             "code": code, "label": pkg.get("label", code),
             "score": round(pct, 4), "evidence": evidence,
+            # abs_score 只统计「运营显式填写且命中」的权重 = 真实证据量。
+            # 留空字段给的满分含义是"不排除"，不能算证据，否则全空时每个包都是 1.00。
+            "abs_score": round(explicit, 4),
         })
-    rows.sort(key=lambda x: x["score"], reverse=True)
-    matched = [r for r in rows if r["score"] >= AUDIENCE_THRESHOLD]
+    # 排序：先相对分（已知字段里的匹配度），再绝对证据量
+    rows.sort(key=lambda x: (x["score"], x["abs_score"]), reverse=True)
+    matched = [r for r in rows
+               if r["score"] >= AUDIENCE_THRESHOLD and r["abs_score"] >= MIN_EVIDENCE]
     top = matched[0] if matched else None
     alts = matched[1:]
     if not top:
