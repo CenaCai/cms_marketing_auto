@@ -26,11 +26,29 @@ import html
 import json
 import os
 import time
+import threading
 import traceback
 import urllib.parse
 import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# HTTP 代理策略（本地 Mautic 与外网 DeepSeek 方向相反，必须分开处理）：
+#   - 本地 Mautic（127.0.0.1:8080）→ 必须 no-proxy 直连。沙箱/企业环境的 http_proxy
+#     指向出网代理，urllib 默认会把 loopback 也路由过去，导致探活/推送超时；
+#     curl 因默认对 loopback 硬绕过代理而正常，所以只有 Python 侧会踩。
+#   - 外网 DeepSeek（api.deepseek.com）→ 必须走 http_proxy 才能出网。
+# 这两者对 opener 的要求相反，而 install_opener 是**进程级全局状态**：
+# 若这里只按环境变量装一个 opener，mautic_client 的 no-proxy opener 会被它覆盖（或反之），
+# 表现为「时好时坏」的推送超时。所以下面两个方向都用**显式局部 opener**，互不干扰：
+#   _LOCAL_OPENER  → Mautic（无代理直连）
+#   _EXT_OPENER    → DeepSeek 等外网（读环境变量代理）
+# 同时写 NO_PROXY（必须「赋值」不能用 setdefault：宿主进程可能已存在不含 127.0.0.1 的
+# NO_PROXY，setdefault 不覆盖），让其它裸 urlopen / 子进程也默认绕过 loopback 代理。
+os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
+os.environ["no_proxy"] = "127.0.0.1,localhost,::1"
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_EXT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler())
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -42,6 +60,27 @@ def cockpit_log(level: str, msg: str) -> None:
     """记录一条开发日志（INFO / WARN / ERROR / OK）。level 用于面板配色。"""
     ts = time.strftime("%H:%M:%S")
     COCKPIT_LOG.append((ts, level, msg))
+def _is_get_log_suppressed(path: str) -> bool:
+    """判断该 GET 是否不必再打一行通用的 `GET <path>`。
+
+    两类 GET 不打通用行：
+    1. 纯页面浏览（首屏 / Brief 表单 / Program 详情页 / favicon / 静态资源）——
+       每次手刷页面都产生若干条，会把 maxlen=200 的开发日志环形缓冲迅速刷满，
+       把真正有诊断价值的业务事件（AI 调用、推送、审批）挤出去。
+       动作类 GET（如 /program/<gid>/campaign/<cid>/feedback?autofill=1）不在此列，仍记录。
+    2. 自带专属日志行的路由（如 /brief/ai-parse-cached 会打「♻️ 命中会话缓存」），
+       再补一条通用行纯属重复。
+    """
+    if path in ("/", "", "/brief", "/favicon.ico", "/brief/ai-parse-cached"):
+        return True
+    if path.startswith("/static/"):
+        return True
+    # /program/<goal_id> 是详情页；更深的路径（campaign/.../feedback 等）是动作类
+    if path.startswith("/program/") and len([x for x in path.split("/") if x]) <= 2:
+        return True
+    return False
+
+
 def _resolve_output_dir() -> str:
     """定位驾驶舱数据目录 output/。优先 HERE/output；若该目录为空（无 program_*.json），
     则向上逐级查找父目录中的 output/，避免项目被嵌套/移动后旧进程仍指向空目录、
@@ -270,9 +309,11 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:var(--brand);box-
 .kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--brand)}
 .kpi-card.gov::before{background:var(--gov)} .kpi-card.warn::before{background:var(--warn)}
 .kpi-card.ok::before{background:var(--ok)} .kpi-card.bad::before{background:var(--bad)}
+.kpi-card.idle::before{background:var(--muted)}
 .kpi-num{font-size:30px;font-weight:700;line-height:1.1;color:var(--ink);margin:8px 0 2px;letter-spacing:-.5px}
 .kpi-card.gov .kpi-num{color:var(--gov)} .kpi-card.warn .kpi-num{color:var(--warn)}
 .kpi-card.ok .kpi-num{color:var(--ok)} .kpi-card.bad .kpi-num{color:var(--bad)}
+.kpi-card.idle .kpi-num{color:var(--muted)}
 .kpi-label{font-size:12px;color:var(--muted);font-weight:500}
 .kpi-sub{font-size:10px;color:var(--muted);margin-top:4px}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -294,7 +335,7 @@ a:hover{text-decoration:underline;color:var(--brand-2)}
 .agent .row{display:flex;flex-wrap:wrap;gap:7px}
 .note{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6}
 .pill{font-size:11px;color:var(--muted)}
-.csum{font-size:12px;line-height:1.65}.csum .pill{font-size:12px}
+.csum{font-size:12px;line-height:1.65;color:var(--ink)}.csum .pill{font-size:12px;color:var(--muted)}
 /* 开发日志面板：仅本地驾驶舱可见，方便开发看发生了什么/哪里报错 */
 .devlog{margin-top:28px;border:1px solid var(--line);border-radius:12px;background:#0e1726;color:#cfe0f2;overflow:hidden}
 .devlog>summary{cursor:pointer;padding:11px 16px;font-size:13px;font-weight:600;color:#cfe0f2;background:#13203a;user-select:none;list-style:decimal inside}
@@ -343,15 +384,19 @@ def _dev_log_panel() -> str:
 # --------------------------- 页面 ---------------------------
 def _kpi_dashboard() -> str:
     """
-    首页 KPI 看板：6 张小卡（自动从 output/program_*.json 聚合）。
-    维度: Program 总数 / Campaign 总数 / 待审 / 执行中 / 已发 / 达标/未达标
+    首页 KPI 看板：5 张小卡（自动从 output/program_*.json 聚合）。
+    维度: Program 总数 / Campaign 总数 / 待审核 / 执行中 / 达标-未达标
+
+    注：原「已发」(proposal.deployed) 卡片已移除 —— 它与 status 是两套体系，
+        不构成状态分区（一个 campaign 可以既 deployed 又 executing）。
+        单列会让「待审 + 执行中 + 达标/未达标」与「已发」重复计数，
+        整行合计 > Campaign 总数，读起来自相矛盾。
     """
     progs = _list_programs()
     n_prog = len(progs)
     n_camp = 0
     n_pending = 0          # status == unreviewed
     n_executing = 0        # executing + approved_idle
-    n_deployed = 0         # proposal.deployed == True
     n_done_met = 0         # done_met
     n_done_below = 0       # done_below
     n_deferred = 0         # deferred (外部事件挂起)
@@ -369,17 +414,14 @@ def _kpi_dashboard() -> str:
                 n_done_below += 1
             elif st == "deferred":
                 n_deferred += 1
-            if (c.get("proposal") or {}).get("deployed"):
-                n_deployed += 1
-    pct_done = (round((n_done_met + n_done_below) * 1000 / n_camp) / 10
-                if n_camp > 0 else 0.0)
     cards = [
         ("brand",  str(n_prog),   "Program",     "已发起的目标数"),
         ("gov",    str(n_camp),   "Campaign",    "总战役数（含未审/执行中/已完成）"),
-        ("warn",   str(n_pending),"待审",         "需运营/审批人介入的 unreviewed"),
+        ("warn",   str(n_pending),"待审核",       "需运营/审批人介入的 unreviewed"),
         ("gov",    str(n_executing),"执行中",     "executing + approved_idle"),
-        ("ok",     str(n_deployed),"已发",        f"已部署到 Mautic（含 KPI 已达/未达 {pct_done}%）" if n_camp else "已部署到 Mautic"),
-        ("ok" if n_done_met >= n_done_below else "bad",
+        # 尚无已完成 campaign 时用中性灰，避免 0/0 被读成"已通过"
+        ("idle" if (n_done_met + n_done_below) == 0
+         else ("ok" if n_done_met >= n_done_below else "bad"),
          f"{n_done_met}<span style='font-size:14px;color:var(--muted)'>/{n_done_below}</span>",
          "达标/未达标", "done_met / done_below"),
     ]
@@ -783,7 +825,7 @@ def _deepseek_completion(system_prompt: str, user_content: str, temperature: flo
     for k, v in cfg["headers"].items():
         req.add_header(k, v)
     try:
-        with _u.urlopen(req, timeout=cfg["timeout"]) as resp:
+        with _EXT_OPENER.open(req, timeout=cfg["timeout"]) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except _ue.HTTPError as e:
         raw = e.read().decode("utf-8", "replace")
@@ -959,6 +1001,11 @@ function doParse(force){
       var msg='♻️ 会话内复用上次识别结果（未调用 DeepSeek）：'+filled+
               ' <a href="#" id="ai-parse-force" style="margin-left:8px">重新识别（忽略缓存）</a>';
       setStatus(msg, true);
+      // 轻量记账：缓存命中是纯前端行为、不向服务端发 AI 请求，过去在开发日志里完全隐形，
+      // 无法区分「真调用过 DeepSeek」还是「复用了上次结果」。这里补一条，仅为可观测性。
+      try{
+        fetch('/brief/ai-parse-cached?fields='+encodeURIComponent((cached.filled||[]).join(',')));
+      }catch(_err){ }
       var forceLink=document.getElementById('ai-parse-force');
       if(forceLink){
         forceLink.onclick=function(ev){
@@ -1081,7 +1128,12 @@ def campaign_count(start_date: str, end_date: str, overall_conv: str) -> dict:
             "reason": f"{base_txt}；{adj_txt}；夹取 [1,5] → {n}"}
 
 
-# ---- 方向 A：增长运营专家团上下文注入 + WorkBuddy 专家 hook（预留） ----
+# ---- 方向 A：增长运营专家团 进程内 crew（已落地，可经 config.json [workbuddy].crew_enabled 关闭） ----
+# 设计：4 个独立 persona、各自一次 LLM 调用、顺序编排，主理人(阿岚)综合裁定。
+#   顺序：growth-data-analyst(可达性/节奏/护栏) → growth-content-strategist 谭心(内容)
+#        → poc-impl(实施校验/资产决策) → 阿岚(主理人合成最终 StrategySpec)
+# 任一子 agent 失败 → 该角色结论降级为 None，仍由主理人基于其余上下文合成（不整链崩溃）。
+# WorkBuddy 专家 hook 仍可作为上层替代（当 crew_enabled=false 且配置了专家运行时时），此处先给自包含可跑实现。
 
 def load_workbuddy_config() -> dict:
     """
@@ -1090,7 +1142,8 @@ def load_workbuddy_config() -> dict:
     返回 {mautic_env, strategy_context:{mautic_assets,history}}；缺省全部启用。
     """
     cfg: dict = {"mautic_env": "local",
-                 "strategy_context": {"mautic_assets": True, "history": True}}
+                 "strategy_context": {"mautic_assets": True, "history": True},
+                 "crew_enabled": True}
     try:
         with open(os.path.join(HERE, "config.json"), encoding="utf-8") as f:
             allcfg = json.load(f)
@@ -1099,6 +1152,8 @@ def load_workbuddy_config() -> dict:
             cfg["mautic_env"] = wb["mautic_env"]
         if isinstance(wb.get("strategy_context"), dict):
             cfg["strategy_context"].update(wb["strategy_context"])
+        if "crew_enabled" in wb:
+            cfg["crew_enabled"] = bool(wb["crew_enabled"])
     except Exception:  # noqa: BLE001
         pass
     return cfg
@@ -1350,8 +1405,8 @@ def _extract_strategy_spec(raw: str):
     return None
 
 
-def _build_strategy_prompt_from_brief(brief: dict) -> str:
-    """注入多画像推断，再拼出自包含策略合成提示词（生成 / 复制共用）。"""
+def _infer_brief(brief: dict) -> dict:
+    """注入多画像推断 + locale 兜底，返回推断后的 brief 副本（生成 / crew 共用，避免 crew 漏推断）。"""
     from goal_intake import infer_audience_package
     brief = dict(brief)
     # 语言/地区由 audience_region 兜底：不含「中国大陆」时强制移除 zh_CN，只走英文
@@ -1370,10 +1425,206 @@ def _build_strategy_prompt_from_brief(brief: dict) -> str:
     brief["audience_package"] = inferred.get("code", "GENERIC")
     brief["audience_packages"] = inferred.get("codes", [])
     brief["audience_match"] = inferred
+    return brief
+
+
+def _build_strategy_prompt_from_brief(brief: dict) -> str:
+    """注入多画像推断，再拼出自包含策略合成提示词（生成 / 复制共用）。"""
+    brief = _infer_brief(brief)
     wb_cfg = load_workbuddy_config()
     mautic_ctx = _collect_mautic_context() if wb_cfg["strategy_context"].get("mautic_assets", True) else ""
     history_ctx = _collect_history_context() if wb_cfg["strategy_context"].get("history", True) else ""
     return build_strategy_prompt(brief, mautic_context=mautic_ctx, history_context=history_ctx)
+
+
+# ---- 增长运营专家团：进程内多 agent crew ----
+
+# 单 agent 合成系统提示词（crew 关闭或子链失败时的兜底，与原行为一致）
+_SINGLE_SYNTH_SYS = ("你是营销 Agent 的 AI策略合成器。只输出严格 JSON，不要解释文字、"
+                     "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。")
+
+
+def _crew_user_brief(brief: dict) -> str:
+    """把 brief 渲染成紧凑的【Brief】文本块，供专家团各 agent 作为 user 内容。"""
+    def _s(v, d=""):
+        if v is None:
+            return d
+        if isinstance(v, (list, tuple)):
+            return "、".join(str(x) for x in v if str(x)) or d
+        return str(v).strip() or d
+    oc = _s(brief.get("overall_conv"))
+    aud_prof = brief.get("audience_profile") or {}
+    aud_lines = []
+    for k, lbl in [("age", "年龄段"), ("gender", "性别"), ("income", "月收入档"),
+                   ("education", "教育经历"), ("industry", "行业"),
+                   ("source", "首选来源"), ("region", "国家/地区")]:
+        v = aud_prof.get(k)
+        if isinstance(v, (list, tuple)):
+            v = "、".join(str(x) for x in v if str(x))
+        else:
+            v = _s(v)
+        if v:
+            aud_lines.append(f"{lbl}={v}")
+    aud_block = "；".join(aud_lines) or "（运营未填）"
+    cc = campaign_count(_s(brief.get("start_date")), _s(brief.get("end_date")), oc)
+    n = cc["n"]
+    cid_list = "、".join(f"c{i}" for i in range(1, n + 1))
+    return (
+        "【Brief】\n"
+        f"- 营销/活动名称：{_s(brief.get('goal_name'), '(未命名)')}\n"
+        f"- 营销目标：{_s(brief.get('objective'), '(未填写)')}\n"
+        f"- 开始~结束：{_s(brief.get('start_date'), '(未填)')} ~ {_s(brief.get('end_date'), '(未填)')}\n"
+        f"- 总体目标转化率：{oc or '0.0'}（0~1；空=仅曝光/品牌）\n"
+        f"- 语言/地区：{_s(brief.get('locale')) or 'zh_CN'}\n"
+        f"- 是否营收目标：{_s(brief.get('is_revenue'), '0')}\n"
+        f"- 预算：{_s(brief.get('budget'), '0')} ¥\n"
+        f"- 目标画像包：{_s(brief.get('audience_package'), 'GENERIC')}\n"
+        f"- 目标人群特点：{aud_block}\n"
+        f"- 约束/红线：{_s(brief.get('constraints')) or '（无）'}\n"
+        f"- 服务端已算 campaign 数量 N={n}（cid：{cid_list}），硬约束必须恰好生成 {n} 个。\n"
+    )
+
+
+# 4 个独立 persona 的 system 提示词（静态，brief 走 user 内容；避免 f-string 转义麻烦）
+_CREW_SYS = {
+    "data": (
+        "你是增长运营专家团的数据增长分析师（growth-data-analyst）。"
+        "只负责「可达性校验 + 发送节奏 + 分群 + 护栏」，不写文案/内容/实施细节。\n"
+        "必须严格按增长运营行为准则：工具无返回数据时写「数据缺失（data_missing）」，禁止凭空估算人数或转化率。\n"
+        "基于下方【Brief】输出严格 JSON（不要解释文字、不要 markdown 包裹，只输出 json.loads 可解析对象）：\n"
+        "{\n"
+        '  "reachable": true,\n'
+        '  "reachability_note": "目标是否数学可达及依据",\n'
+        '  "campaign_count": 3,\n'
+        '  "cadence": {"max_per_24h": 1, "max_per_7d": 3, "quiet_hours": "22:00-09:00", "send_window": {"start": "09:00", "end": "22:00"}},\n'
+        '  "segmentation": {"primary_logic": "seed/broad/no-reach/host-confirm 等天然互斥分群", "broaden": false, "narrow": false},\n'
+        '  "circuit_breaker": {"unsubscribe_rate": "0.003 熔断", "bounce": "监控", "spam_complaint": "监控"},\n'
+        '  "kpi_target": 0.08,\n'
+        '  "needs_operator_review": false,\n'
+        '  "operator_review_notes": ""\n'
+        "}\n"
+        "campaign 数量规则（与画像包解耦，硬约束）：D=周期天数；D≤14→2；15≤D≤45→3；46≤D≤90→4；D>90→5；"
+        "C≥0.10→+1；C 为空或≤0.02→−1；夹取[1,5]。\n"
+        "护栏/红线（必须原样遵守）：免打扰 22:00-09:00；退订率 0.3% 熔断；抑制名单/清洗；"
+        "决策节点分支不可混合 decision+action（否则静默失败 count=0）。\n"
+        "若目标数学不可达或需人拍板，置 reachable=false 且 needs_operator_review=true（在 reachability_note 写明）。\n"
+    ),
+    "content": (
+        "你是增长运营专家团的内容策略师（growth-content-strategist，谭心）。"
+        "只负责「每波次内容策略」，不决定 campaign 数量/节奏（那是数据 agent 的），不写 Mautic 实施细节。\n"
+        "基于【Brief】+【数据可达性结论】，严格按画像包→内容取向映射产出内容"
+        "（命中画像包必须沿用其 levers/tone/CTA，禁止凭感觉改写；命中 0 个用 GENERIC 兜底；命中≥2 个取并集）。\n"
+        "输出严格 JSON（不要解释、不要 markdown 包裹）：\n"
+        "{\n"
+        '  "business_topic": "一句话业务主题，贯穿全案",\n'
+        '  "content_plan": [\n'
+        '    {"cid": "c1", "audience_package": "回显", "content_emphasis": ["..."], "levers": ["..."], "tone": "...", "cta_template": "...", "subject_examples": ["..."], "variant_hints": {"headline": "...", "body": "..."}}\n'
+        "  ],\n"
+        '  "locale_notes": "中英文/落地页语言优先级说明"\n'
+        "}\n"
+        "content_plan 数组长度必须严格等于数据 agent 给的 campaign_count。\n"
+        "business_topic 必须顶层写明并贯穿 objective/name/subject/CTA/落地页文案；主题不清一律不可用。\n"
+    ),
+    "impl": (
+        "你是增长运营专家团落地实施者（poc-impl），负责 Mautic 事件图构建与校验。"
+        "只负责「资产决策 + 实施校验」，不重写策略本体。\n"
+        "基于【Brief】+【Mautic 实例上下文】+【数据/内容结论】，输出严格 JSON（不要解释、不要 markdown 包裹）：\n"
+        "{\n"
+        '  "asset_decisions": [{"kind": "email/segment/page", "ref_or_alias": "...", "action": "reuse|generate", "reason": "..."}],\n'
+        '  "build_plan": {"event_graph_notes": "...", "decision_node_rules": "决策节点分支不混合 decision+action"},\n'
+        '  "pitfalls_checklist": ["PUT 必须传完整对象", "email 字段平铺", "campaign 事件图只能整体 PUT/POST"],\n'
+        '  "validation_gates": ["...编译前校验项"],\n'
+        '  "needs_operator_review": false,\n'
+        '  "operator_review_notes": "需人拍板事项"\n'
+        "}\n"
+        "Mautic 资产清单若缺失（data_missing）→ 一律 generate（新建），needs_operator_review=true 并在 notes 标注"
+        "「未连接 Mautic，复用/新建待人工确认」。命名前缀 CMP_/SEG_/EM_/FORM_，reuse-first。\n"
+    ),
+    "lead": (
+        "你是阿岚（增长操盘手），增长运营专家团主理人。下面已有关三位独立结论："
+        "数据增长分析师(growth-data-analyst)、内容策略师(谭心)、落地实施者(poc-impl)。\n"
+        "你的职责是**综合裁定**成一份可编译的 StrategySpec JSON（供活动驾驶舱编译成 Mautic 事件图）。必须吸收三方结论：\n"
+        "- 节奏/护栏/分群 取 数据 agent；\n"
+        "- 内容/文案/CTA/画像包内容取向 取 内容 agent（谭心）；\n"
+        "- 资产复用/新建决策、校验门禁、pitfalls 取 实施 agent（poc-impl）。\n"
+        "冲突时以治理护栏优先（免打扰/退订熔断/抑制/决策节点规则），并在相关 campaign 的 rationale 说明取舍。\n"
+        "输出严格 StrategySpec JSON（不要解释文字、不要 markdown 包裹，只输出 json.loads 可解析对象），schema：\n"
+        "{goal_id, objective, business_topic, kpi:{metric,target}, locale:[...], audience_package, audience_profile, campaigns:[...], service_sequences:[...]}\n"
+        "campaigns 数量必须严格等于数据 agent 给的 campaign_count；每个 campaign 必带 rationale+evidence（决策纪律）；"
+        "顶层须有 needs_operator_review(bool) 与 operator_review_notes。\n"
+        "命名前缀 CMP_/SEG_/EM_/FORM_；落地页 url 用 http://localhost:8080/s/<cid>-<lang>；"
+        "quiet_hours 原样填约束值（跨午夜用 '-'）。\n"
+    ),
+}
+
+
+def _run_strategy_crew(brief: dict, mautic_context: str = "", history_context: str = "",
+                        temperature: float = 0.0):
+    """
+    增长运营专家团 进程内 crew：4 个独立 persona 顺序编排，各自一次 LLM 调用，主理人(阿岚)综合裁定。
+    顺序：growth-data-analyst → growth-content-strategist(谭心) → poc-impl → 阿岚(主理人合成)。
+    返回 (final_spec_text, meta)：final_spec_text 为阿岚产出的 StrategySpec JSON 字符串（与单 agent 同 schema）；
+      meta={agents:{name:raw}, fell_back:[...], via:"crew"} 供观测。
+    任一子 agent 失败 → 该角色结论降级为 None，仍由主理人基于其余上下文合成（不整链崩溃）。
+    主理人(阿岚)失败 → 抛 RuntimeError，由调用方降级到单 agent 路径。
+    """
+    meta = {"agents": {}, "fell_back": [], "via": "crew"}
+    user_brief = _crew_user_brief(brief)
+
+    # 1) 数据增长分析师：可达性 / 节奏 / 护栏
+    data_raw = None
+    try:
+        data_raw = _deepseek_completion(_CREW_SYS["data"], user_brief, temperature=temperature)
+        meta["agents"]["growth-data-analyst"] = data_raw
+    except Exception as e:  # noqa: BLE001
+        meta["fell_back"].append("growth-data-analyst:%s" % e)
+        _log_ai_error("crew data-analyst 失败 %s: %s" % (type(e).__name__, e))
+
+    # 2) 内容策略师（谭心）：每波内容
+    content_raw = None
+    try:
+        ctx = (user_brief
+               + "\n\n【数据可达性结论·growth-data-analyst】\n"
+               + (data_raw or "（缺失：数据 agent 未返回，请按通用规则推导节奏/护栏）"))
+        content_raw = _deepseek_completion(_CREW_SYS["content"], ctx, temperature=temperature)
+        meta["agents"]["growth-content-strategist"] = content_raw
+    except Exception as e:  # noqa: BLE001
+        meta["fell_back"].append("growth-content-strategist:%s" % e)
+        _log_ai_error("crew content-strategist 失败 %s: %s" % (type(e).__name__, e))
+
+    # 3) 落地实施者（poc-impl）：资产决策 / 实施校验
+    impl_raw = None
+    try:
+        ctx = (user_brief
+               + "\n\n【Mautic 实例上下文】\n" + (mautic_context or "（缺失）")
+               + "\n\n【数据可达性结论·growth-data-analyst】\n" + (data_raw or "（缺失）")
+               + "\n\n【内容策略结论·谭心】\n" + (content_raw or "（缺失）"))
+        impl_raw = _deepseek_completion(_CREW_SYS["impl"], ctx, temperature=temperature)
+        meta["agents"]["poc-impl"] = impl_raw
+    except Exception as e:  # noqa: BLE001
+        meta["fell_back"].append("poc-impl:%s" % e)
+        _log_ai_error("crew poc-impl 失败 %s: %s" % (type(e).__name__, e))
+
+    # 4) 主理人（阿岚）：综合裁定最终 StrategySpec
+    lead_ctx = (user_brief
+                + "\n\n【数据可达性结论·growth-data-analyst】\n" + (data_raw or "（缺失）")
+                + "\n\n【内容策略结论·谭心(growth-content-strategist)】\n" + (content_raw or "（缺失）")
+                + "\n\n【实施校验结论·poc-impl】\n" + (impl_raw or "（缺失）")
+                + "\n\n【Mautic 实例上下文】\n" + (mautic_context or "（缺失）")
+                + "\n\n【历史 program 反馈】\n" + (history_context or "（缺失）"))
+    try:
+        final = _deepseek_completion(_CREW_SYS["lead"], lead_ctx, temperature=temperature)
+    except Exception as e:  # noqa: BLE001
+        meta["fell_back"].append("lead:%s" % e)
+        _log_ai_error("crew lead(阿岚) 失败 %s: %s" % (type(e).__name__, e))
+        raise RuntimeError("专家团主理人(阿岚)合成失败：%s；已降级子 agent：%s"
+                           % (e, meta["fell_back"]))
+    meta["agents"]["lead(阿岚)"] = final
+    if meta["fell_back"]:
+        cockpit_log("WARN", "crew 部分子 agent 降级：%s" % meta["fell_back"])
+    else:
+        cockpit_log("OK", "crew 合成完成 agents=%s" % list(meta["agents"].keys()))
+    return final, meta
 
 
 def _brief_from_parsed(parsed: dict, objective: str) -> dict:
@@ -1601,26 +1852,29 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"  for(var code in _PKG_MATCH){{"
                 f"    var pkg=_PKG_MATCH[code];"
                 f"    if(pkg.runtime_only) continue;"
-                f"    var score=0,total=0,ev=[];"
+                f"    var score=0,total=0,ev=[],expl=0;"
                 f"    for(var i=0;i<fields.length;i++){{var f=fields[i];"
                 f"      var ml=pkg.match[f];"
                 f"      if(!ml) continue;  /* 画像包未定义该字段 → 不计入分母 */"
                 f"      total+=_W[f];"
                 f"      var v=vals[f];"
+                f"      var has=Array.isArray(v)?(v.length>0):!!v;"
+                f"      if(!has){{ score+=_W[f]; continue; }}  /* 留空 = 全选 = 不限受众 → 视为命中，给满分（不是 0） */"
                 f"      var hit=false;"
                 f"      if(Array.isArray(v)){{hit=v.some(function(x){{return ml.indexOf(x)>=0;}});}}"
                 f"      else{{hit=!!(v && ml.indexOf(v)>=0);}}"
-                f"      if(hit){{score+=_W[f]; ev.push(f+'='+(Array.isArray(v)?v.join(','):v));}}}}"
+                f"      if(hit){{score+=_W[f]; expl+=_W[f]; ev.push(f+'='+(Array.isArray(v)?v.join(','):v));}}}}"
                 f"    var pct=total>0?score/total:0;"
-                f"    rows.push({{code:code,label:pkg.label,score:pct,evidence:ev}});}}"
-                f"  rows.sort(function(a,b){{return b.score-a.score;}}); return rows;}}"
+                f"    rows.push({{code:code,label:pkg.label,score:pct,abs:expl,evidence:ev}});}}"
+                f"  rows.sort(function(a,b){{return (b.score-a.score)||(b.abs-a.abs);}}); return rows;}}"
                 f"function _updateMatch(){{"
                 f"  var rows=_computeMatch();"
-                f"  var matched=rows.filter(function(x){{return x.score>=0.6;}});"
+                f"  var matched=rows.filter(function(x){{return x.score>=0.6 && x.abs>=0.20;}});  /* abs>=0.20：防止只中 1 个弱字段（gender/source/region）就判满分 */"
                 f"  var box=document.getElementById('audience-match-result');"
                 f"  if(matched.length===0){{"
                 f"    var top=rows[0];"
-                f"    box.innerHTML='<span class=\"b-warn\">无画像包匹配（最高分 '+(top?top.score.toFixed(2):'0.00')+' &lt; 0.60）</span> → 使用 <b>GENERIC 通用兜底</b>';"
+                f"    box.innerHTML='<span class=\"b-warn\">无画像包匹配（最接近 <b>'+(top?top.code:'-')+'</b> '+(top?top.label:'')+'：'+(top?top.score.toFixed(2):'0.00')+' &lt; 0.60）</span> → 使用 <b>GENERIC 通用兜底</b>'"
+                f"      +'<div class=\"note\" style=\"margin-top:4px\">留空 = 全选（该字段计满分），但只有<strong>显式填写且命中</strong>的字段才算证据；命中需证据权重 ≥0.20（补填 age / income 等强字段即可）。</div>';"
                 f"    return;}}"
                 f"  var top=matched[0];"
                 f"  var badges=matched.map(function(m){{return '<span class=\"b-ok\"><b>'+m.code+'</b></span> '+m.label+' — '+m.score.toFixed(2);}}).join('；');"
@@ -1878,6 +2132,148 @@ def _strategy_summary(s: dict, idx: dict = None) -> str:
     return base + why
 
 
+# 节点类型 → 中文标签（粗流程图给非开发看，英文类型仍保留在 <title> 悬浮提示）
+_CN_LABEL = {
+    "decision.segment": "分群判定", "guardrail": "合规护栏",
+    "sourcemarketing.frequency_gate": "频次闸门", "anchor_arbitration": "锚点仲裁",
+    "email.send": "发送邮件", "decision.variant": "变体判定",
+    "email.variant": "变体邮件", "wait": "等待", "observer.click": "点击观测",
+    "decision.clicked": "点击分支", "page.hit": "落地页访问", "tag.write": "打标签",
+    "decision.form_submit": "表单提交判定", "form.submit": "表单提交",
+    "log_channel_send": "渠道日志", "sms.send.reserved": "短信(预留)",
+    "lead.changetags": "打标签",
+}
+_SUF_LABEL = {"send": "发送", "click": "点击决策", "changetags": "打标签", "submit": "提交判定", }
+
+
+def _cn_label(t: str) -> str:
+    if t in _CN_LABEL:
+        return _CN_LABEL[t]
+    suf = t.split(".")[-1]
+    return _SUF_LABEL.get(suf, t)
+
+
+def _graph_sequence(program: dict, c: dict) -> str:
+    """时序图：驾驶舱(Cockpit) 如何调用 Mautic、调用了哪些真实资产 ID。
+    数据来源：proposal.deploy_result / mautic_events / strategy 资产 ID。
+    未推送的 campaign（deploy_result 无 campaign_id）显示「待生成」，不编造 ID。"""
+    prop = c.get("proposal") or {}
+    s = c.get("strategy") or {}
+    dr = prop.get("deploy_result") or {}
+    cid = dr.get("campaign_id")
+    events = prop.get("mautic_events") or []
+    email_id = s.get("email_id")
+    email_followup_id = s.get("email_followup_id")
+    lp_id = s.get("landing_page_id")
+    form_id = s.get("form_id")
+    seg = s.get("segment")
+    cam_name = (prop.get("campaign") or {}).get("name") or s.get("campaign_name") or c.get("cid", "")
+    # ---- 消息序列 (dir: C2M=驾驶舱→Mautic, M2C=Mautic→驾驶舱) ----
+    L = []
+    if cid:
+        L.append(("C2M", "POST /api/campaigns/new",
+                  f"携带 {len(events)} 个事件(new1..new{len(events)}) → 返回 campaign_id={cid}"))
+        L.append(("M2C", "201 Created", f"campaign #{cid} 已建（{_esc(str(cam_name))}）"))
+    else:
+        L.append(("C2M", "POST /api/campaigns/new",
+                  f"携带 {len(events)} 个事件 → campaign_id=（推送后由 Mautic 生成）"))
+    for e in sorted(events, key=lambda x: x.get("order", 0)):
+        et = e.get("type")
+        p = e.get("properties") or {}
+        eid = e.get("id")
+        if et == "email.send":
+            aid = p.get("email") or email_id
+            L.append(("C2M", f"事件 {eid} · email.send", f"发送邮件 → email_id={aid if aid else '（待生成）'}"))
+        elif et == "email.click":
+            aid = p.get("email") or email_id
+            L.append(("C2M", f"事件 {eid} · email.click 决策", f"是否点击 → email_id={aid if aid else '?'}"))
+        elif et == "lead.changetags":
+            L.append(("C2M", f"事件 {eid} · lead.changetags",
+                      f"打标签 {_esc(json.dumps(p.get('add_tags', []), ensure_ascii=False))}"))
+        elif et == "form.submit":
+            fs = p.get("forms") or ([form_id] if form_id else [])
+            L.append(("C2M", f"事件 {eid} · form.submit 决策",
+                      f"是否提交表单 → form_id={', '.join(str(x) for x in fs) if fs else '（待生成）'}"))
+        else:
+            L.append(("C2M", f"事件 {eid} · {et}", _esc(str(e.get("name", ""))[:44])))
+    if cid:
+        L.append(("C2M", f"POST /api/campaigns/{cid}/edit", "isPublished=true（审批通过后上线）"))
+    else:
+        L.append(("C2M", "POST /api/campaigns/<id>/edit", "isPublished=true（审批通过后上线）"))
+    # ---- 资产摘要（底部）----
+    asset_summary = " | ".join([
+        f"campaign_id={cid if cid else '待生成'}",
+        f"email主/跟进={email_id or '?'}/{email_followup_id or '?'}",
+        f"landing_page={lp_id or '?'}",
+        f"form={form_id or '?'}",
+        f"segment={_esc(str(seg))}(reuse)",
+    ])
+    # ---- SVG ----
+    LX, RX = 168, 552
+    top = 56
+    row_h = 42
+    n = len(L)
+    H = top + n * row_h + 96
+    W = 720
+    svg = [f"<svg viewBox='0 0 {W} {H}' width='{W}' height='{H}' "
+           f"style='background:#fbfcfe;border:1px solid var(--line);border-radius:10px;"
+           f"max-width:100%;height:auto' font-family='inherit' font-size='11'>"]
+    svg.append("<defs><marker id='arw' markerWidth='8' markerHeight='8' refX='6' refY='3' orient='auto' "
+               "markerUnits='userSpaceOnUse'><path d='M0,0 L6,3 L0,6 Z' fill='#6b7280'/></marker></defs>")
+    svg.append(f"<rect x='{LX-70}' y='12' width='140' height='30' rx='8' fill='#185fa5'/>"
+               f"<text x='{LX}' y='32' text-anchor='middle' fill='#fff' font-weight='600'>驾驶舱 8090</text>")
+    svg.append(f"<rect x='{RX-70}' y='12' width='140' height='30' rx='8' fill='#1d9e75'/>"
+               f"<text x='{RX}' y='32' text-anchor='middle' fill='#fff' font-weight='600'>Mautic 8080</text>")
+    svg.append(f"<line x1='{LX}' y1='{top-8}' x2='{LX}' y2='{H-72}' stroke='#185fa5' "
+               f"stroke-dasharray='4 3' stroke-width='1.2'/>")
+    svg.append(f"<line x1='{RX}' y1='{top-8}' x2='{RX}' y2='{H-72}' stroke='#1d9e75' "
+               f"stroke-dasharray='4 3' stroke-width='1.2'/>")
+    for i, (d, method, detail) in enumerate(L):
+        y = top + i * row_h + row_h / 2
+        x1, x2, col = (LX, RX, "#185fa5") if d == "C2M" else (RX, LX, "#1d9e75")
+        svg.append(f"<circle cx='26' cy='{y}' r='10' fill='#fff' stroke='{col}' stroke-width='1.4'/>"
+                   f"<text x='26' y='{y+4}' text-anchor='middle' fill='{col}' "
+                   f"font-size='10' font-weight='600'>{i+1}</text>")
+        svg.append(f"<line x1='{x1}' y1='{y}' x2='{x2}' y2='{y}' stroke='{col}' "
+                   f"stroke-width='1.4' marker-end='url(#arw)'/>")
+        svg.append(f"<text x='{(LX+RX)/2}' y='{y-6}' text-anchor='middle' fill='{col}' "
+                   f"font-size='10.5' font-weight='600'><title>{_esc(detail)}</title>{_esc(method)}</text>")
+        svg.append(f"<text x='{(LX+RX)/2}' y='{y+14}' text-anchor='middle' fill='#52606d' "
+                   f"font-size='9.5'>{_esc(detail[:56])}</text>")
+    by = H - 56
+    svg.append(f"<rect x='16' y='{by}' width='{W-32}' height='44' rx='8' fill='#eef4fb' stroke='#cfe0f2'/>")
+    svg.append(f"<text x='26' y='{by+18}' fill='#1c2330' font-size='10.5' font-weight='600'>"
+               f"真实资产 ID（调用依据）</text>")
+    svg.append(f"<text x='26' y='{by+34}' fill='#33415c' font-size='9.5'>{asset_summary}</text>")
+    svg.append("</svg>")
+    inner = "".join(svg)
+    return f"<div style='max-height:680px;overflow:auto;border-radius:10px'>{inner}</div>"
+
+
+def _event_graph_toggle(program: dict, c: dict, cid) -> str:
+    """事件图双视图切换：🅰 时序图（怎么调用·什么ID）/ 🅱 粗流程图（框架·中文）。"""
+    prop = c.get("proposal") or {}
+    graph = prop.get("graph") or []
+    seq = _graph_sequence(program, c)
+    flow = _graph_svg(graph) if graph else "<p class='note'>（事件图为空）</p>"
+    n = len(graph)
+    cid_e = _esc(str(cid))
+    return (f"<details><summary class='pill'>事件图（{n} 节点 · 时序图 / 粗流程图）</summary>"
+            f"<div style='display:flex;gap:8px;margin:8px 0'>"
+            f"<button type='button' class='evg-tab' data-view='seq' "
+            f"style='background:#eef2f7;color:#1c2330;border:1px solid var(--line);border-radius:8px;"
+            f"padding:6px 12px;cursor:pointer;font-size:12px' "
+            f"onclick=\"evgSwitch('{cid_e}','seq')\">🅰 时序图（怎么调用·什么ID）</button>"
+            f"<button type='button' class='evg-tab active' data-view='flow' "
+            f"style='background:#185fa5;color:#fff;border:1px solid #185fa5;border-radius:8px;"
+            f"padding:6px 12px;cursor:pointer;font-size:12px' "
+            f"onclick=\"evgSwitch('{cid_e}','flow')\">🅱 流程图-框架</button>"
+            f"</div>"
+            f"<div id='evg-seq-{cid_e}' style='display:none'>{seq}</div>"
+            f"<div id='evg-flow-{cid_e}'>{flow}</div>"
+            f"</details>")
+
+
 def _graph_svg(graph: list) -> str:
     """Mautic 风格竖向时间线：入口(source)在顶，action 纵向串联，decision 画菱形，
     if_true/if_false 用绿/橙虚线分叉，配色对齐 Mautic。
@@ -1897,12 +2293,15 @@ def _graph_svg(graph: list) -> str:
     while cur and cur not in seen:
         seen.add(cur)
         spine.append(cur)
-        cur = _next_of(cur)
+        # 防御：跨 campaign 的 next 引用（如 c1 图里 next="c2"）在本图无对应节点，
+        # 不能把幽灵 id 塞进 spine，否则后续 by_id[nid] 直接 KeyError 让整页崩溃。
+        _nxt = _next_of(cur)
+        cur = _nxt if (_nxt in by_id) else None
     branch = [n["id"] for n in nodes if n["id"] not in set(spine)]
 
     W, H = 130, 36                       # 节点框（原 156x46，压缩以适配多节点）
     HW, HH = W / 2, H / 2                # 半宽/半高（菱形同外接框）
-    COL_X, BR_X = 50, 282                # 主链列 x / 分支列 x
+    COL_X, BR_X = 78, 310                # 主链列 x / 分支列 x（右移补左缘，避免节点左缘被 viewBox 裁掉）
     TOP, ROW = 26, 52                    # 顶部留白 / 行距（原 34/66）
     pos = {}
     for i, nid in enumerate(spine):
@@ -1946,13 +2345,13 @@ def _graph_svg(graph: list) -> str:
         return s, e
 
     total_rows = max(len(spine), len(spine) + br_idx)
-    vw = BR_X + W + 40
+    vw = BR_X + HW + 14                 # 紧贴内容右缘 + 14 边距，使图表在 viewBox 内左右居中（左缘 COL_X-HW≈13）
     vh = TOP * 2 + total_rows * ROW
     # 按原始尺寸渲染（不再 width:100% 放大——18 节点时会被撑到 2300+px）；
     # max-width:100% + height:auto 保证窄屏仍可等比缩小。
     svg = [f"<svg viewBox='0 0 {vw} {vh}' width='{vw}' height='{vh}' "
            f"style='background:#fbfcfe;border:1px solid var(--line);border-radius:10px;"
-           f"max-width:100%;height:auto' "
+           f"max-width:100%;height:auto;display:block;margin:0 auto' "
            f"font-family='inherit' font-size='10'>"]
     svg.append("<defs>"
                "<marker id='arw' markerWidth='8' markerHeight='8' refX='6' refY='3' orient='auto' "
@@ -1975,7 +2374,9 @@ def _graph_svg(graph: list) -> str:
     # ---- 连线 ----
     order = spine + branch
     for nid in order:
-        nd = by_id[nid]
+        nd = by_id.get(nid)
+        if nd is None:
+            continue
         c = pos[nid]
         t = nd.get("type", "")
         p = nd.get("params", {}) or {}
@@ -2010,7 +2411,9 @@ def _graph_svg(graph: list) -> str:
 
     # ---- 节点 ----
     for nid in order:
-        nd = by_id[nid]
+        nd = by_id.get(nid)
+        if nd is None:
+            continue
         cx, cy = pos[nid]
         fill, stroke = _color(nd)
         t = nd.get("type", "")
@@ -2023,7 +2426,7 @@ def _graph_svg(graph: list) -> str:
                 f"<polygon points='{cx},{cy-HH} {cx+HW},{cy} {cx},{cy+HH} {cx-HW},{cy}' "
                 f"fill='{stroke}' stroke='{fill}' stroke-width='1.6'/>"
                 f"<text x='{cx}' y='{cy-4}' text-anchor='middle' fill='{fill}' "
-                f"font-weight='600' font-size='10'>{_esc(_short(t))}</text>"
+                f"font-weight='600' font-size='10'>{_esc(_cn_label(t))}</text>"
                 f"<text x='{cx}' y='{cy+12}' text-anchor='middle' fill='#1c2330' "
                 f"font-size='8'>{_esc(nd['id'])}</text>")
         else:
@@ -2031,7 +2434,7 @@ def _graph_svg(graph: list) -> str:
                 f"<rect x='{cx-W/2}' y='{cy-H/2}' width='{W}' height='{H}' rx='9' "
                 f"fill='{stroke}' stroke='{fill}' stroke-width='1.5'/>"
                 f"<text x='{cx}' y='{cy-4}' text-anchor='middle' fill='{fill}' "
-                f"font-weight='600' font-size='10'>{_esc(_short(t))}</text>"
+                f"font-weight='600' font-size='10'>{_esc(_cn_label(t))}</text>"
                 f"<text x='{cx}' y='{cy+13}' text-anchor='middle' fill='#1c2330' "
                 f"font-size='8'>{_esc(nd['id'])}</text>")
         if transparent:
@@ -2073,6 +2476,10 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
             concl = "待建（占位）"
         elif resolved:
             concl = "调用已有"
+        elif not avail:
+            # Mautic 不可达（索引拉取失败/超时）→ 无法判定「复用是否存在」，
+            # 统一退化为「新建（按需）」，不再误报「调用已有（未找到）」。
+            concl = "新建（按需）"
         elif mode == "propose":
             # propose = 有则复用、无则推送时 ensure 创建；未解析时等同于「按需新建」
             concl = "新建（按需）"
@@ -2097,7 +2504,7 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
             if lk:
                 ref_cell = f"<code>{_esc(ref)}</code> {lk}"
         return (f"<tr><td>{kind}</td><td>{ref_cell}</td>"
-                f"<td>{_esc(mode)}</td><td>{concl}</td><td>{real}</td></tr>")
+                f"<td>{real}</td></tr>")
 
     rows = ""
     for c in program["campaigns"]:
@@ -2109,17 +2516,18 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
         lp = s.get("landing_page_ref", "")
         form_ref = s.get("form_ref", "")
         rows += _row("email", em_ref, em_mode)
-        rows += _row("分群", seg, seg_mode)
+        # 分群（contact source）与落地页/表单一致走「有则复用、无则推送时 ensure 创建」：
+        # push() 里 ensure_segment 是 find-or-create，故模式用 propose 而非 reuse ——
+        # 未解析时结论为「新建（按需）」而非「调用已有（未找到）」（与 2359/2370 注释的治理口径一致）。
+        rows += _row("分群", seg, "propose" if seg_mode != "generate" else seg_mode)
         if lp:
             # 着陆页与表单均按「有则复用、无则推送时 ensure 创建」处理（find-or-create），
             # 与分群/邮件一致；故模式用 propose 而非 reuse —— 未解析时结论应为「新建（按需）」，
             # 而非「调用已有（未找到）」。found→超链接、not found→新建，符合运营预期。
             rows += _row("着陆页", lp, "propose")
         else:
-            rows += ("<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
-                     "<td>新建</td><td>未连</td></tr>" if not avail else
-                     "<tr><td>着陆页</td><td><code>—</code></td><td>generate</td>"
-                     "<td>新建</td><td>✗</td></tr>")
+            rows += ("<tr><td>着陆页</td><td><code>—</code></td><td>未连</td></tr>" if not avail else
+                     "<tr><td>着陆页</td><td><code>—</code></td><td>✗</td></tr>")
         # 表单：与邮件/落地页同属「内容资产」，按「哪个 campaign 用到就在哪个 campaign 显示」原则
         # 逐 campaign 展示（不特殊标注为独立/共享基础设施）。
         if form_ref:
@@ -2127,16 +2535,13 @@ def _mautic_asset_table(program: dict, idx: dict = None) -> str:
             # 未解析时结论为「新建（按需）」而非「调用已有（未找到）」。
             rows += _row("表单", form_ref, "propose")
         else:
-            rows += ("<tr><td>表单</td><td><code>—</code></td><td>generate</td>"
-                     "<td>新建</td><td>未连</td></tr>" if not avail else
-                     "<tr><td>表单</td><td><code>—</code></td><td>generate</td>"
-                     "<td>新建</td><td>✗</td></tr>")
+            rows += ("<tr><td>表单</td><td><code>—</code></td><td>未连</td></tr>" if not avail else
+                     "<tr><td>表单</td><td><code>—</code></td><td>✗</td></tr>")
     note = ("（未连接 Mautic 或缺少凭证：以下为基于策略规格的预期清单，无外链）" if not avail
             else "（已连接 Mautic，✓=实存 / 待建=推送时自动创建 / ✗=策略声明复用但 Mautic 中不存在；ref 可点击跳转详情页）")
-    return (f"<div class='card'><h3>Mautic 资产清单（新建 vs 调用）</h3>"
+    return (f"<div class='card'><h3>campaign资产清单</h3>"
             f"<p class='note'>{_esc(note)}</p>"
-            f"<table><tr><th>类型</th><th>引用(ref)</th><th>模式</th>"
-            f"<th>结论</th><th>实存</th></tr>{rows}</table></div>")
+            f"<table><tr><th>类型</th><th>名字</th><th>实存</th></tr>{rows}</table></div>")
 
 
 # --------------------------- Mautic 外链（资产已在 :8080/s/ 生成 → 跳转详情页） ---------------------------
@@ -2232,22 +2637,40 @@ def _asset_note(kind: str, ref, idx: dict) -> str:
 
 
 def _mautic_campaign_name(campaign_id) -> str:
-    """返回 Mautic campaign 的实时名字（单个 GET、不缓存，保证改名后同步到 Program 页）；
-    失败回退列表缓存；再失败返回空串。"""
+    """返回 Mautic campaign 的实时名字（保证改名后同步到 Program 页）；
+    失败/超时（单 php-cgi worker 常卡死）→ 返回空串，由调用方回退语义名，绝不拖挂 /program 渲染。"""
     if not campaign_id:
         return ""
-    nm = (mautic_get_campaign(campaign_id).get("name") or "").strip()
-    if not nm:
-        nm = mautic_read_campaigns("local").get("by_id", {}).get(str(campaign_id), "")
-    return nm
+    box = {}
+    def _run():
+        try:
+            nm = (mautic_get_campaign(campaign_id).get("name") or "").strip()
+            if not nm:
+                nm = mautic_read_campaigns("local").get("by_id", {}).get(str(campaign_id), "")
+            box["v"] = nm
+        except Exception:  # noqa: BLE001
+            box["v"] = ""
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(3)
+    if t.is_alive():
+        cockpit_log("WARN", f"mautic_get_campaign({campaign_id}) 超时（>3s，回退语义名）")
+        return ""
+    return box.get("v", "")
 
 
-def _mautic_reachable(env="local", timeout=10):
+def _mautic_reachable(env="local", timeout=30):
     """推送前的轻量探活：无凭证 GET /api/segments?limit=1。
 
     目的：把『Mautic 没启动』这类连接错误，从 push() 内部的 segment/form 逻辑错误里
     分离出来，避免误导用户去排查并不存在的 segment / 资产问题（正是 c1 推送失败那条
     「常见原因」静态清单会造成的误导）。
+
+    timeout=30 不要调回 10：本探活打的是 /api/segments（要过完整 Symfony API 栈），
+    prod 容器冷编译 / 单 php-cgi worker 忙时首请求实测 30-60s。用 10s 会把「慢」误判成
+    「不可达」，页面却显示「Mautic 没启动」，用户会去找根本不存在的故障（2026-09-11 实测）。
+    本函数只被推送路径调用（服务序列 / campaign 创建 / legacy 推送），放宽不拖慢页面渲染；
+    页面渲染走 _mautic_reachable_safe（显式 timeout=5，超即降级 data_missing）。
 
     返回 (ok, detail)：
       · ok=True  → 服务在线（含 401 未授权——端口通，交给 push() 正常报鉴权错）
@@ -2262,8 +2685,11 @@ def _mautic_reachable(env="local", timeout=10):
         return (True, "")
     url = f"{base}/api/segments?limit=1"
     req = urllib.request.Request(url, method="GET")
+    # 用与 Mautic 调用同一个「无代理」局部 opener（_LOCAL_OPENER）：直连 127.0.0.1:8080，
+    # 彻底绕过 http_proxy 对 loopback 的拦截；不依赖全局默认 opener / 环境变量，
+    # 避免 import 顺序或宿主 NO_PROXY 缺失导致仍走代理。
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _LOCAL_OPENER.open(req, timeout=timeout) as resp:
             resp.read()  # 读到任何响应即代表服务在线（401 也算）
         return (True, "")
     except urllib.error.HTTPError:
@@ -2304,6 +2730,145 @@ def _resolve_program_project(p, env="local"):
         p["mautic_project_id"] = pid
         _save_program(p)
     return pid
+
+
+def _resolve_program_project_safe(p, env="local", timeout=6):
+    """尽力在编译期为 program 建 Mautic project；任何超时 / 异常都安全降级为 None，绝不拖挂请求。
+
+    原因：Mautic 不可达（沙箱 / 断网 / DNS 黑洞）时，底层 urllib 的 connect 与 DNS 解析
+    不一定受 socket timeout 约束，会长时间阻塞，把「生成 Program」整个 HTTP 请求拖挂，
+    浏览器侧表现为「点击生成后报错 / 超时」。用守护线程 + join(timeout) 兜底，到时即跳过，
+    project 留待推送时惰性补建（_resolve_program_project 自身已支持降级）。
+    """
+    box = {}
+
+    def _run():
+        try:
+            _resolve_program_project(p, env)
+        except Exception as _e:  # noqa: BLE001
+            box["err"] = f"{type(_e).__name__}: {_e}"
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        cockpit_log("WARN", "brief 建 Mautic project 超时（>%ss，降级 None，推送时惰性补建）" % timeout)
+        return
+    if box.get("err"):
+        cockpit_log("WARN", f"brief 建 Mautic project 失败（降级 None，推送时惰性补建）：{box['err']}")
+
+
+def _mautic_reachable_safe(env="local", timeout=5):
+    """线程安全版 _mautic_reachable：探活不可达 / 超时时安全降级为 (False, 原因)，
+    绝不拖挂请求线程。
+
+    原因：远程 Mautic 在 DNS 黑洞下 connect / DNS 解析不受 socket timeout 约束会长时间阻塞，
+    若直接在请求线程里 _mautic_reachable 会重演「点生成挂死」。守护线程 + join(timeout)
+    兜底，到时即降级为不可达（与 data_missing 设计一致：资产新建延到推送时惰性补建）。
+    """
+    box = {}
+
+    def _run():
+        try:
+            box["v"] = _mautic_reachable(env, timeout)
+        except Exception as _e:  # noqa: BLE001
+            box["err"] = f"{type(_e).__name__}: {_e}"
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        cockpit_log("WARN", "mautic 探活超时（>%ss，降级不可达，资产延后惰性解析）" % timeout)
+        return (False, "探活超时")
+    if box.get("err"):
+        return (False, box["err"])
+    return box.get("v", (False, "探活无结果"))
+
+
+_EMPTY_IDX = {"available": False, "email": {}, "segment": {}, "page": {}, "form": {}}
+
+
+def _mautic_asset_index_safe(env="local", timeout=6):
+    """线程安全版 _mautic_asset_index：在请求线程里同步拉 Mautic 资产索引会受不可达 / 慢
+    Mautic 拖挂（_mautic_reachable 在沙箱里偶发误判可达），统一用守护线程 + join(timeout)
+    兜底，超时 / 异常即降级空索引（外链不显示，不影响 /program 页面渲染）。"""
+    box = {}
+
+    def _run():
+        try:
+            box["v"] = _mautic_asset_index()
+        except Exception as _e:  # noqa: BLE001
+            box["err"] = f"{type(_e).__name__}: {_e}"
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        cockpit_log("WARN", "mautic 资产索引获取超时（>%ss，降级空索引）" % timeout)
+        return dict(_EMPTY_IDX)
+    if box.get("err"):
+        cockpit_log("WARN", f"mautic 资产索引获取失败（降级空索引）：{box['err']}")
+        return dict(_EMPTY_IDX)
+    return box.get("v", dict(_EMPTY_IDX))
+
+
+def _merge_known_assets(idx: dict, program: dict) -> dict:
+    """把 Program 内各 campaign / service 序列「自己已知」的资产 id 并入资产索引。
+
+    为什么需要：本机 Mautic 是单 php-cgi worker，segments / pages 全量列表接口经常 >30s 超时、
+    emails ~18s，导致 _mautic_asset_index（bulk 列表）经常拉不到 → 资产表与卡片外链全部退化为
+    「未连接 / 调用已有（未找到）」。但 Program 自己的 strategy（email_id / landing_page_id /
+    form_id）与 deploy_result.ensure_log 已经记录了真实资产 id（推送时 ensure_* 返回的），
+    直接并入索引即可让外链正确渲染，无需依赖慢查询；live 索引仅作补充。"""
+    if not isinstance(idx, dict):
+        idx = {"available": False, "email": {}, "segment": {}, "page": {}, "form": {}}
+    for _k in ("email", "segment", "page", "form"):
+        idx.setdefault(_k, {})
+    _found = False
+
+    def _add(kind_map: str, name, aid):
+        nonlocal _found
+        if name and aid is not None:
+            idx[kind_map][str(name)] = aid
+            _found = True
+
+    for c in (program.get("campaigns") or []) + (program.get("service_sequences") or []):
+        if not isinstance(c, dict):
+            continue
+        s = c.get("strategy") or {}
+        prop = c.get("proposal") or {}
+        dr = prop.get("deploy_result") or {}
+        log = dr.get("ensure_log") or []
+        for it in log:
+            a = it.get("asset")
+            nm = it.get("name")
+            aid = it.get("id")
+            if a == "email":
+                _add("email", nm, aid)
+            elif a == "segment":
+                _add("segment", nm, aid)
+            elif a == "landing_page":
+                _add("page", nm, aid)
+            elif a == "form":
+                _add("form", nm, aid)
+        # strategy 字段（覆盖 / 补充）
+        if s.get("email_ref") and s.get("email_id") is not None:
+            _add("email", s["email_ref"], s["email_id"])
+        if s.get("landing_page_ref") and s.get("landing_page_id") is not None:
+            _add("page", s["landing_page_ref"], s["landing_page_id"])
+        if s.get("form_ref") and s.get("form_id") is not None:
+            _add("form", s["form_ref"], s["form_id"])
+        if s.get("segment"):
+            seg_id = None
+            for it in log:
+                if it.get("asset") == "segment" and it.get("name") == s.get("segment"):
+                    seg_id = it.get("id")
+            if seg_id is None and s.get("segment_id") is not None:
+                seg_id = s["segment_id"]
+            _add("segment", s["segment"], seg_id)
+    if _found:
+        idx["available"] = True
+    return idx
 
 
 def _check_push_result(result: dict):
@@ -2591,7 +3156,11 @@ def _program_body(program: dict, msg: str = "") -> str:
     # campaign 流水线
     cards = ""
     campaigns = program["campaigns"]
-    idx = _mautic_asset_index()  # Mautic 资产 ref→id 索引（外链用；未连接则为空）
+    # Mautic 资产索引：统一走线程安全包裹，超时 / 不可达即降级空索引，绝不拖挂 /program 渲染。
+    # 与 data_missing 设计一致：资产外链延后到推送时惰性补建（idx 为空时外链不显示）。
+    # 资产索引：先取 live 索引（本机 Mautic 列表接口极慢，常超时 → 空），再把 Program 自身已知的
+    # 真实资产 id（strategy + ensure_log）并入，保证外链/结论不退化（详见 _merge_known_assets）。
+    idx = _merge_known_assets(_mautic_asset_index_safe("local", timeout=4), program)
     for i, c in enumerate(campaigns):
         prop = c["proposal"]
         ap = prop.get("approval")
@@ -2609,13 +3178,19 @@ def _program_body(program: dict, msg: str = "") -> str:
                     f"（限定 ≤{sc_c.get('send_within_minutes') or 0}min 内发出）；审批人可驳回。</p>")
             ack_c = ("<label style='margin:6px 0 2px'><input type='checkbox' name='ack_quiet_exempt' "
                      "style='width:auto;display:inline-block'> 我已确认豁免静默窗</label>")
-        if ap and ap.get("status") == "APPROVED":
+        # 只有「审批仍有效」时才隐藏审批表单。判据必须用 is_valid(ap)（含 30min TTL），
+        # 不能只看 status=="APPROVED"：否则审批一过期就同时满足
+        #   UI：status==APPROVED → 隐藏「重新审批」表单
+        #   推送：verify_push → 「审批已超时(EXPIRED)，需重新审批」
+        # 两者互锁，campaign 永久卡死（既不能重新审批，也推不出去）。
+        if ap and is_valid(ap):
             approve_f = ""
         else:
+            _ap_lbl = "重新审批（上次已超时）" if (ap and ap.get("status") == "APPROVED") else "审批通过"
             approve_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/approve' "
                          f"style='margin:8px 0'>"
                          f"<input name='approver' placeholder='审批人(真人)' style='width:160px;display:inline-block'>"
-                         f"{ack_c}<button class='btn sm' type='submit'>审批通过</button></form>")
+                         f"{ack_c}<button class='btn sm' type='submit'>{_ap_lbl}</button></form>")
         push_f = ""  # 合并到下方 create_f（"创建并推送到 Mautic"），避免与"推送"按钮重复造成混淆
         # 新阶段创建按钮（#8）：首波 / 上一波「已审批」即可点（不再要求上一波完成+回填，避免 waterfall 死锁）；
         # 已审批待执行(approved_idle) 也显示按钮 → 推送失败后可从 UI 重新推送（不再被门禁关在门外）。
@@ -2802,6 +3377,28 @@ def _program_body(program: dict, msg: str = "") -> str:
             cname_html = f"<code>{_esc(c['cid'])}</code>"
         # 资产外链去重：邮件/分群/落页 已在卡片主行 _strategy_summary 内渲染为可跳转 :8080 详情页；
         # 表单(_form_ref) 此前仅在本块出现，删除整块后表单详情将不再有跳转入口（如需保留可并入主行）。
+        # 上游解锁判定：串行的下游 campaign，在「紧邻上游 campaign 结束（自动 done_met 或手动 done_below）」前，
+        # 一律只读展示（名字 + 规则 + 理由/依据/取值来源），隐藏一切可操作元素（审批人、确认剩余策略、
+        # 推送、目标编辑、回填、完成、方案优化等），避免用户在瀑布流未轮到该波时就误操作。
+        _FINISHED = {"done_met", "done_below"}
+        _unlocked = True
+        if i > 0:
+            _prev = campaigns[i - 1]
+            _unlocked = (_prev["status"] in _FINISHED)
+        if not _unlocked:
+            _lock_html = (
+                f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
+                f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
+                f"<p class='csum' style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
+                f"<div class='csum'>{_provenance_line(c['strategy'])}</div>")
+            if st == "deferred":
+                _lock_html += f"{defer_note}{defer_f}"
+            else:
+                _lock_html += (f"<p class='pill' style='margin-top:8px'>⏳ 等待上游 campaign 结束后解锁操作"
+                               f"（审批 / 推送 / 确认剩余策略 等）</p>")
+            _lock_html += "</div>"
+            cards += _lock_html
+            continue
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
                   f"<p class='csum' style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
@@ -2809,8 +3406,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                   f"{_compile_notes_html(prop)}"
                   f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap_txt} {result_txt}</p>"
                   f"{goals_txt}{fb_txt}"
-                  f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
-                  f"{_graph_svg(prop['graph'])}</details>"
+                  f"{_event_graph_toggle(program, c, c['cid'])}"
                   f"{defer_note}{qh_c}{approve_f}{push_f}{create_f}{defer_f}{goals_f}{feedback_f}"
                   f"{optimize_btn}{fa_html}{opt_html}{complete_f}{replan_ui}</div>")
     # Mautic 资产清单（新建 vs 调用已有）—— 整 Program 汇总（#6）
@@ -2858,8 +3454,7 @@ def _program_body(program: dict, msg: str = "") -> str:
                 f"<p class='pill'>治理节点：{_esc(', '.join(gtypes))}</p>"
                 f"<p class='pill'>plan_hash <code>{_esc(prop['plan_hash'][:14])}</code> · 审批 {ap3_txt}</p>"
                 f"{qh}"
-                f"<details><summary class='pill'>事件图（{len(prop['graph'])} 节点 · 流程图）</summary>"
-                f"{_graph_svg(prop['graph'])}</details>"
+                f"{_event_graph_toggle(program, s, s['sid'])}"
                 f"{approve3_f}{push3_f}</div>")
     if svc:
         svc = ("<div class='card' style='background:var(--gov-soft)'><h3>服务序列（service/transactional）</h3>"
@@ -2873,9 +3468,13 @@ def _program_body(program: dict, msg: str = "") -> str:
         clog = "<div class='card'><h3>自适应变更记录</h3>"
         for e in program["changelog"]:
             chs = e.get("changes") or []
+            # 防御式渲染：changes 条目由两条路径写入（/complete 启发式、/confirm-strategy AI策略），
+            # 均只保证 cid+notes；plan_hash 可能缺省（历史条目/新条目），缺省时不渲染 pill，避免 KeyError。
             lines = "".join(
-                f"<li><code>{_esc(ch['cid'])}</code>：{'；'.join(ch['notes'])} "
-                f"<span class='pill'>→ plan_hash {_esc(ch['plan_hash'][:12])}</span></li>"
+                (f"<li><code>{_esc(ch.get('cid', ''))}</code>：{'；'.join(ch.get('notes') or [])}"
+                 f"<span class='pill'>→ plan_hash {_esc(ch['plan_hash'][:12])}</span></li>"
+                 if ch.get("plan_hash") else
+                 f"<li><code>{_esc(ch.get('cid', ''))}</code>：{'；'.join(ch.get('notes') or [])}</li>")
                 for ch in chs)
             if e.get("source") == "l1_workbuddy":
                 extra = []
@@ -2986,8 +3585,27 @@ def _program_body(program: dict, msg: str = "") -> str:
         "})();</script>"
     )
     total_html = _total_strategy_card(program)
+    evg_js = (
+        "<script>(function(){"
+        "window.evgSwitch=function(cid,view){"
+        "var seq=document.getElementById('evg-seq-'+cid);"
+        "var flow=document.getElementById('evg-flow-'+cid);"
+        "if(!seq||!flow)return;"
+        "var showSeq=(view==='seq');"
+        "seq.style.display=showSeq?'block':'none';"
+        "flow.style.display=showSeq?'none':'block';"
+        "var root=seq.parentNode;"
+        "var tabs=root.querySelectorAll('.evg-tab');"
+        "for(var i=0;i<tabs.length;i++){"
+        "var b=tabs[i];var on=(b.getAttribute('data-view')===view);"
+        "b.style.background=on?'#185fa5':'#eef2f7';"
+        "b.style.color=on?'#fff':'#1c2330';"
+        "}"
+        "};"
+        "})();</script>"
+    )
     return (f"{msg}{header_html}"
-            f"{plan_html}{total_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}{click_guard_js}{replan_js}")
+            f"{plan_html}{total_html}{kpi_html}{cons_html}<div class='card'>{rules}</div>{cards}{svc}{report_html}{clog}{click_guard_js}{replan_js}{evg_js}")
 
 
 def _proposal_body(d: dict, msg: str = "") -> str:
@@ -3010,6 +3628,13 @@ def _proposal_body(d: dict, msg: str = "") -> str:
         ap_box = (f"<p>审批：<span class='{'b-ok' if ok else 'b-bad'}'>{_esc(ap['status'])}/{_esc(ap['level'])}</span>"
                   f" · {_esc(ap['approver'])} · <code>{_esc(ap['plan_hash_bound'][:12])}</code>"
                   f"{'' if ok else ' <span class=b-bad>超时</span>'}</p>")
+        # 同 _campaign_card：审批过期时必须仍给出「重新审批」入口，
+        # 否则「显示已审批 + 推送报 EXPIRED」互锁，campaign 永久卡死。
+        if not ok:
+            ap_box += ("<form method='post' action='/proposal/%s/approve'>"
+                       "<input name='approver' placeholder='审批人' style='width:160px;display:inline-block'>"
+                       "<button class='btn sm' type='submit'>重新审批（上次已超时）</button></form>"
+                       % _esc(c.get("goal_id", "")))
     else:
         ap_box = ("<form method='post' action='/proposal/%s/approve'>"
                   "<input name='approver' placeholder='审批人' style='width:160px;display:inline-block'>"
@@ -3176,7 +3801,11 @@ class Handler(BaseHTTPRequestHandler):
         # URL 解码：goal_id 可能是中文（slug 只剔非字母数字，中文属于 isalnum），
         # 浏览器会把 /program/中文 百分号编码后发回来，不解码就匹配不到 Program。
         path = urllib.parse.unquote(self.path.split("?")[0])
-        cockpit_log("INFO", f"GET {path}")
+        # GET 降噪：纯页面浏览 / 自带专属日志的路由不重复记
+        #（详见 _is_get_log_suppressed 说明），否则几次刷新就能把 200 条的
+        # 环形缓冲刷满、把业务事件挤出去。
+        if not _is_get_log_suppressed(path):
+            cockpit_log("INFO", f"GET {path}")
         if path in ("/", ""):
             return self._guard("dashboard", lambda: self._send(200, _page("驾驶舱", _dash_body())))
         if path == "/brief":
@@ -3214,6 +3843,15 @@ class Handler(BaseHTTPRequestHandler):
                         "ref_goal_id": goal_id_src,  # 告诉 form 这是改 Brief
                     }
             return self._send(200, _page("新建 Brief", _brief_form(strategies, err, meta, services, prefill)))
+        if path == "/brief/ai-parse-cached":
+            # 前端 ♻️ 命中 sessionStorage 缓存时的轻量记账请求 —— 不调用 DeepSeek、
+            # 不做任何计算，只为了让「本次压根没调模型」这件事在开发日志里可见
+            # （不记的话，这类调用在监听面板里等于隐形，无法区分「真调用」与「复用」）。
+            _fq = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            _fl = [x for x in (_fq.get("fields") or [""])[0].split(",") if x]
+            cockpit_log("INFO", "ai-parse：♻️ 命中会话缓存，未调用 DeepSeek · 复用回填 %d 项%s"
+                        % (len(_fl), "（%s%s）" % ("、".join(_fl[:6]), "…" if len(_fl) > 6 else "") if _fl else ""))
+            return self._send_json({"ok": True})
         if path.startswith("/program/"):
             # /program/<gid>/campaign/<cid>/feedback?autofill=1&date=YYYY-MM-DD  ← 拉 Mautic 最新数据预填表单
             parts = [x for x in path.split("/") if x]
@@ -3475,7 +4113,16 @@ class Handler(BaseHTTPRequestHandler):
                         "Brief 与策略规格冲突",
                         _brief_form(strategies, "", spec_meta, services,
                                     _prefill_from_form(form), conflicts)))
-            program = build_program(goal, n, compile, strategy_spec=strategies or None,
+            # Mautic 不可达时关闭资产解析：避免 plan_compiler 编译期为 form/segment/stage
+            # 调 Mautic（_get_token 默认 60s 超时）→ 点击生成后长时间挂起/超时报错。
+            # 与 data_missing 设计一致：资产新建延到推送时惰性补建（needs_operator_review=true）。
+            mautic_ok, _mreach = _mautic_reachable_safe("local", timeout=5)
+            if not mautic_ok:
+                for _s in (strategies or []):
+                    _s["asset_resolve"] = False
+                for _s in (services or []):
+                    _s["asset_resolve"] = False
+            program = build_program(goal, n, None, strategy_spec=strategies or None,
                                     service_sequences=services or None)
             # 每个 campaign 绑定派生计划：转化目标 + 执行窗口（可在 /program 上编辑）
             for i, c in enumerate(program["campaigns"]):
@@ -3492,10 +4139,9 @@ class Handler(BaseHTTPRequestHandler):
                 goal.goal_id = ref_goal_id
             # 生成 program 时同步在 Mautic 建一个 project（program = project），所有资产挂其下；
             # Mautic 不可达 / 未配 Basic 凭证时降级为 None，不阻断生成（推送时再惰性补建）。
-            try:
-                _resolve_program_project(program, "local")
-            except Exception as _pe:  # noqa: BLE001
-                cockpit_log("WARN", f"brief 建 Mautic project 失败（降级 None，推送时惰性补建）：{type(_pe).__name__}: {_pe}")
+            # 编译期尽力建 Mautic project；不可达 / 超时时守护线程兜底跳过，绝不拖挂请求
+            # （project 留待推送时惰性补建）。
+            _resolve_program_project_safe(program, "local")
             _save_program(program)
             cockpit_log("OK", f"brief 已生成 Program：goal_id={program.get('goal_id')} · mautic_project_id={program.get('mautic_project_id')} · campaigns={len(program.get('campaigns', []))}")
             # Location 响应头按 latin-1 编码：goal_id 含中文（slug 保留中文，属 isalnum）时
@@ -3525,7 +4171,7 @@ class Handler(BaseHTTPRequestHandler):
                 for k, v in sg["headers"].items():
                     req.add_header(k, v)
                 try:
-                    with _u.urlopen(req, timeout=sg["timeout"]) as resp:
+                    with _EXT_OPENER.open(req, timeout=sg["timeout"]) as resp:
                         raw = resp.read().decode("utf-8", "replace")
                 except _ue.HTTPError as e:
                     raw = e.read().decode("utf-8", "replace")
@@ -3541,12 +4187,23 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
                                         "error": str(e)})
-        # 无外部端点：直连 DeepSeek 合成（复用 deepseek key + build_strategy_prompt）
+        # 无外部端点：增长运营专家团 crew → 单 agent 兜底
+        wb_cfg = load_workbuddy_config()
+        mautic_ctx = _collect_mautic_context() if wb_cfg["strategy_context"].get("mautic_assets", True) else ""
+        history_ctx = _collect_history_context() if wb_cfg["strategy_context"].get("history", True) else ""
         try:
-            content = _deepseek_completion(
-                "你是营销 Agent 的 AI策略合成器。只输出严格 JSON，不要解释文字、"
-                "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
-                prompt)
+            if wb_cfg.get("crew_enabled", True) and load_deepseek_config()["enabled"]:
+                try:
+                    content, _meta = _run_strategy_crew(
+                        _infer_brief(brief), mautic_context=mautic_ctx, history_context=history_ctx)
+                    spec = _extract_strategy_spec(content)
+                    if spec is not None:
+                        return self._send_json({"ok": True, "strategy_spec": spec,
+                                                "prompt": prompt, "via": "crew"})
+                except Exception as e:  # noqa: BLE001
+                    _log_ai_error("crew 失败降级单 agent %s: %s" % (type(e).__name__, e))
+            # crew 未启用 / 产出不可解析 / 异常 → 单 agent 兜底（与原行为一致）
+            content = _deepseek_completion(_SINGLE_SYNTH_SYS, prompt)
             spec = _extract_strategy_spec(content)
             if spec is None:
                 return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
@@ -3591,10 +4248,15 @@ class Handler(BaseHTTPRequestHandler):
         """
         objective = (body.get("objective") or "").strip()
         if not objective:
+            cockpit_log("WARN", "ai-parse：objective 为空，未调用 DeepSeek")
             return self._send_json({"ok": False, "error": "objective 为空"})
         cfg = load_deepseek_config()
         if not cfg["enabled"]:
+            cockpit_log("ERROR", "ai-parse：未配置 DeepSeek，识别中止")
             return self._send_json({"ok": False, "error": "未配置 DeepSeek（config.json [deepseek].api_key 或 DEEPSEEK_API_KEY）"})
+        _t_start = time.time()  # 端到端计时（含可能的策略自动合成）
+        cockpit_log("INFO", "ai-parse：开始 · model=%s · objective=“%s%s”"
+                    % (cfg["model"], objective[:28], "…" if len(objective) > 28 else ""))
         system_prompt = (
             "你是一个营销 Brief 意图识别器。阅读运营用自然语言写下的「营销目标」描述，"
             "抽取其中隐含的结构化字段，输出严格 JSON（只输出 JSON，不要解释、不要 markdown 代码块）。\n\n"
@@ -3680,19 +4342,28 @@ class Handler(BaseHTTPRequestHandler):
         req = _u.Request(url, data=data, method="POST")
         for k, v in cfg["headers"].items():
             req.add_header(k, v)
+        _t_llm = time.time()  # 仅 DeepSeek 往返耗时
         try:
-            with _u.urlopen(req, timeout=cfg["timeout"]) as resp:
+            with _EXT_OPENER.open(req, timeout=cfg["timeout"]) as resp:
                 raw = resp.read().decode("utf-8", "replace")
+            _llm_ms = int((time.time() - _t_llm) * 1000)
+            cockpit_log("INFO", "ai-parse：DeepSeek 返回 · %dms · %dB" % (_llm_ms, len(raw)))
         except _ue.HTTPError as e:
             raw = e.read().decode("utf-8", "replace")
+            _raw_snip = raw.replace("\n", " ")[:160]
+            cockpit_log("ERROR", "ai-parse：DeepSeek HTTP %s · %s" % (e.code, _raw_snip))
             return self._send_json({"ok": False, "error": f"DeepSeek HTTP {e.code}: {raw[:500]}"})
         except Exception as e:  # noqa: BLE001
+            cockpit_log("ERROR", "ai-parse：DeepSeek 请求失败 · %s: %s" % (type(e).__name__, e))
             return self._send_json({"ok": False, "error": f"DeepSeek 请求失败：{e}"})
         try:
             outer = json.loads(raw)
             content = (outer.get("choices") or [{}])[0].get("message", {}).get("content", "")
             parsed = json.loads(content) if content else {}
         except Exception as e:  # noqa: BLE001
+            _raw_snip = raw.replace("\n", " ")[:160]
+            cockpit_log("ERROR", "ai-parse：DeepSeek 返回解析失败 · %s: %s · 原文：%s"
+                        % (type(e).__name__, e, _raw_snip))
             return self._send_json({"ok": False, "error": f"DeepSeek 返回解析失败：{e}；原文：{raw[:500]}"})
         fields = ("goal_name", "start_date", "end_date", "overall_conv", "is_revenue",
                   "budget", "locale", "audience_age_range", "audience_age", "audience_gender",
@@ -3726,14 +4397,26 @@ class Handler(BaseHTTPRequestHandler):
         # 方案 B：意图识别未直接产出 strategy_spec 时，按启发式自动合成多波策略
         strategy_auto = False
         if not out.get("strategy_spec") and _should_synthesize_strategy(out):
+            # 这步会串起第二轮模型调用（crew 或单 agent 兜底），是「总耗时 >> DeepSeek 耗时」的主因，
+            # 不记一行的话日志上会看到时间对不上、无法解释。
+            cockpit_log("INFO", "ai-parse：识别结果未含 strategy_spec → 触发策略自动合成（第二轮模型调用）")
             try:
                 brief = _brief_from_parsed(out, objective)
                 prompt = _build_strategy_prompt_from_brief(brief)
-                content = _deepseek_completion(
-                    "你是营销 Agent 的 AI策略合成器。只输出严格 JSON，不要解释文字、"
-                    "不要 markdown 代码块，只输出可被 json.loads 解析的 StrategySpec 对象。",
-                    prompt)
-                spec = _extract_strategy_spec(content)
+                spec = None
+                # 专家团 crew 优先（失败/未启用 → 单 agent 兜底）
+                if load_workbuddy_config().get("crew_enabled", True) and load_deepseek_config()["enabled"]:
+                    try:
+                        content, _m = _run_strategy_crew(
+                            _infer_brief(brief),
+                            mautic_context=_collect_mautic_context(),
+                            history_context=_collect_history_context())
+                        spec = _extract_strategy_spec(content)
+                    except Exception as e:  # noqa: BLE001
+                        _log_ai_error(f"crew 自动合成失败 {type(e).__name__}: {e}")
+                if spec is None:
+                    content = _deepseek_completion(_SINGLE_SYNTH_SYS, prompt)
+                    spec = _extract_strategy_spec(content)
                 if spec:
                     out["strategy_spec"] = spec
                     strategy_auto = True
@@ -3747,6 +4430,11 @@ class Handler(BaseHTTPRequestHandler):
         if strategy_auto:
             resp["strategy_auto"] = True
             resp["filled"] = list(filled) + ["策略(自动合成)"]
+        _gl = resp["filled"]
+        cockpit_log("OK", "ai-parse：完成 · DeepSeek %dms / 端到端 %dms · 回填 %d 项%s%s"
+                    % (_llm_ms, int((time.time() - _t_start) * 1000), len(_gl),
+                       "（%s%s）" % ("、".join(_gl[:6]), "…" if len(_gl) > 6 else "") if _gl else "",
+                       " · 含自动合成策略" if strategy_auto else ""))
         return self._send_json(resp)
 
     def _handle_campaign_approve(self, gid, cid, form):
@@ -3812,7 +4500,7 @@ class Handler(BaseHTTPRequestHandler):
         # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
         _mok, _mwhy = _mautic_reachable("local")
         if not _mok:
-            msg = (f"<div class='card'><p class='b-bad'>❌ 服务序列 {_esc(sid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+            msg = (f"<div class='card'><p class='b-bad'>❌ 服务序列 {_esc(sid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（运行 start-mautic-nginx.bat 或 start-all.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。序列未真正创建，可重试。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         pid = _resolve_program_project(p, "local")
@@ -3854,7 +4542,7 @@ class Handler(BaseHTTPRequestHandler):
         # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
         _mok, _mwhy = _mautic_reachable("local")
         if not _mok:
-            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（运行 start-mautic-nginx.bat 或 start-all.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。campaign 未真正创建，状态保持原样，可重试。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         # 解析 program 对应的 Mautic project（没有则现建），把所有资产挂其下
@@ -3947,7 +4635,7 @@ class Handler(BaseHTTPRequestHandler):
                                               "error": f"Mautic 不可达：{_mwhy}", "steps": []}
             c["proposal"]["deployed"] = False
             _save_program(p)
-            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+            msg = (f"<div class='card'><p class='b-bad'>❌ {_esc(cid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（运行 start-mautic-nginx.bat 或 start-all.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。未真正创建 campaign，状态保持「已审批待创建」。</p></div>")
             return self._send(200, _page("Program", _program_body(p, msg)))
         # 解析 program 对应的 Mautic project（没有则现建），把所有资产挂其下
@@ -3959,6 +4647,14 @@ class Handler(BaseHTTPRequestHandler):
                       "note": f"push 执行异常：{type(exc).__name__}: {exc}",
                       "error": str(exc), "steps": [], "ensure_log": {}}
         c["proposal"]["deploy_result"] = result
+        # 回写解析出的真实资产 ref（修 [待生成]/无链接 bug，对齐 _handle_campaign_push）：
+        # push() 已把真实资产建好并把 id 写进 mautic_events，但从不回写 strategy 的展示字段，
+        # 导致卡片永远显示「[待生成]」占位、无外链。这里从 ensure_log 取回真实资产名/alias 回填。
+        # dry-run（无 ensure_log）时安全跳过。
+        try:
+            _sync_resolved_assets_to_strategy(c, result)
+        except Exception as _exc:  # noqa: BLE001
+            cockpit_log("WARN", f"campaign_create {cid}：回写资产展示字段失败：{type(_exc).__name__}: {_exc}")
         # 诚实反映 push 结果：
         #  · 只有【真实在 Mautic 创建了 campaign】（dry_run=False 且 campaign_id 非空）才标记「执行中」+ deployed=True
         #  · dry-run（无论有意未填凭证，还是 token/凭证超时）一律不标记执行中，避免误导
@@ -4510,7 +5206,7 @@ class Handler(BaseHTTPRequestHandler):
         # 推之前先探活：Mautic 没启动就直接报「不可达」，不撞 segment/form 误导错误
         _mok, _mwhy = _mautic_reachable("local")
         if not _mok:
-            msg = (f"<div class='card'><p class='b-bad'>❌ 提案 {_esc(gid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（如运行 start-mautic-local.bat）后重试。</p>"
+            msg = (f"<div class='card'><p class='b-bad'>❌ 提案 {_esc(gid)} 推送失败：Mautic 不可达（{_esc(_mautic_netloc('local'))}），请先启动 Mautic（运行 start-mautic-nginx.bat 或 start-all.bat）后重试。</p>"
                    f"<p class='note'>探测 GET /api/segments 失败 → {_esc(_mwhy)}。提案未真正创建，可重试。</p></div>")
             return self._send(200, _page("提案", _proposal_body(d, msg)))
         result = push(d, env="local", approved=True, project_id=d.get("mautic_project_id"))

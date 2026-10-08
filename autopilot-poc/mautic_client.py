@@ -24,6 +24,16 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
+# 本地 Mautic（127.0.0.1:8080 / localhost）必须直连，不能被 http_proxy 拦截：
+# 沙箱/企业环境的 http_proxy 指向出网代理，urllib 默认会把 loopback 也路由过去，
+# 导致探活/推送超时；而 curl 默认对 loopback 硬绕过代理，所以只有 Python 侧会踩。
+# 显式设置 no_proxy 并重建默认 opener 使其生效（ProxyHandler() 无参时读环境变量）。
+# 必须用「赋值」而非 setdefault：宿主进程环境可能已存在 NO_PROXY（且不含 127.0.0.1），
+# setdefault 不会覆盖，仍会被代理拦截。强制写入 loopback。
+os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
+os.environ["no_proxy"] = "127.0.0.1,localhost,::1"
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler()))
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 资产列表进程内缓存（Mautic 全量拉取慢，避免每页刷新重复请求）
@@ -41,9 +51,24 @@ except Exception:  # pragma: no cover
     _STATS_LOCK = None
 _ASSET_LOCK = threading.Lock()
 
-# 绕过任何 HTTP 代理直连 Mautic（沙箱环境下 localhost 经默认代理会偶发 502；
-# 本机无代理配置时 ProxyHandler({}) 为 no-op，无副作用）
-urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+# 绕过任何 HTTP 代理直连 Mautic（沙箱环境下 localhost 经默认代理会偶发 502/超时；
+# 本机无代理配置时 ProxyHandler({}) 为 no-op，无副作用）。
+#
+# 关键：不要只靠 install_opener 改「全局默认 opener」——那是进程级全局状态，
+# 会和别的模块打架（cockpit.py 也 install_opener，装的是「读环境变量」的 ProxyHandler；
+# 谁后 import 谁生效，顺序一变 Mautic 就被代理拦截，表现为「推送一直超时」的随机故障）。
+# 正确做法：Mautic 的所有请求一律走下面这个「显式 no-proxy opener」，
+# 与全局状态解耦，谁先 import 都一样稳。
+_MAUTIC_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+# 仍安装一份到全局，供本模块内裸 urlopen（历史调用点）与外部脚本复用；
+# 但下面各 _get/_post/_patch/_get_token/_v2_req 均已改用 _MAUTIC_OPENER，不再依赖它。
+urllib.request.install_opener(_MAUTIC_OPENER)
+
+
+def _open(req, timeout):
+    """Mautic 专用请求入口：强制 no-proxy 直连，绕开 http_proxy 对 loopback 的拦截。"""
+    return _MAUTIC_OPENER.open(req, timeout=timeout)
 
 
 def load_config(env: str) -> dict:
@@ -130,7 +155,7 @@ def _in_date(s: str, date_str: str) -> bool:
 # 缓存避免每次 push 都重取，也降低抖动导致 dry-run 的概率。Mautic token 默认 3600s 有效。
 _TOKEN_CACHE = {"token": None, "exp": 0.0}
 
-def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int = 60) -> str:
+def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int = 15) -> str:
     """OAuth2 client_credentials 换 access_token；失败抛 RuntimeError（带原因）。
     带进程内缓存（TTL 3000s）+ 重试（最多 3 次，仅网络超时重试），跨过 token 端点偶发超时。"""
     import time as _t
@@ -148,7 +173,7 @@ def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int =
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _open(req, timeout=timeout) as resp:
                 data = _safe_json(resp.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as e:
             last_err = f"token 获取失败 HTTP {e.code}: {_safe_json(e.read().decode('utf-8', 'replace'))}"
@@ -179,7 +204,7 @@ def _post(base_url: str, path: str, body: dict, token: str, timeout: int = 15) -
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return {"url": url, "status": resp.status, "body": _safe_json(raw)}
     except urllib.error.HTTPError as e:
@@ -212,7 +237,7 @@ def _v2_req(method: str, base_url: str, path: str, body: dict = None,
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
             try:
                 return {"status": resp.status, "body": json.loads(raw)}
@@ -245,7 +270,7 @@ def _get(base_url: str, path: str, token: str, timeout: int = 15):
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return _safe_json(raw)
     except Exception:  # noqa: BLE001
@@ -261,7 +286,7 @@ def _patch(base_url: str, path: str, body: dict, token: str, timeout: int = 15) 
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return {"url": url, "status": resp.status, "body": _safe_json(raw)}
     except urllib.error.HTTPError as e:
@@ -278,48 +303,85 @@ def _aliasify(name: str) -> str:
 
 
 def _build_email_html(subject: str, activity: str = "", discount: dict = None,
-                      landing_page_url: str = "", is_followup: bool = False) -> str:
+                      landing_page_url: str = "", is_followup: bool = False,
+                      language: str = "zh_CN") -> str:
     """生成结构化营销邮件正文（内联样式，邮件客户端兼容）。
-    替代旧的 <p>主题</p> 空壳——至少是可发出去的完整邮件。"""
+    替代旧的 <p>主题</p> 空壳——至少是可发出去的完整邮件。
+    language：'zh_CN'（默认，中文）或 'en_US'/'en'（英文）。其它值回落中文。
+    与 goal.locale / campaign.locale 对齐：用户要求英文内容时生成英文邮件正文。"""
+    is_en = str(language or "zh_CN").lower().startswith("en")
     act = activity or subject
     discount_html = ""
     if isinstance(discount, dict) and discount.get("enabled") and discount.get("pct"):
-        discount_html = (
-            f'<p style="margin:12px 0;font-size:16px;color:#b12704;font-weight:bold">'
-            f'专属优惠：{int(discount["pct"])}% OFF</p>'
-        )
-    intro = "这封是补发提醒，别错过你的专属权益。" if is_followup else "这是为你准备的活动专属信息，敬请查收。"
+        if is_en:
+            discount_html = (
+                f'<p style="margin:12px 0;font-size:16px;color:#b12704;font-weight:bold">'
+                f'Exclusive offer: {int(discount["pct"])}% OFF</p>'
+            )
+        else:
+            discount_html = (
+                f'<p style="margin:12px 0;font-size:16px;color:#b12704;font-weight:bold">'
+                f'专属优惠：{int(discount["pct"])}% OFF</p>'
+            )
+    if is_en:
+        intro = ("This is a reminder — don't miss your exclusive benefit."
+                 if is_followup else
+                 "Here is your exclusive event information. Please review the details below.")
+        greeting = "Dear User,"
+        cta_label = "View / Buy Tickets"
+        unsub = "If you no longer wish to receive these emails, you can unsubscribe."
+    else:
+        intro = ("这封是补发提醒，别错过你的专属权益。" if is_followup
+                 else "这是为你准备的活动专属信息，敬请查收。")
+        greeting = "亲爱的用户，您好："
+        cta_label = "查看 / 购票"
+        unsub = "如不希望再收到此类邮件，可点击退订。"
     cta = ""
     if landing_page_url:
         cta = (
             '<a href="' + landing_page_url + '" '
             'style="display:inline-block;margin:16px 0;padding:12px 28px;background:#b12704;'
-            'color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px">查看 / 购票</a>'
+            'color:#ffffff;text-decoration:none;border-radius:4px;font-size:15px">'
+            f'{cta_label}</a>'
         )
     return (
         '<div style="max-width:600px;margin:0 auto;font-family:-apple-system,\'PingFang SC\','
-        '\'Microsoft YaHei\',sans-serif;color:#222;line-height:1.7">'
+        '\'Microsoft YaHei\',\'Segoe UI\',sans-serif;color:#222;line-height:1.7">'
         f'<h1 style="font-size:20px;margin:0 0 10px;color:#111">{act}</h1>'
-        '<p style="margin:0 0 8px;color:#444">亲爱的用户，您好：</p>'
+        f'<p style="margin:0 0 8px;color:#444">{greeting}</p>'
         f'<p style="margin:0 0 8px;color:#444">{intro}</p>'
         f'{discount_html}'
         f'{cta}'
-        '<p style="margin:24px 0 0;font-size:12px;color:#999">如不希望再收到此类邮件，可点击退订。</p>'
+        f'<p style="margin:24px 0 0;font-size:12px;color:#999">{unsub}</p>'
         '</div>'
     )
 
 
 def _build_landing_page_html(activity: str, cta_label: str = "立即购票",
-                           form_html: str = None) -> str:
+                           form_html: str = None, language: str = "zh_CN") -> str:
     """生成结构化落地页（替代旧 <p>名字</p> 占位）。
 
     form_html：Mautic 表单渲染后的 HTML（如 form.cachedHtml），非空时直接内嵌进落地页，
     使「落地页中有填写个人信息提交的表单」真正落地。直接内联 HTML（而非 {form=alias} token），
     规避该 token 经 Mautic API 保存时被内容过滤器剥离（实测 /api/pages/new 会把 {form=...} 整段丢弃）。
+
+    CTA：「立即购票」按钮——若内嵌了表单，则改为提交该表单的 <button form=...>（纯 HTML、
+    不依赖 JS，规避 Mautic 内容净化器剥离 onclick）；表单自身也带提交按钮，二者一致导向转化。
+    无表单时回落占位 <a href="#">，避免在页面渲染无效外链。
+    language：'zh_CN'（默认，中文）或 'en_US'/'en'（英文）——与邮件一致，活动语言统一。
     """
+    is_en = str(language or "zh_CN").lower().startswith("en")
+    if is_en:
+        cta_label = cta_label if cta_label != "立即购票" else "Buy Tickets"
+        _detail = "Event details and the ticket portal will open soon. Stay tuned."
+        _html_lang = "en"
+    else:
+        _detail = "活动详情与购票入口即将开放，敬请期待。"
+        _html_lang = "zh-CN"
     form_block = ""
     form_id = ""
     if form_html:
+        # 给内嵌 Mautic 表单打 id，使下方 CTA 用 form= 关联提交（无需 JS）
         if "<form" in form_html:
             form_html = form_html.replace("<form", '<form id="autopilot-lp-form"', 1)
             form_id = "autopilot-lp-form"
@@ -342,14 +404,14 @@ def _build_landing_page_html(activity: str, cta_label: str = "立即购票",
             f'{cta_label}</a>'
         )
     return (
-        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+        f'<!DOCTYPE html><html lang="{_html_lang}"><head><meta charset="utf-8">'
         f'<title>{activity}</title></head>'
         '<body style="font-family:-apple-system,\'PingFang SC\',sans-serif;background:#f7f7f5;'
         'margin:0;padding:40px">'
         '<div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:8px;'
         'padding:40px 32px">'
         f'<h1 style="font-size:24px;margin:0 0 12px">{activity}</h1>'
-        '<p style="color:#555;line-height:1.7">活动详情与购票入口即将开放，敬请期待。</p>'
+        f'<p style="color:#555;line-height:1.7">{_detail}</p>'
         f'{form_block}'
         f'{cta}'
         '</div></body></html>'
@@ -441,7 +503,21 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
         items = (list(bucket.values()) if isinstance(bucket, dict) else bucket) if bucket else []
         existing = _find_by_name(items if isinstance(items, list) else [], name)
         if existing:
-            return {"id": int(existing["id"]), "name": existing.get("name"), "created": False}
+            eid = int(existing["id"])
+            # 重推时若提供了 custom_html / subject，PATCH 更新正文（与落地页一致，保证幂等；
+            # 否则已有邮件内容不被覆盖——默认行为不变）。
+            if custom_html or subject:
+                _patch_body = {}
+                if custom_html:
+                    _patch_body["customHtml"] = custom_html
+                if subject:
+                    _patch_body["subject"] = subject
+                try:
+                    _patch(base, f"/api/emails/{eid}/edit", _patch_body, token, timeout=timeout)
+                except Exception:  # noqa: BLE001
+                    pass
+            return {"id": eid, "name": existing.get("name"), "created": False,
+                    "updated": bool(custom_html or subject)}
 
     alias = _aliasify(name)
     body = {
@@ -467,7 +543,8 @@ def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int 
 
 
 def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: int = 15,
-                      custom_html: str = None, form_html: str = None, project_id: int = None) -> dict:
+                      custom_html: str = None, form_html: str = None, project_id: int = None,
+                      language: str = "zh_CN") -> dict:
     """按 name 找 landing page；找不到就 POST 新建（草稿）；返回 {"id","alias","created":bool,"error"?}。
     正文默认用结构化落地页模板；若给了 url 内嵌 meta-refresh 跳转（mautic_code_mode 标准路径）；
     form_embed 非空时把表单 token 嵌进正文（落地页内嵌表单）。"""
@@ -502,7 +579,7 @@ def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: i
             eid = int(existing["id"])
             # 重推时若提供了 form_html/custom_html，PATCH 更新正文（保证表单内嵌在重推时也能修好，幂等）
             if form_html or custom_html:
-                _nh = custom_html or _build_landing_page_html(name, form_html=form_html)
+                _nh = custom_html or _build_landing_page_html(name, form_html=form_html, language=language)
                 if url:
                     _nh = _nh.replace("</head>", f'<meta http-equiv="refresh" content="0;url={url}"></head>')
                 try:
@@ -516,7 +593,7 @@ def ensure_landing_page(name: str, url: str = "", env: str = "local", timeout: i
     if custom_html:
         html = custom_html
     else:
-        html = _build_landing_page_html(name, form_html=form_html)
+        html = _build_landing_page_html(name, form_html=form_html, language=language)
         if url:
             html = html.replace("</head>", f'<meta http-equiv="refresh" content="0;url={url}"></head>')
     body = {"name": name, "alias": alias, "isPublished": True, "customHtml": html, "title": name}
@@ -861,8 +938,15 @@ def mautic_read_assets(env: str = "local") -> dict:
     """
     读取 Mautic 已存在的资产（email / segment / landingpage / form），供驾驶舱判断
     「新建 vs 调用已有」。
-    防御式：任何错误、缺凭证、连接失败 → {"available": False, ...空列表}。
+    防御式：缺凭证/连接失败 → {"available": False, ...空列表}。
     成功结果进程内缓存 _ASSET_CACHE_TTL 秒（Mautic 全量列表较慢，避免每页刷新都重拉）。
+
+    健壮性关键：本机 Mautic 是单 php-cgi worker，segments / pages 的「全量列表」接口
+    （/api/segments?limit=0、/api/pages?limit=0）经常 >30s 超时。旧实现任一端点超时即把
+    整次索引判为「未连接」，导致资产表全部退化为「调用已有（未找到）」。
+    改为「并发拉取 + 每端点短超时 + 部分成功即 available」：单慢端点不再拖垮整体——
+    emails/forms 正常解析，segments/pages 拉不到时对应行退化为「新建（按需）」
+    （推送时 ensure_* 会自动创建），不再误报「调用已有（未找到）」。
     """
     with _ASSET_LOCK:
         if _ASSET_CACHE["data"] is not None and (time.time() - _ASSET_CACHE["ts"]) < _ASSET_CACHE_TTL:
@@ -880,24 +964,37 @@ def mautic_read_assets(env: str = "local") -> dict:
     except Exception as e:  # noqa: BLE001
         return {"available": False, "reason": str(e), "emails": [], "segments": [], "pages": [], "forms": []}
 
-    out = {"available": True, "emails": [], "segments": [], "pages": [], "forms": []}
-    # (输出键, API 路径, 响应中承载资产的键名)
-    # 实测 Mautic 7：emails→{"emails":{id:{...}}}；segments→{"lists":{id:{...}}}；pages→{"pages":[{...}]}
-    # 全量列表较慢（emails ~18s / segments ~15s），故拉取超时放宽到 45s。
+    out = {"available": False, "emails": [], "segments": [], "pages": [], "forms": []}
+    # (输出键, API 路径, 响应中承载资产的键名)。limit=200 足够且避免 limit=0 的异常查询。
+    # 每端点独立线程 + 30s 超时：单 php-cgi worker 下各端点会串行化（emails 实测 ~6.4s，
+    # 后续端点排队至 ~25s），4s 的短超时会把全部端点误杀成「未连接」。30s 足以让首个端点
+    # 返回并置 available=True，仍超 30s 的真正 hopeless 端点（limit=0 历史慢查询）才被跳过。
     endpoints = (
-        ("emails", "/api/emails?limit=0", "emails"),
-        ("segments", "/api/segments?limit=0", "lists"),
-        ("pages", "/api/pages?limit=0", "pages"),
-        ("forms", "/api/forms?limit=0", "forms"),
+        ("emails", "/api/emails?limit=200", "emails"),
+        ("segments", "/api/segments?limit=200", "lists"),
+        ("pages", "/api/pages?limit=200", "pages"),
+        ("forms", "/api/forms?limit=200", "forms"),
     )
+    results = {}
+
+    def _fetch(key, path, bucket_key):
+        try:
+            results[key] = _get(base, path, token, timeout=30)
+        except Exception:  # noqa: BLE001
+            results[key] = None
+
+    threads = [threading.Thread(target=_fetch, args=(k, p, b), daemon=True) for k, p, b in endpoints]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(33)  # 总体 ≤ ~33s，匹配单 worker 下 4 端点串行化的最坏时延（~25s）
+
+    got_any = False
     for key, path, bucket_key in endpoints:
-        res = _get(base, path, token, timeout=45)
-        if res is None:  # 连接失败 → 整体判定为未连接
-            return {"available": False, "reason": "连接失败", "emails": [], "segments": [], "pages": [], "forms": []}
-        # Mautic 7 返回形态：{"emails": {"56": {...}}} 或 {"lists": {"54": {...}}}（按 id 键的字典）
-        # 以及 pages：{"pages": [{...}]}（列表）
-        # legacy 返回：{"emails": {"total":N,"items":[...]}} 或 {"emails":[...]}
-        bucket = res.get(bucket_key, res) if isinstance(res, dict) else res
+        res = results.get(key)
+        if not isinstance(res, dict):
+            continue  # 该端点拉取失败/超时 → 跳过
+        bucket = res.get(bucket_key, res)
         if isinstance(bucket, dict):
             if "items" in bucket:
                 items = bucket["items"]
@@ -913,6 +1010,8 @@ def mautic_read_assets(env: str = "local") -> dict:
             {"id": it.get("id"), "name": it.get("name"), "alias": it.get("alias")}
             for it in items if isinstance(it, dict)
         ]
+        got_any = True
+    out["available"] = got_any
     with _ASSET_LOCK:
         _ASSET_CACHE["ts"] = time.time()
         _ASSET_CACHE["data"] = out
@@ -1182,8 +1281,12 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
     lp_redirect_url = lp_url if (lp_url and not _needs_form) else ""
     lp_name = f"{campaign_name}-落地页"
     lp_public_url = ""
+    # 语言：优先 campaign.locale，其次 goal.locale（goal.locale='en_US' 时生成英文邮件）
+    _lang = (((proposal.get("campaign") or {}).get("locale")
+              or (proposal.get("goal") or {}).get("locale")) or "zh_CN")
     rlp = ensure_landing_page(
-        lp_name, url=lp_redirect_url, env=env, timeout=60, form_html=form_html, project_id=project_id)
+        lp_name, url=lp_redirect_url, env=env, timeout=60, form_html=form_html,
+        project_id=project_id, language=_lang)
     ensure_log.append({"asset": "landing_page", "name": lp_name, **rlp})
     if rlp.get("id"):
         if project_id and not rlp.get("created"):
@@ -1217,7 +1320,8 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
             return None
         if name in email_id_cache:
             return email_id_cache[name]
-        html = _build_email_html(subject, campaign_name, discount, lp_public_url, is_followup)
+        html = _build_email_html(subject, campaign_name, discount, lp_public_url,
+                                 is_followup, language=_lang)
         rem = ensure_email(name, subject=subject, env=env, list_id=seg_id,
                            custom_html=html, timeout=60, project_id=project_id)
         ensure_log.append({"asset": "email", "name": name, **rem})
