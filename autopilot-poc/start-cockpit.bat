@@ -6,7 +6,7 @@ REM  说明：在 WorkBuddy 后台任务里启动的 cockpit 会随会话结束�
 REM        需要长期开着时就用本脚本启动（脱离 WorkBuddy 会话）。
 REM ============================================================
 SET PY=C:\Users\cenacai\.workbuddy\binaries\python\versions\3.13.12\python.exe
-SET WD=C:\Users\cenacai\WorkBuddy\2026-08-31-18-52-03\autopilot-poc
+SET WD=C:\Users\cenacai\WorkBuddy\2026-08-31-18-52-03\autopilot-poc\autopilot-poc
 
 netstat -ano | findstr ":8090" | findstr "LISTENING" >nul
 IF ERRORLEVEL 1 (

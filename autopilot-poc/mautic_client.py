@@ -51,9 +51,24 @@ except Exception:  # pragma: no cover
     _STATS_LOCK = None
 _ASSET_LOCK = threading.Lock()
 
-# 绕过任何 HTTP 代理直连 Mautic（沙箱环境下 localhost 经默认代理会偶发 502；
-# 本机无代理配置时 ProxyHandler({}) 为 no-op，无副作用）
-urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+# 绕过任何 HTTP 代理直连 Mautic（沙箱环境下 localhost 经默认代理会偶发 502/超时；
+# 本机无代理配置时 ProxyHandler({}) 为 no-op，无副作用）。
+#
+# 关键：不要只靠 install_opener 改「全局默认 opener」——那是进程级全局状态，
+# 会和别的模块打架（cockpit.py 也 install_opener，装的是「读环境变量」的 ProxyHandler；
+# 谁后 import 谁生效，顺序一变 Mautic 就被代理拦截，表现为「推送一直超时」的随机故障）。
+# 正确做法：Mautic 的所有请求一律走下面这个「显式 no-proxy opener」，
+# 与全局状态解耦，谁先 import 都一样稳。
+_MAUTIC_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+# 仍安装一份到全局，供本模块内裸 urlopen（历史调用点）与外部脚本复用；
+# 但下面各 _get/_post/_patch/_get_token/_v2_req 均已改用 _MAUTIC_OPENER，不再依赖它。
+urllib.request.install_opener(_MAUTIC_OPENER)
+
+
+def _open(req, timeout):
+    """Mautic 专用请求入口：强制 no-proxy 直连，绕开 http_proxy 对 loopback 的拦截。"""
+    return _MAUTIC_OPENER.open(req, timeout=timeout)
 
 
 def load_config(env: str) -> dict:
@@ -158,7 +173,7 @@ def _get_token(base_url: str, client_id: str, client_secret: str, timeout: int =
         req = urllib.request.Request(url, data=body, method="POST")
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _open(req, timeout=timeout) as resp:
                 data = _safe_json(resp.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as e:
             last_err = f"token 获取失败 HTTP {e.code}: {_safe_json(e.read().decode('utf-8', 'replace'))}"
@@ -189,7 +204,7 @@ def _post(base_url: str, path: str, body: dict, token: str, timeout: int = 15) -
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return {"url": url, "status": resp.status, "body": _safe_json(raw)}
     except urllib.error.HTTPError as e:
@@ -222,7 +237,7 @@ def _v2_req(method: str, base_url: str, path: str, body: dict = None,
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
             try:
                 return {"status": resp.status, "body": json.loads(raw)}
@@ -255,7 +270,7 @@ def _get(base_url: str, path: str, token: str, timeout: int = 15):
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return _safe_json(raw)
     except Exception:  # noqa: BLE001
@@ -271,7 +286,7 @@ def _patch(base_url: str, path: str, body: dict, token: str, timeout: int = 15) 
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
             return {"url": url, "status": resp.status, "body": _safe_json(raw)}
     except urllib.error.HTTPError as e:
@@ -1266,6 +1281,9 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
     lp_redirect_url = lp_url if (lp_url and not _needs_form) else ""
     lp_name = f"{campaign_name}-落地页"
     lp_public_url = ""
+    # 语言：优先 campaign.locale，其次 goal.locale（goal.locale='en_US' 时生成英文邮件）
+    _lang = (((proposal.get("campaign") or {}).get("locale")
+              or (proposal.get("goal") or {}).get("locale")) or "zh_CN")
     rlp = ensure_landing_page(
         lp_name, url=lp_redirect_url, env=env, timeout=60, form_html=form_html,
         project_id=project_id, language=_lang)
@@ -1296,9 +1314,6 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
     main_email_name = campaign_name
     followup_email_name = f"{campaign_name}-提醒"
     email_id_cache: dict = {}
-    # 语言：优先 campaign.locale，其次 goal.locale（goal.locale='en_US' 时生成英文邮件）
-    _lang = (((proposal.get("campaign") or {}).get("locale")
-              or (proposal.get("goal") or {}).get("locale")) or "zh_CN")
 
     def _resolve_email_id(name: str, subject: str, is_followup: bool):
         if not name:

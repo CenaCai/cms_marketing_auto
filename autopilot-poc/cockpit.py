@@ -33,15 +33,22 @@ import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# 本地 Mautic（127.0.0.1:8080 / localhost）必须直连，不能被 http_proxy 拦截：
-# 沙箱/企业环境的 http_proxy 指向出网代理，urllib 默认会把 loopback 也路由过去，
-# 导致探活/推送超时（curl 因默认对 loopback 硬绕过代理而正常）。
-# 必须用「赋值」而非 setdefault：宿主进程环境可能已存在 NO_PROXY（且不含 127.0.0.1），
-# setdefault 不会覆盖，仍会被代理拦截。强制写入 loopback 并重建默认 opener 使其生效
-# （ProxyHandler() 无参时读环境变量）。
+# HTTP 代理策略（本地 Mautic 与外网 DeepSeek 方向相反，必须分开处理）：
+#   - 本地 Mautic（127.0.0.1:8080）→ 必须 no-proxy 直连。沙箱/企业环境的 http_proxy
+#     指向出网代理，urllib 默认会把 loopback 也路由过去，导致探活/推送超时；
+#     curl 因默认对 loopback 硬绕过代理而正常，所以只有 Python 侧会踩。
+#   - 外网 DeepSeek（api.deepseek.com）→ 必须走 http_proxy 才能出网。
+# 这两者对 opener 的要求相反，而 install_opener 是**进程级全局状态**：
+# 若这里只按环境变量装一个 opener，mautic_client 的 no-proxy opener 会被它覆盖（或反之），
+# 表现为「时好时坏」的推送超时。所以下面两个方向都用**显式局部 opener**，互不干扰：
+#   _LOCAL_OPENER  → Mautic（无代理直连）
+#   _EXT_OPENER    → DeepSeek 等外网（读环境变量代理）
+# 同时写 NO_PROXY（必须「赋值」不能用 setdefault：宿主进程可能已存在不含 127.0.0.1 的
+# NO_PROXY，setdefault 不覆盖），让其它裸 urlopen / 子进程也默认绕过 loopback 代理。
 os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
 os.environ["no_proxy"] = "127.0.0.1,localhost,::1"
-urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler()))
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_EXT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler())
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -818,7 +825,7 @@ def _deepseek_completion(system_prompt: str, user_content: str, temperature: flo
     for k, v in cfg["headers"].items():
         req.add_header(k, v)
     try:
-        with _u.urlopen(req, timeout=cfg["timeout"]) as resp:
+        with _EXT_OPENER.open(req, timeout=cfg["timeout"]) as resp:
             raw = resp.read().decode("utf-8", "replace")
     except _ue.HTTPError as e:
         raw = e.read().decode("utf-8", "replace")
@@ -2678,12 +2685,11 @@ def _mautic_reachable(env="local", timeout=30):
         return (True, "")
     url = f"{base}/api/segments?limit=1"
     req = urllib.request.Request(url, method="GET")
-    # 显式用「无代理」opener：ProxyHandler({}) 为空字典 = 不使用任何代理，
-    # 直连 127.0.0.1:8080，彻底绕过 http_proxy 对 loopback 的拦截
-    # （不依赖全局默认 opener / 环境变量，避免 import 顺序或宿主环境 NO_PROXY 缺失导致仍走代理）。
-    _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    # 用与 Mautic 调用同一个「无代理」局部 opener（_LOCAL_OPENER）：直连 127.0.0.1:8080，
+    # 彻底绕过 http_proxy 对 loopback 的拦截；不依赖全局默认 opener / 环境变量，
+    # 避免 import 顺序或宿主 NO_PROXY 缺失导致仍走代理。
     try:
-        with _opener.open(req, timeout=timeout) as resp:
+        with _LOCAL_OPENER.open(req, timeout=timeout) as resp:
             resp.read()  # 读到任何响应即代表服务在线（401 也算）
         return (True, "")
     except urllib.error.HTTPError:
@@ -3172,13 +3178,19 @@ def _program_body(program: dict, msg: str = "") -> str:
                     f"（限定 ≤{sc_c.get('send_within_minutes') or 0}min 内发出）；审批人可驳回。</p>")
             ack_c = ("<label style='margin:6px 0 2px'><input type='checkbox' name='ack_quiet_exempt' "
                      "style='width:auto;display:inline-block'> 我已确认豁免静默窗</label>")
-        if ap and ap.get("status") == "APPROVED":
+        # 只有「审批仍有效」时才隐藏审批表单。判据必须用 is_valid(ap)（含 30min TTL），
+        # 不能只看 status=="APPROVED"：否则审批一过期就同时满足
+        #   UI：status==APPROVED → 隐藏「重新审批」表单
+        #   推送：verify_push → 「审批已超时(EXPIRED)，需重新审批」
+        # 两者互锁，campaign 永久卡死（既不能重新审批，也推不出去）。
+        if ap and is_valid(ap):
             approve_f = ""
         else:
+            _ap_lbl = "重新审批（上次已超时）" if (ap and ap.get("status") == "APPROVED") else "审批通过"
             approve_f = (f"<form method='post' action='/program/{gid}/campaign/{c['cid']}/approve' "
                          f"style='margin:8px 0'>"
                          f"<input name='approver' placeholder='审批人(真人)' style='width:160px;display:inline-block'>"
-                         f"{ack_c}<button class='btn sm' type='submit'>审批通过</button></form>")
+                         f"{ack_c}<button class='btn sm' type='submit'>{_ap_lbl}</button></form>")
         push_f = ""  # 合并到下方 create_f（"创建并推送到 Mautic"），避免与"推送"按钮重复造成混淆
         # 新阶段创建按钮（#8）：首波 / 上一波「已审批」即可点（不再要求上一波完成+回填，避免 waterfall 死锁）；
         # 已审批待执行(approved_idle) 也显示按钮 → 推送失败后可从 UI 重新推送（不再被门禁关在门外）。
@@ -3365,6 +3377,28 @@ def _program_body(program: dict, msg: str = "") -> str:
             cname_html = f"<code>{_esc(c['cid'])}</code>"
         # 资产外链去重：邮件/分群/落页 已在卡片主行 _strategy_summary 内渲染为可跳转 :8080 详情页；
         # 表单(_form_ref) 此前仅在本块出现，删除整块后表单详情将不再有跳转入口（如需保留可并入主行）。
+        # 上游解锁判定：串行的下游 campaign，在「紧邻上游 campaign 结束（自动 done_met 或手动 done_below）」前，
+        # 一律只读展示（名字 + 规则 + 理由/依据/取值来源），隐藏一切可操作元素（审批人、确认剩余策略、
+        # 推送、目标编辑、回填、完成、方案优化等），避免用户在瀑布流未轮到该波时就误操作。
+        _FINISHED = {"done_met", "done_below"}
+        _unlocked = True
+        if i > 0:
+            _prev = campaigns[i - 1]
+            _unlocked = (_prev["status"] in _FINISHED)
+        if not _unlocked:
+            _lock_html = (
+                f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
+                f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
+                f"<p class='csum' style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
+                f"<div class='csum'>{_provenance_line(c['strategy'])}</div>")
+            if st == "deferred":
+                _lock_html += f"{defer_note}{defer_f}"
+            else:
+                _lock_html += (f"<p class='pill' style='margin-top:8px'>⏳ 等待上游 campaign 结束后解锁操作"
+                               f"（审批 / 推送 / 确认剩余策略 等）</p>")
+            _lock_html += "</div>"
+            cards += _lock_html
+            continue
         cards += (f"<div class='card'><div style='display:flex;justify-content:space-between;align-items:center'>"
                   f"<strong>{_esc(c['wave_id'].replace('wave_', 'campaign_') if isinstance(c['wave_id'], str) else c['wave_id'])} · {cname_html}</strong>{st_badge}</div>"
                   f"<p class='csum' style='margin:8px 0'>{_strategy_summary(c['strategy'], idx)}</p>"
@@ -3434,9 +3468,13 @@ def _program_body(program: dict, msg: str = "") -> str:
         clog = "<div class='card'><h3>自适应变更记录</h3>"
         for e in program["changelog"]:
             chs = e.get("changes") or []
+            # 防御式渲染：changes 条目由两条路径写入（/complete 启发式、/confirm-strategy AI策略），
+            # 均只保证 cid+notes；plan_hash 可能缺省（历史条目/新条目），缺省时不渲染 pill，避免 KeyError。
             lines = "".join(
-                f"<li><code>{_esc(ch['cid'])}</code>：{'；'.join(ch['notes'])} "
-                f"<span class='pill'>→ plan_hash {_esc(ch['plan_hash'][:12])}</span></li>"
+                (f"<li><code>{_esc(ch.get('cid', ''))}</code>：{'；'.join(ch.get('notes') or [])}"
+                 f"<span class='pill'>→ plan_hash {_esc(ch['plan_hash'][:12])}</span></li>"
+                 if ch.get("plan_hash") else
+                 f"<li><code>{_esc(ch.get('cid', ''))}</code>：{'；'.join(ch.get('notes') or [])}</li>")
                 for ch in chs)
             if e.get("source") == "l1_workbuddy":
                 extra = []
@@ -3590,6 +3628,13 @@ def _proposal_body(d: dict, msg: str = "") -> str:
         ap_box = (f"<p>审批：<span class='{'b-ok' if ok else 'b-bad'}'>{_esc(ap['status'])}/{_esc(ap['level'])}</span>"
                   f" · {_esc(ap['approver'])} · <code>{_esc(ap['plan_hash_bound'][:12])}</code>"
                   f"{'' if ok else ' <span class=b-bad>超时</span>'}</p>")
+        # 同 _campaign_card：审批过期时必须仍给出「重新审批」入口，
+        # 否则「显示已审批 + 推送报 EXPIRED」互锁，campaign 永久卡死。
+        if not ok:
+            ap_box += ("<form method='post' action='/proposal/%s/approve'>"
+                       "<input name='approver' placeholder='审批人' style='width:160px;display:inline-block'>"
+                       "<button class='btn sm' type='submit'>重新审批（上次已超时）</button></form>"
+                       % _esc(c.get("goal_id", "")))
     else:
         ap_box = ("<form method='post' action='/proposal/%s/approve'>"
                   "<input name='approver' placeholder='审批人' style='width:160px;display:inline-block'>"
@@ -4126,7 +4171,7 @@ class Handler(BaseHTTPRequestHandler):
                 for k, v in sg["headers"].items():
                     req.add_header(k, v)
                 try:
-                    with _u.urlopen(req, timeout=sg["timeout"]) as resp:
+                    with _EXT_OPENER.open(req, timeout=sg["timeout"]) as resp:
                         raw = resp.read().decode("utf-8", "replace")
                 except _ue.HTTPError as e:
                     raw = e.read().decode("utf-8", "replace")
@@ -4299,7 +4344,7 @@ class Handler(BaseHTTPRequestHandler):
             req.add_header(k, v)
         _t_llm = time.time()  # 仅 DeepSeek 往返耗时
         try:
-            with _u.urlopen(req, timeout=cfg["timeout"]) as resp:
+            with _EXT_OPENER.open(req, timeout=cfg["timeout"]) as resp:
                 raw = resp.read().decode("utf-8", "replace")
             _llm_ms = int((time.time() - _t_llm) * 1000)
             cockpit_log("INFO", "ai-parse：DeepSeek 返回 · %dms · %dB" % (_llm_ms, len(raw)))

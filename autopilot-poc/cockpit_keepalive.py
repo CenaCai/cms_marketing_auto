@@ -15,14 +15,16 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PYTHONW = r"C:\Users\cenacai\.workbuddy\binaries\python\versions\3.13.12\pythonw.exe"
+PYTHONW = r"C:\Users\cenacai\.workbuddy\binaries\python\versions\3.13.12\python.exe"
 HOST, PORT = "127.0.0.1", 8090
 LOG = os.path.join(HERE, "cockpit_8090.log")
 
 
 def _healthy() -> bool:
     try:
-        with urllib.request.urlopen(f"http://{HOST}:{PORT}/", timeout=3) as r:
+        # 绕过沙箱代理直连 localhost（否则经代理返回 502，误判为不健康而反复拉起）
+        op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with op.open(f"http://{HOST}:{PORT}/", timeout=3) as r:
             return r.status == 200
     except Exception:
         return False
