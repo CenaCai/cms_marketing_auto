@@ -39,3 +39,23 @@ next-env.d.ts
 # editor
 .vscode/
 .idea/
+
+# ---- autopilot-poc (Python cockpit) ----
+# Secrets / local config — never commit real credentials
+config.json
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# Runtime data / scratch (regenerated locally)
+output/
+_cleared_programs_*/
+_deleted_data_backup_*/
+
+# Windows reserved-device artifact that can appear in this dir
+nul

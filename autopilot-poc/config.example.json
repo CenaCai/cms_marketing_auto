@@ -1,0 +1,21 @@
+{
+  "local": {
+    "base_url": "http://localhost:8080",
+    "client_id": "<MAUTIC_CLIENT_ID>",
+    "client_secret": "<MAUTIC_CLIENT_SECRET>",
+    "basic_user": "<MAUTIC_BASIC_USER>",
+    "basic_password": "<MAUTIC_BASIC_PASSWORD>"
+  },
+  "prod": {
+    "base_url": "https://your-mautic.example.com",
+    "client_id": "<MAUTIC_CLIENT_ID>",
+    "client_secret": "<MAUTIC_CLIENT_SECRET>"
+  },
+  "deepseek": {
+    "api_key": "<DEEPSEEK_API_KEY>",
+    "tracking_id": "",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "timeout": 60
+  }
+}
