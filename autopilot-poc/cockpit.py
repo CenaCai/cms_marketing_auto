@@ -25,6 +25,7 @@ import argparse
 import html
 import json
 import os
+import sys
 import time
 import threading
 import traceback
@@ -51,6 +52,11 @@ _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _EXT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler())
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# i18n（默认英文，可切中文）：字典 + 引擎独立成模块，避免污染本文件
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import i18n  # noqa: E402
 
 # --------------------------- 开发日志（仅本地驾驶舱可见） ---------------------------
 COCKPIT_LOG = deque(maxlen=200)
@@ -251,8 +257,23 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Hel
 .header{background:linear-gradient(135deg,#0b223f 0%,#16365f 100%);color:#fff;padding:16px 28px;
  display:flex;align-items:center;gap:14px;box-shadow:0 2px 16px rgba(11,34,63,.28);border-bottom:3px solid var(--brand)}
 .header .logo{font-size:18px;font-weight:600;letter-spacing:.4px;color:#ffffff}
-.header .env{margin-left:auto;background:rgba(255,255,255,.16);padding:4px 12px;border-radius:999px;
- font-size:12px;border:1px solid rgba(255,255,255,.18)}
+/* 执行系统入口：跳转到 Mautic 本体（新标签页） */
+.header .mautic{margin-left:auto;display:inline-flex;align-items:center;gap:6px;
+ background:rgba(255,255,255,.16);padding:6px 14px;border-radius:999px;font-size:12px;line-height:1.5;
+ color:#eaf2fb;text-decoration:none;border:1px solid rgba(255,255,255,.22);
+ transition:background .14s,border-color .14s}
+.header .mautic:hover{background:rgba(255,255,255,.26);color:#fff;text-decoration:none;
+ border-color:rgba(255,255,255,.4)}
+.header .mautic::after{content:" ↗";font-weight:600;opacity:.85}
+/* 语言切换器（右上角）：默认英文，可切中文 */
+.header .lang{display:flex;align-items:center;gap:0;background:rgba(255,255,255,.16);
+ border:1px solid rgba(255,255,255,.18);border-radius:999px;overflow:hidden;flex:0 0 auto}
+.header .lang a{display:block;padding:4px 12px;font-size:12px;line-height:1.5;color:#dce8f7;
+ text-decoration:none;border-right:1px solid rgba(255,255,255,.18)}
+.header .lang a:last-child{border-right:none}
+.header .lang a:hover{background:rgba(255,255,255,.18);color:#fff;text-decoration:none}
+.header .lang a.on{background:#fff;color:#16365f;font-weight:600}
+@media (max-width:640px){.header{flex-wrap:wrap;gap:10px}.header .mautic{margin-left:0}}
 .wrap{max-width:1060px;margin:0 auto;padding:28px 20px 64px}
 h1{font-size:22px;margin:0 0 6px;letter-spacing:-.2px}
 h2{font-size:16px;margin:0 0 10px}
@@ -349,27 +370,68 @@ a:hover{text-decoration:underline;color:var(--brand-2)}
 .dl-msg{color:#d7e6f7;flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}
 """
 
-PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+PAGE = """<!doctype html><html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>{css}</style></head>
-<body><div class="header"><a class="logo" href="/" target="_blank" rel="noopener" title="在新标签页打开列表页">⚙ Autopilot 活动驾驶舱</a>
-<span class="env">环境 local · → Mautic :8080</span></div>
+<body><div class="header"><a class="logo" href="/" target="_blank" rel="noopener" title="{t_list}">⚙ Autopilot 活动驾驶舱</a>
+<a class="mautic" href="{mautic_url}" target="_blank" rel="noopener" title="{t_entry_title}">执行系统入口</a>
+<span class="lang"><a href="?lang=en" class="{cls_en}" title="Switch to English">EN</a><a href="?lang=zh" class="{cls_zh}" title="{t_switch_zh}">中文</a></span></div>
 <div class="wrap">{body}</div></body></html>"""
 
 
+def _mautic_entry_url() -> str:
+    """执行系统入口地址：取 config.json 的 local.base_url，主机名归一为 localhost。
+
+    配置里通常是 127.0.0.1，但入口展示给运营时 localhost 更直观，
+    两者指向同一实例。配置缺失时兜底到 http://localhost:8080。
+    只替换主机名，端口/路径原样保留（127.0.0.1:8080 -> localhost:8080）。
+    """
+    base = _mautic_base()
+    if "://" not in base:
+        return "http://localhost:8080"
+    scheme, rest = base.split("://", 1)
+    host, slash, path = rest.partition("/")
+    # 仅去掉端口后的主机部分：split(":") 首段即主机名，端口单独接回
+    hostname = host.split(":")[0]
+    port = host[len(hostname):]          # ":8080" 或 ""
+    return f"{scheme}://{hostname.replace('127.0.0.1', 'localhost')}{port}{slash}{path}"
+
+
 def _page(title: str, body: str) -> str:
-    return PAGE.format(title=_esc(title), css=CSS, body=body + _dev_log_panel())
+    """全站页面唯一出口：在此做 i18n 后处理（默认英文，可切中文）。
+
+    语言状态由 i18n.LOCAL 承载（线程安全），调用方需先 i18n.resolve(self, qs)。
+    """
+    lang = i18n.get_lang()
+    return i18n.translate_html(PAGE.format(
+        html_lang="en" if lang == "en" else "zh-CN",
+        title=_esc(i18n.t(title)), css=CSS,
+        mautic_url=_esc(_mautic_entry_url()),
+        t_list=_esc(i18n.t("在新标签页打开列表页")),
+        t_entry_title=_esc(i18n.t("在新标签页打开 Mautic 执行系统")),
+        t_switch_zh=_esc(i18n.t("切换到中文")),
+        cls_en="on" if lang == "en" else "",
+        cls_zh="on" if lang == "zh" else "",
+        body=body + _dev_log_panel()))
 
 
 def _dev_log_panel() -> str:
     """页面底部「开发日志」折叠面板：渲染模块级 COCKPIT_LOG（跨请求持久）。
 
     始终渲染（即便为空也显示空状态），方便开发随时看到面板位置。
+    摘要含动态条数（{n}），整词字典匹配不了插值文本 → 生成侧按当前语言直接出文案。
     """
+    n = len(COCKPIT_LOG)
+    if i18n.is_en():
+        head = f"🛠 Dev log (last {n} · local only)"
+        empty = "No entries yet. Actions and errors will show up here (what happened / where it failed)."
+    else:
+        head = f"🛠 开发日志（最近 {n} 条 · 仅本地可见）"
+        empty = "暂无日志，操作后将在此显示（发生了什么 / 哪里报错）。"
     if not COCKPIT_LOG:
-        return ("<details class='devlog'><summary>🛠 开发日志（最近 0 条 · 仅本地可见）</summary>"
+        return (f"<details class='devlog'><summary>{head}</summary>"
                 "<div class='dl-box'><div class='dl-row dl-info'>"
                 "<span class='dl-ts'></span><span class='dl-lvl'>INFO</span>"
-                "<span class='dl-msg'>暂无日志，操作后将在此显示（发生了什么 / 哪里报错）。</span></div></div></details>")
+                f"<span class='dl-msg'>{empty}</span></div></div></details>")
     rows = []
     for ts, level, msg in reversed(COCKPIT_LOG):
         rows.append(
@@ -377,7 +439,7 @@ def _dev_log_panel() -> str:
             f"<span class='dl-ts'>{_esc(ts)}</span>"
             f"<span class='dl-lvl'>{_esc(level)}</span>"
             f"<span class='dl-msg'>{_esc(msg)}</span></div>")
-    return (f"<details class='devlog'><summary>🛠 开发日志（最近 {len(COCKPIT_LOG)} 条 · 仅本地可见）</summary>"
+    return (f"<details class='devlog'><summary>{head}</summary>"
             f"<div class='dl-box'>{''.join(rows)}</div></details>")
 
 
@@ -1900,10 +1962,6 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<script>{OBJ_HISTORY_JS}</script>")
     agent = ("<div class='agent'><h4>② Agent 自动决策（运营无需、也不能改）</h4>"
              "<div class='row'>"
-             "<span class='tag biz'>主渠道 email（MVP 裁定）</span>"
-             "<span class='tag res'>预留 sms（占位不发）</span>"
-             "<span class='tag res'>预留 push（占位不发）</span>"
-             "<span class='tag res'>预留 whatsapp（占位不发）</span>"
              "<span class='tag gov'>频次闸门 1/24h·3/7d</span>"
              "<span class='tag gov'>护栏 退订熔断0.3%·尊重抑制名单</span>"
              "<span class='tag gov'>治理注入 4 节点</span>"
@@ -3783,6 +3841,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
+        if getattr(self, "_lang_set_cookie", False):
+            # 显式切语言时下发 Cookie，之后仅凭 Cookie 生效
+            self.send_header("Set-Cookie", i18n.cookie_header(i18n.get_lang()))
         if headers:
             for k, v in headers.items():
                 self.send_header(k, v)
@@ -3797,10 +3858,31 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _resolve_lang(self):
+        """解析本次请求的语言（URL ?lang= > Cookie > 默认 en），并记住是否需下发 Cookie。
+
+        显式带 ?lang= 时才回 Set-Cookie，避免每个页面都重复写 Cookie 头。
+        """
+        parsed = urllib.parse.urlparse(self.path)
+        qs = urllib.parse.parse_qs(parsed.query or "")
+        lang = i18n.resolve(self, (qs.get("lang") or [None])[0])
+        self._lang_set_cookie = bool((qs.get("lang") or [None])[0])
+        return lang
+
     def do_GET(self):
+        # 语言：默认英文，可切中文（?lang=zh 或 Cookie）
+        self._resolve_lang()
         # URL 解码：goal_id 可能是中文（slug 只剔非字母数字，中文属于 isalnum），
         # 浏览器会把 /program/中文 百分号编码后发回来，不解码就匹配不到 Program。
         path = urllib.parse.unquote(self.path.split("?")[0])
+        # 显式切语言：先落 Cookie，再 302 回干净 URL（去掉 ?lang=），
+        # 避免刷新/复制链接时一直带着参数。
+        if getattr(self, "_lang_set_cookie", False):
+            self.send_response(302)
+            self.send_header("Location", path or "/")
+            self.send_header("Set-Cookie", i18n.cookie_header(i18n.get_lang()))
+            self.end_headers()
+            return
         # GET 降噪：纯页面浏览 / 自带专属日志的路由不重复记
         #（详见 _is_get_log_suppressed 说明），否则几次刷新就能把 200 条的
         # 环形缓冲刷满、把业务事件挤出去。
@@ -3880,6 +3962,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, _page("404", "<p>未知路径</p>"))
 
     def do_POST(self):
+        # 语言：POST 返回的页面同样按当前语言渲染（读 Cookie，不重定向）
+        self._resolve_lang()
         # 同 do_GET：中文 goal_id 会被浏览器百分号编码，需解码后再匹配 Program
         path = urllib.parse.unquote(self.path.split("?")[0])
         cockpit_log("INFO", f"POST {path}")
