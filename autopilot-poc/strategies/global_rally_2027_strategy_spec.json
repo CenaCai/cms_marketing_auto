@@ -1,0 +1,178 @@
+{
+  "goal_id": "global_rally_2027",
+  "objective": "Promote the Global Rally Championship 2027 (promo window 2026-07-01 to 2027-05-01) to motorsport and racing enthusiasts. Every email links to a landing page containing a personal-information form; form submission is the terminal step and hands off to offline business follow-up. Target form-submission conversion 1%. No contact between 22:00 and 08:00. Already-converted users are suppressed from further touches. Multiple themed phases across the window. English only.",
+  "business_topic": "Global Rally Championship 2027 ticketing & fan engagement",
+  "kpi": { "metric": "conversion", "target": 0.01 },
+  "window": { "start": "2026-07-01", "end": "2027-05-01" },
+  "locale": ["en_US"],
+  "budget": 0,
+  "audience_package": "GENERIC",
+  "audience_profile": {
+    "age": "55+",
+    "gender": "未知",
+    "income": "未知",
+    "education": "大专",
+    "industry": "能源",
+    "source": "CTL",
+    "region": "中国大陆",
+    "interests": ["racing", "motorsport", "sports"]
+  },
+  "audience_match": {
+    "code": "GENERIC",
+    "label": "通用兜底",
+    "score": 0.0,
+    "fallback": true,
+    "matches": [],
+    "alternatives": [],
+    "near_miss": {
+      "code": "HNW_FAMILY",
+      "label": "高净值家庭客",
+      "score": 0.0,
+      "evidence": [],
+      "abs_score": 0.0
+    },
+    "evidence": []
+  },
+  "needs_operator_review": true,
+  "operator_review_notes": "Target persona (age=55+, gender=未知, income=未知, education=大专, industry=能源, source=CTL) scores BELOW 0.6 on EVERY named package (all score 0.0, abs_score 0.0) -> GENERIC fallback per references/audience-content-map.json v2026-09-07 (threshold 0.6). No package merge (only 1 package can drive strategy, and here none qualifies). Strategy uses GENERIC conservative defaults: max_per_24h=1 / max_per_7d=2 (package freq 1/2); quiet_hours forced to 22:00-08:00 by brief red line (overrides package default 22:00-09:00); send_window=19:00-21:00; content levers=neutral_value+restrained_tone. audience_package echoes GENERIC (rule 4) and matches scorer inference -> spec/inference now consistent. Campaign count N=4 is a hard constraint (D=305>90 -> base 5; C=0.01<=0.02 -> -1; clamp[1,5]=4); not affected by package. Mautic not connected (data_missing: token fetch <urlopen error [WinError 10061]>): reuse-vs-generate for email/segment/landing-page/form is undecided -> all email_ref set to generate per fallback, pending operator confirmation.",
+  "campaigns": [
+    {
+      "cid": "c1",
+      "name": "Global Rally Championship 2027 - Launch & Calendar Reveal",
+      "content_brief": "Fans know the championship exists but have no single calendar or concrete reason to commit yet.",
+      "content_emphasis": ["neutral_value", "restrained_tone"],
+      "segment": { "mode": "propose", "ref": "SEG_GLOBAL_RALLY_BROAD_EN" },
+      "send_conditions": {
+        "delay_hours": 0,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "suppression_tags": ["gr2027_registered"],
+      "tags_to_write": ["gr2027_c1", "gr2027_launch"],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c1-en",
+      "form_ref": "FORM_GLOBAL_RALLY_2027_C1_EN",
+      "depends_on": null,
+      "editable_until_start": true,
+      "daily_adjust_window_hours": 24,
+      "content_variant": 1,
+      "deferred": false,
+      "main_endpoint": { "tags": ["gr2027_registered"], "stage": "registered", "form": "FORM_GLOBAL_RALLY_2027_C1_EN", "terminal": true },
+      "branches": [ { "id": "engaged", "endpoint": { "tags": ["gr2027_c1_engaged"], "stage": "engaged" }, "next": "c2" } ],
+      "rationale": "Wave 1 of 4 (N=4 hard constraint: D=305>90 base5, C=0.01<=0.02 -1, clamp[1,5]). Persona scores GENERIC (no named package >=0.6) -> conservative GENERIC strategy: freq 1/2, neutral_value+restrained_tone levers, quiet_hours 22:00-08:00 per brief red line. Launch tone = objective fact statement + 2-3 neutral selling points (no over-polish).",
+      "evidence": "scored per references/audience-content-map.json v2026-09-07 (threshold 0.6): all packages 0.0 -> GENERIC fallback. data_missing: Mautic not connected; segment ref proposed (find-or-create)."
+    },
+    {
+      "cid": "c2",
+      "name": "Global Rally Championship 2027 - Drivers & Teams Spotlight",
+      "content_brief": "Interested fans lack a human, relatable connection to the teams and drivers.",
+      "content_emphasis": ["neutral_value", "restrained_tone"],
+      "segment": { "mode": "propose", "ref": "SEG_GLOBAL_RALLY_UGC_EN" },
+      "send_conditions": {
+        "delay_hours": 1824,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "suppression_tags": ["gr2027_registered"],
+      "tags_to_write": ["gr2027_c2", "gr2027_ugc"],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c2-en",
+      "form_ref": "FORM_GLOBAL_RALLY_2027_C2_EN",
+      "depends_on": "c1",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "content_variant": 1,
+      "deferred": false,
+      "main_endpoint": { "tags": ["gr2027_registered"], "stage": "registered", "form": "FORM_GLOBAL_RALLY_2027_C2_EN", "terminal": true },
+      "branches": [ { "id": "engaged", "endpoint": { "tags": ["gr2027_c2_engaged"], "stage": "engaged" }, "next": "c3" } ],
+      "rationale": "Wave 2 of 4: serial dependency on c1 keeps ~54-day cadence across the 305-day window. GENERIC package (no merge): distinct UGC/engaged-intent segment per mutual-exclusivity rule; quiet hours 22:00-08:00 preserved per red line; conservative freq 1/2.",
+      "evidence": "data_missing: Mautic not connected; segment ref proposed. Cadence D/4 approx 76d, set 54d (1824h) to front-load before race season. GENERIC strategy per references/audience-content-map.json."
+    },
+    {
+      "cid": "c3",
+      "name": "Global Rally Championship 2027 - Early-Bird & VIP Access",
+      "content_brief": "Warm prospects have not yet been given a scarce, time-boxed reason to act.",
+      "content_emphasis": ["neutral_value", "restrained_tone"],
+      "segment": { "mode": "propose", "ref": "SEG_GLOBAL_RALLY_WARM_EN" },
+      "send_conditions": {
+        "delay_hours": 1824,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "suppression_tags": ["gr2027_registered"],
+      "tags_to_write": ["gr2027_c3", "gr2027_earlybird"],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c3-en",
+      "form_ref": "FORM_GLOBAL_RALLY_2027_C3_EN",
+      "depends_on": "c2",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "content_variant": 1,
+      "deferred": false,
+      "main_endpoint": { "tags": ["gr2027_registered"], "stage": "registered", "form": "FORM_GLOBAL_RALLY_2027_C3_EN", "terminal": true },
+      "branches": [ { "id": "engaged", "endpoint": { "tags": ["gr2027_c3_engaged"], "stage": "engaged" }, "next": "c4" } ],
+      "rationale": "Wave 3 of 4: warm-prospect nudge. GENERIC package: even an access offer stays neutral/non-over-polished (forbidden phrases 限时/秒杀/拼团/刺激/上头 apply); quiet hours 22:00-08:00 per red line; freq 1/2.",
+      "evidence": "data_missing: Mautic not connected; segment ref proposed. Per GENERIC strategy (references/audience-content-map.json)."
+    },
+    {
+      "cid": "c4",
+      "name": "Global Rally Championship 2027 - Race Week & Business Follow-up",
+      "content_brief": "Race-week audiences need a clear, low-friction path to register and hand off to sales.",
+      "content_emphasis": ["neutral_value", "restrained_tone"],
+      "segment": { "mode": "propose", "ref": "SEG_GLOBAL_RALLY_RACEWEEK_EN" },
+      "send_conditions": {
+        "delay_hours": 768,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "suppression_tags": ["gr2027_registered"],
+      "tags_to_write": ["gr2027_c4", "gr2027_raceweek"],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c4-en",
+      "form_ref": "FORM_GLOBAL_RALLY_2027_C4_EN",
+      "depends_on": "c3",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "content_variant": 1,
+      "deferred": false,
+      "main_endpoint": { "tags": ["gr2027_registered"], "stage": "registered", "form": "FORM_GLOBAL_RALLY_2027_C4_EN", "terminal": true },
+      "branches": [ { "id": "engaged", "endpoint": { "tags": ["gr2027_c4_engaged"], "stage": "engaged" }, "next": null } ],
+      "rationale": "Wave 4 of 4: race-week conversion push ending 2027-05-01 (program end). GENERIC package; form submit = terminal, triggers offline business follow-up. Suppression_tags prevent re-touch of already-registered users. Quiet hours 22:00-08:00 per red line.",
+      "evidence": "data_missing: Mautic not connected; segment ref proposed. Terminal endpoint + offline handoff per brief."
+    }
+  ],
+  "service_sequences": [
+    {
+      "sid": "s1",
+      "name": "Registration Confirmation",
+      "type": "transactional",
+      "quiet_hours_exempt": true,
+      "send_within_minutes": 5,
+      "trigger": "form_submit",
+      "email": {
+        "mode": "generate",
+        "ref": "",
+        "brief": {
+          "subject": "You're registered for Global Rally Championship 2027 updates",
+          "cta": "Confirm your details",
+          "locale": ["en_US"]
+        }
+      },
+      "tags_to_write": ["gr2027_confirmed"],
+      "rationale": "Instant post-submit confirmation is non-promotional; exempt from quiet hours per governance rule (user-action triggered <=5min).",
+      "evidence": "data_missing: Mautic not connected; service sequence structure per SOP, asset creation pending operator confirmation."
+    }
+  ]
+}

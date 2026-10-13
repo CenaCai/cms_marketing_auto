@@ -1,0 +1,364 @@
+{
+  "goal_id": "asian_cup_2026",
+  "objective": "2026 亚洲杯足球赛（60 天周期）：对 intent_sports 泛体育人群与 intent_sports_Football 足球细分人群做赛程预热 → 观赛权益留资 → 门票转化，并用操作行为驱动的阶段与分组做分层触达与抑制",
+  "window": { "start": "2026-11-10", "end": "2027-01-09" },
+  "locale": ["zh_CN", "en_US"],
+  "budget": 0,
+  "audience_profile_hint": {
+    "_note": "本 spec 不声明 audience_package —— 避免与 Brief 画像推断值对撞触发 spec_validation 规则2 阻断。画像包由服务端按你在 /brief 填的画像推断。",
+    "_note2": "strategy 里的 tags_to_write 是真实落库通路（编译为 tag.write 节点，经 tag-rule 校验写入）；intent_sports 为父标签、intent_sports_Football 为细分标签，两者同批写入。"
+  },
+  "campaigns": [
+    {
+      "cid": "asian_cup_2026_c1",
+      "name": "第1波·赛程预热（泛体育人群 · 未互动）",
+      "rationale": "60 天窗口开赛前 45 天，是唯一能建立「我知道这件事」的窗口。此波只做赛制与分组信息，不带折扣、不带紧迫话术，用来量出父标签 intent_sports 的真实基线开信率，为后续三波定权重。",
+      "evidence": "intent_sports 父标签覆盖最广、含非足球用户，故只用中性赛制信息探底；细分标签 intent_sports_Football 的高意向用户留给第2波。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_AC26_SPORTS_ALL_NOENGAGE",
+        "note": "需在 Mautic 新建。定义：tag in [intent_sports] 且 不在 [ac26_c1_sent, ac26_form_submitted, ac26_converted]（即赛程预热池：泛体育人群 ∩ 未互动）。intent_sports_Football 用户也包含在此池内，本波统一触达以获取基线。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2026 亚洲杯 · 赛程与分组速览（一次看完）",
+          "angle": "中性信息价值",
+          "cta": "查看完整赛程",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_AC26_SCHEDULE", "note": "需新建：赛程 + 分组 + 举办城市对照页（中英双语）" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "中性信息价值",
+        "headline": "2026 亚洲杯 · 赛程与分组速览",
+        "summary": "A/B 变体走「赛制科普」角度：只讲赛制、分组、赛程三件事实，不含折扣与稀缺话术，供审批人核对为中性表述。"
+      },
+      "variant_split": 0.5,
+      "send_conditions": {
+        "delay_hours": 0,
+        "cadence_days": 0,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_Football", "ac26_c1_sent", "ac26_engaged"],
+      "stage_rules": [
+        { "from": "sports_observer", "to": "sports_engaged", "when": { "signal": "email.open", "op": ">=", "value": 1 }, "direction": "up" }
+      ],
+      "branches": [
+        {
+          "id": "clicked",
+          "note": "点击 → 打互动标签 + 升级阶段；这是把「看过」和「没看过」分开的关键分叉",
+          "when": { "signal": "email.click", "op": ">=", "value": 1 },
+          "endpoint": {
+            "tags": ["ac26_clicked"],
+            "stage": "sports_engaged",
+            "segment": "SEG_AC26_SPORTS_ENGAGED",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移入互动分组（add）"
+          },
+          "next": "asian_cup_2026_c2"
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["ac26_c1_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c1 触达标记，作为后续波次的排除依据"
+      },
+      "success_criteria": { "metric": "open_rate", "threshold": ">=0.18" }
+    },
+
+    {
+      "cid": "asian_cup_2026_c2",
+      "name": "第2波·看点与球星（足球细分高意向）",
+      "rationale": "第1波跑完基线后，intent_sports_Football 里真正有互动的人进入此波。此波不谈购票，只谈内容看点（球队、球星、赛制变化），把「感兴趣」推到「想去看」，是留资的前置铺垫。",
+      "evidence": "细分标签 intent_sports_Football 已含明确足球意图，决策成本低于泛体育人群，适合用内容角度而非价格角度驱动。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_AC26_FOOTBALL_ENGAGED",
+        "note": "需在 Mautic 新建。定义：tag in [intent_sports_Football] 且 tag in [ac26_engaged]（即第1波有互动的足球细分用户）。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2026 亚洲杯 · 你关注的球队与赛制变化",
+          "angle": "内容看点驱动",
+          "cta": "查看球队分析",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_AC26_TEAMS", "note": "需新建：球队/球星看点分析页" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "内容看点驱动",
+        "headline": "你关注的球队与赛制变化",
+        "summary": "A/B 变体走「深度内容」角度：突出球队与赛制分析，不含折扣与倒计时话术。"
+      },
+      "variant_split": 0.4,
+      "send_conditions": {
+        "delay_hours": 240,
+        "cadence_days": 10,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_Football", "ac26_c2_sent", "ac26_deep_engaged"],
+      "stage_rules": [
+        { "from": "sports_engaged", "to": "sports_considering", "when": { "signal": "email.click", "op": ">=", "value": 2 }, "direction": "up" }
+      ],
+      "branches": [
+        {
+          "id": "deep_click",
+          "note": "二次点击 = 强意向，直接送入留资波次 c3",
+          "when": { "signal": "email.click", "op": ">=", "value": 2 },
+          "endpoint": {
+            "tags": ["ac26_strong_intent"],
+            "stage": "sports_considering",
+            "segment": "SEG_AC26_STRONG_INTENT",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移入强意向分组"
+          },
+          "next": "asian_cup_2026_c3"
+        },
+        {
+          "id": "no_click",
+          "note": "未点击 → 移出本波分组，退回浅层互动池等后续波次，避免同一人被反复追打",
+          "when": { "signal": "email.click", "op": "<", "value": 1 },
+          "endpoint": {
+            "segment": "SEG_AC26_FOOTBALL_ENGAGED",
+            "action": "remove",
+            "actions": ["segment"],
+            "note": "移出 SEG_AC26_FOOTBALL_ENGAGED（remove），本波不再重复触达"
+          }
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["ac26_c2_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c2 触达标记"
+      },
+      "success_criteria": { "metric": "click_rate", "threshold": ">=0.06" }
+    },
+
+    {
+      "cid": "asian_cup_2026_c3",
+      "name": "第3波·观赛权益留资（强意向 + 泛体育未互动）",
+      "rationale": "留资是本赛事策略的主转化目标。第3波同时吃两类人：c2 判定为强意向的（SEG_AC26_STRONG_INTENT），以及 c1/c2 未互动但仍在父标签内的泛体育人群（用权益角度而非价格角度再拉一次）。留资成功即写 tag 并移出后续促销波次。",
+      "evidence": "留资表单提交是表单.submit 信号，可被 branches 精确捕获，是阶段推进（considering → form_submitted）的唯一可靠依据。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_AC26_LEAD_CANDIDATE",
+        "note": "需在 Mautic 新建。定义：(tag in [ac26_strong_intent] 或 tag in [intent_sports] 且 未 in [ac26_form_submitted, ac26_converted])。即「可留资池」，排除已留资与已转化。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2026 亚洲杯 · 观赛权益与行程说明",
+          "angle": "权益说明",
+          "cta": "填写观赛意向",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_AC26_BENEFITS", "note": "需新建：观赛权益 + 行程说明页（含 FORM_AC26_SIGNUP 留资表单）" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "权益说明",
+        "headline": "观赛权益与行程说明",
+        "summary": "A/B 变体走「权益框架」角度：逐条说明权益构成，不使用折扣紧迫话术。"
+      },
+      "variant_split": 0.5,
+      "send_conditions": {
+        "delay_hours": 600,
+        "cadence_days": 25,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_Football", "ac26_c3_sent"],
+      "stage_rules": [
+        {
+          "from": "sports_considering",
+          "to": "sports_form_submitted",
+          "when": { "signal": "form.submit", "op": "exists", "value": true },
+          "direction": "up"
+        }
+      ],
+      "branches": [
+        {
+          "id": "form_submitted",
+          "note": "表单提交 = 已留资。这是全策略最关键的抑制闸门：打 tag + 升级阶段 + 移出促销池，后续波次不再触达。",
+          "when": { "signal": "form.submit", "op": "exists", "value": true },
+          "endpoint": {
+            "tags": ["ac26_form_submitted"],
+            "stage": "sports_form_submitted",
+            "segment": "SEG_AC26_LEAD_CANDIDATE",
+            "action": "remove",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移出可留资池（remove）"
+          },
+          "next": "asian_cup_2026_c4"
+        },
+        {
+          "id": "page_only",
+          "note": "只看落地页未留资 = 中间态，继续留在池内等 c4",
+          "when": { "signal": "page.hit", "op": ">=", "value": 1 },
+          "endpoint": {
+            "tags": ["ac26_lp_viewed"],
+            "actions": ["tags"],
+            "note": "仅打落地页访问标记，不改阶段"
+          }
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["ac26_c3_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c3 触达标记"
+      },
+      "success_criteria": { "metric": "form_submit_rate", "threshold": ">=0.035" }
+    },
+
+    {
+      "cid": "asian_cup_2026_c4",
+      "name": "第4波·门票转化收口（已留资未转化）",
+      "rationale": "窗口后段（day 40）距离赛程结束仅 20 天，此时仍处「可转化」位置的人只剩已留资未转化的一批。此波唯一目的是把留资推到购票，完成后立刻打终态 tag 并移出全部促销池。",
+      "evidence": "已留资 = 已表达明确观赛意向，是全流程转化率最高的一段；此波不再服务未留资人群，避免把预算摊到已无决策可能的用户上。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_AC26_FORM_NO_CONVERT",
+        "note": "需在 Mautic 新建。定义：tag in [ac26_form_submitted] 且 不在 [ac26_converted]。即已留资未购票。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2026 亚洲杯 · 你的观赛意向已进入安排阶段",
+          "angle": "确定性安排",
+          "cta": "确认观赛方案",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_AC26_TICKET", "note": "需新建：门票与观赛方案确认页" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "确定性安排",
+        "headline": "你的观赛意向已进入安排阶段",
+        "summary": "A/B 变体走「确定性推进」角度：以流程确定感代替价格诉求，不含倒计时话术。"
+      },
+      "variant_split": 0.5,
+      "discount": { "enabled": false, "note": "本波不给折扣：赛事已进入收口期，折扣会拉低客单且与 GENERIC 包 forbidden_phrases 中的促销紧迫类词冲突。如需给权益，改在落地页以套餐形式表达。" },
+      "send_conditions": {
+        "delay_hours": 960,
+        "cadence_days": 40,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_Football", "ac26_c4_sent"],
+      "stage_rules": [
+        {
+          "from": "sports_form_submitted",
+          "to": "sports_converted",
+          "when": { "signal": "page.hit", "op": ">=", "value": 2 },
+          "direction": "up"
+        }
+      ],
+      "branches": [
+        {
+          "id": "converted",
+          "note": "转化终点：打终态 tag + 升级 customer 阶段 + 移出促销池。此分支即本策略的抑制体系收口。",
+          "when": { "signal": "page.hit", "op": ">=", "value": 2 },
+          "endpoint": {
+            "tags": ["ac26_converted", "ac26_purchaser"],
+            "stage": "sports_customer",
+            "segment": "SEG_AC26_FORM_NO_CONVERT",
+            "action": "remove",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移出（remove），此后不再进入任何促销波次"
+          },
+          "terminal": true
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["ac26_c4_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c4 触达标记"
+      },
+      "success_criteria": { "metric": "conversion_rate", "threshold": ">=0.15" }
+    },
+
+    {
+      "cid": "asian_cup_2026_reengage_c1",
+      "name": "挽回分支·全程未互动（day 52）",
+      "rationale": "60 天窗口内父标签下有一批全程零互动用户。他们不应再收主波次内容，但值得在窗口尾声收一次低频挽回：只讲「赛事仍在进行 + 新增信息」，用全新信息而非重复的卖点。此波严格频次 1/周，是全策略唯一允许触达未互动人群的波次。",
+      "evidence": "该人群在前四波均被 segment 排除（无任何触达 tag），是干净的未触达池；挽回波的边际收益通常低于已互动人群，故排在最后且频次最紧。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_AC26_NEVER_ENGAGED",
+        "note": "需在 Mautic 新建。定义：tag in [intent_sports] 且 不在 [ac26_engaged, ac26_form_submitted, ac26_converted, ac26_c4_sent]。即四波全部未触达或未互动的人群。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2026 亚洲杯 · 赛程进入收官阶段（一次汇总）",
+          "angle": "信息汇总",
+          "cta": "查看赛程汇总",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "reuse", "ref": "LP_AC26_SCHEDULE", "note": "复用第1波赛程页，不新建" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "信息汇总",
+        "headline": "赛程进入收官阶段（一次汇总）",
+        "summary": "A/B 变体走「汇总告知」角度：只做信息收拢，只做信息收拢，不带任何促销诉求。"
+      },
+      "variant_split": 0.5,
+      "discount": { "enabled": false },
+      "send_conditions": {
+        "delay_hours": 1248,
+        "cadence_days": 52,
+        "max_per_24h": 1,
+        "max_per_7d": 1,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_Football", "ac26_reengage_sent"],
+      "branches": [
+        {
+          "id": "reopened",
+          "note": "挽回成功 → 打标 + 升级阶段 + 移出未互动池（窗口内不再有任何后续波次）",
+          "when": { "signal": "email.click", "op": ">=", "value": 1 },
+          "endpoint": {
+            "tags": ["ac26_reengaged"],
+            "stage": "sports_engaged",
+            "segment": "SEG_AC26_NEVER_ENGAGED",
+            "action": "remove",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移出（remove）"
+          }
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["ac26_reengage_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打挽回触达标记"
+      },
+      "success_criteria": { "metric": "open_rate", "threshold": ">=0.08" }
+    }
+  ]
+}

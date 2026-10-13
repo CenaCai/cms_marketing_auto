@@ -1,0 +1,228 @@
+{
+  "goal_id": "ucl2028",
+  "objective": "邀请目标联系人登记 2028 欧冠决赛（2028-05-27 单场决赛，host 待定 / 慕尼黑安联为唯一候选，UEFA 约 2026-09 中旬确认）Hospitality 优先购买意向。因 host 未定，本 Program 是意图登记而非售票；登记名单是 2028 开售的承接资产。",
+  "kpi": {
+    "metric": "conversion",
+    "target": 0.0,
+    "kpi_status": "unset_baseline_pending",
+    "note": "target=0.0 表示目标登记数 R 尚未指定（此前 flag A1 未获答复）。R 未定则无法计算 S/R、无法判定数学可达性、无法设置『目标达成』终止条件。请运营补充 R 后方可启用达成率判定；在此之前 Program 只能做基线采集与护栏观测。"
+  },
+  "window": {
+    "start": "2026-09-04",
+    "end": "2028-06-10",
+    "note": "end = E+14（2028-05-27 + 14 天）是治理要求的自动停机兜底（reference 05 R4），非实际发送窗口。主动发送集中在 2026-09 ~ 2026-10；c5 为 host 确认事件触发（deferred）；之后名单转入 2028 开售承接，属独立 Program（由新赛事开票节点触发，不由本 journey 触发）。"
+  },
+  "locale": [
+    "zh_CN",
+    "en_US"
+  ],
+  "budget": 0,
+  "campaigns": [
+    {
+      "cid": "ucl2028_c1",
+      "name": "高意向种子验证波",
+      "rationale": "冷启动且无任何历史 CVR，必须先以最小、最高倾向性的切片验证消息安全性并取得基线，再决定是否放量。这是『首次给新人群发信必须小批量试探』的硬要求，也是后续所有波次 CVR 比较的参照系。",
+      "evidence": "reference 02：冷启动无历史数据取 P25 并标 confidence=low；reference 01『明确不建议自动化』首条『首次给新人群发信——无历史数据，必须小批量试探』；reference 04：n<30 时必须写『样本量不足（n=X），暂不下结论』。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_UCL2028_SEED_HIINTENT",
+        "note": "筛选条件：在 SEG_UCL2028_TARGET 内 且（曾购票 或 event_interest 含 football/sports 或 生命周期 S2/S3）且 非 DNC/退订/投诉 且 未登记。数据依赖：若 event_interest / viewed_tier 空率 >50%（reference 01 分群排查第 3 项 P0）或该切片不足基数 5%，则本波并入 c2，Program 降为 4 波。"
+      },
+      "send_conditions": {
+        "delay_hours": 0,
+        "max_per_24h": 1,
+        "max_per_7d": 1,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "ucl2028_invited",
+        "ucl2028_seed",
+        "ucl2028_opened",
+        "ucl2028_clicked",
+        "ucl2028_registered",
+        "ucl2028_unsub"
+      ],
+      "success_criteria": {
+        "metric": "registration_rate",
+        "threshold": "实测值即为基线（无先验，不设达标线）。放行 c2 的硬门槛：退订率<1.4% 且 投诉率<0.05%（滚动 1h）。n<30 时强制写『样本量不足，暂不下结论』，禁止宣布任何胜出/失败判定。"
+      },
+      "judgment": "进入：属 SEG_UCL2028_SEED_HIINTENT、非 DNC、未登记。退出：提交 LP#24 表单 → 打 ucl2028_registered → 活动级抑制（suppress_promo，非全局）→ 退出本 Program 全部后续 promo，转 service_sequences 的登记确认件 + 培育；退订/投诉 → suppress_all + DNC，全局永久退出。进下一波：未登记者按行为分流——访问过 LP#24 未提交 → c3；7 日内零打开 → c4；其余不追加。转人工：退订率≥1.4% 或投诉率≥0.05% → 暂停并告警；退订率≥2% 或投诉率≥0.1% → 熔断进 PAUSED，出诊断报告（疑似原因/受影响数/建议动作），运营三选一（恢复 / 调整后恢复 / 终止），Agent 无权解除。样本量不足时不得判定红色。"
+    },
+    {
+      "cid": "ucl2028_c2",
+      "name": "全量扩量波",
+      "rationale": "S（人群规模）的可调幅度远大于 CVR，扩人群是优先级最高的干预。c1 验证消息安全并拿到基线后，把触达扩到剩余全量可触达基数——这是本 Program 的增量主体，也是唯一能实质改变预期登记数的杠杆。",
+      "evidence": "reference 02 干预优先级『①扩人群(改 S) > ②提纯 > ③提频次（收益最小且最先触顶）』；可达性公式 预期=S×CVR×触达折损；reference 01 上线前验证第 9 项『首个真实 campaign 限制在 1,000 人以内』（灰度先行再放量）。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_UCL2028_BROAD",
+        "note": "筛选条件：SEG_UCL2028_TARGET 减去 c1 种子群、减去已登记（ucl2028_registered）、减去 DNC/退订/投诉。与 c1 严格互斥，构成本 Program 的增量主体（生产口径约 58,261 减去种子群）。"
+      },
+      "send_conditions": {
+        "delay_hours": 72,
+        "max_per_24h": 1,
+        "max_per_7d": 1,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "ucl2028_invited",
+        "ucl2028_broad",
+        "ucl2028_opened",
+        "ucl2028_clicked",
+        "ucl2028_registered",
+        "ucl2028_unsub"
+      ],
+      "success_criteria": {
+        "metric": "registration_rate",
+        "threshold": "与 c1 基线做分层对比（基准分层：S2/S3 ×2.5–4 倍、S5 复购 ×4–8 倍、S0 匿名 ×0.3–0.5 倍）。差异分解为量差/率差/结构差，仅率差与结构差更新基准库，量差只影响排期。护栏同 c1：退订<1.4%、投诉<0.05%。"
+      },
+      "judgment": "前置门禁（关键）：须 c1 护栏通过（退订<1.4%、投诉<0.05%）且已产生首批行为数据，方可放量；否则本波挂起并转人工，不得无条件放量。进入：属 SEG_UCL2028_BROAD、非 DNC、未登记。退出/分流规则同 c1（登记→退出转服务确认；访问 LP 未提交→c3；零打开→c4）。转人工：送达率<88%（单批次）告警、<75% 暂停本批次并保留剩余配额；发送失败率滚动 10min ≥10% 警告、≥20% 熔断；实际人数 vs 预估偏差 >50% → 重审圈选规则，不得硬发（偏差 ≤30% 继续、30–50% 高亮标注）。"
+    },
+    {
+      "cid": "ucl2028_c3",
+      "name": "LP 到达未登记回收波（最高意向）",
+      "rationale": "已访问 LP#24 却未提交表单的人群，是本 Program 意向最强、流失点最集中的一群。对他们做单轮异议处理与表单减摩擦，比向更冷人群追加频次有效得多——这是『提纯优先于提频次』的典型应用。",
+      "evidence": "reference 06『邮件点击未转化 48h → eng_click_noconv → 票档对比 + 座位图 + 限时激励』；reference 02 漏斗基准『进入票档/选座 / 点击 28%/38%/50%』『提交订单 / 进入结算 45%/62%/78%』作代理基准（需实测校准）；退出条件『任何成交立即退促销，仅留服务序列』。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_UCL2028_LP_ABANDON",
+        "note": "筛选条件：带 ucl2028_clicked 或 有 LP#24（alias ucl2028-bridge）页面访问记录 且 未提交意向表单 且 未登记 且 非 DNC。与 c4 严格互斥（c4 为零打开者）。注意：因本实例无 email click webhook，『已点击』须由 mtc_* 链接参数 + LP page_hit 反解获得（reference 01 已核实缺口）。"
+      },
+      "send_conditions": {
+        "delay_hours": 240,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "ucl2028_lp_abandoned",
+        "eng_click_noconv",
+        "ucl2028_registered"
+      ],
+      "success_criteria": {
+        "metric": "lp_to_submit_rate",
+        "threshold": "实测并写入基准库（无先验，不设达标线）。若显著低于代理基准下沿（提交/进入结算 P25 45%）→ 转人工排查落地页与表单，不得追加触达。"
+      },
+      "judgment": "进入：c1/c2 中已点击或已访问 LP#24、未提交、未登记、非 DNC。判定：本波是异议处理与表单减摩擦，不是重复邀约；单轮，限 1 次。退出：提交 → ucl2028_registered → 活动级抑制并退出全部后续 promo，转 service_sequences 登记确认件；兜底后仍未提交 → 保留 ucl2028_lp_abandoned 并退出，不再追加（防止把最高 ROI 通道耗在反复不转化者身上）。转人工：若该群放弃率明显高于代理基准下沿，判定为落地页/表单问题（字段过多、库存表述、信任要素缺失），转人工修 LP，而非继续加触达。"
+    },
+    {
+      "cid": "ucl2028_c4",
+      "name": "未到达 LP 差异化复投波（唯一一次，含零打开与打开未点击）",
+      "rationale": "覆盖『始终未到达 LP#24』的全部人群：零打开（可见性障碍）与已打开但未点击/未访问 LP（动机障碍）。合并理由：若只覆盖零打开，则『打开未点击』这一更暖人群反而拿到 0 次触达，比更冷的零打开者还少，属反向分层；且规格 §11.1 行为阶梯把『L2 未点击』列为独立层、§11.2 给的动作即『打开未点换标题』，规格本身要求对该层有动作。两类障碍在 PoC 阶段用同一个换角度变体处理，属有意简化（见 notes.merged_c4_cohort）。仍限 1 次，之后停止——加频次收益最小且最先触顶。",
+      "evidence": "规格 §11.1 行为阶梯（L1 送达 / L2 未点击 为独立层）与 §11.2『打开未点换标题』；reference 06『邮件打开未点击 → eng_open_noclick → 换标题/变体复投 1 次（限 1 次/周期）』『连 3 封未开 → eng_low 降频至 1 封/2 周』『连 5 封未开 → eng_cold → 停邮件，短信试探 1 次』；reference 02『去重打开率 P25 12% / 中位 20%』（真实打开率≈追踪值×0.7，Apple MPP 污染，禁止作任何转化率分母）。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_UCL2028_NOREACH",
+        "note": "筛选条件：c1/c2 已送达 且【始终未到达 LP#24】（无 page_hit(ucl2028-bridge) 且 无 ucl2028_clicked），涵盖两个子群——① 零打开（更冷，可见性障碍）；② 已打开但未点击/未访问 LP（更暖，动机障碍，c1/c2 已打 eng_open_noclick）。且 未登记 且 非 DNC。与 c3 严格互斥（c3 = 到过 LP 未提交）。命名用 NOREACH 而非 NOOPEN：名字须反映与 c3 的互斥边界（到达 vs 未到达 LP），不得暗示仅零打开。待定项：CN 手机号子集是否改用短信补刀取决于 CN:EN 分布（flag A7 未落地前一律按邮件）。"
+      },
+      "send_conditions": {
+        "delay_hours": 336,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "ucl2028_reminded",
+        "ucl2028_noopen",
+        "eng_open_noclick",
+        "ucl2028_unsub"
+      ],
+      "success_criteria": {
+        "metric": "lp_reach_rate_after_remind（主口径，两个子群通用）",
+        "threshold": "主口径=复投后到达 LP#24 人数 / c4 送达人数（与 decision_lp_reached_after_remind 判定节点一致）。观测时【必须单列送达率】作分母可信度校验：送达率 <88%（单批次警告线）时打开率不可解读，不得把结果归因到文案。打开率仅对 ucl2028_noopen（零打开）子群有意义且仅在送达率≥88% 时可解读；对 eng_open_noclick（已打开未点击）子群，打开率无意义（他们早已打开过），其进展只能看 LP 到达率——因此严禁跨子群平均打开率，否则产出的是无意义混合值。两个子群指标须分别记录，为日后拆分提供数据。若零打开子群打开率 <12%（基准 P25）→ 转人工排查送达率 / 进垃圾箱 / 主题行 / 名单新鲜度，禁止第 3 次触达。最终口径仍为登记率（表单提交）。"
+      },
+      "judgment": "进入：c1/c2 已送达、始终未到达 LP#24（零打开 或 已打开未点击）、未登记、非 DNC。判定：唯一一次差异化复投，限 1 次/周期；两个子群共用 v4_remind_human 变体——对零打开是『换个标题重新送达』，对打开未点击是『换角度再给一次理由、降低承诺门槛』，属有意合并。子群用标签区分以便日后拆分分析：ucl2028_noopen（零打开）vs eng_open_noclick（已打开未点击，由 c1/c2 写入）。退出：复投后仍未到达 LP → 保留 ucl2028_reminded 并退出；连 3 封未开 → eng_low，邮件降频至 1 封/2 周；连 5 封未开 → eng_cold，停邮件（可短信试探 1 次或退出）。转人工：整体打开率 <12%（P25）说明是送达/名单质量问题而非内容问题 → 转人工查渠道健康与名单新鲜度；严禁用第 3 次触达去解决送达问题。"
+    },
+    {
+      "cid": "ucl2028_c5",
+      "name": "host 确认事件触发波（deferred）",
+      "rationale": "host 由『待定 / 唯一候选』变为『已确认慕尼黑』是外部权威事件，能把此前无法具体化的权威性与稀缺性落地。这是与行为衰减完全不同的触达理由，因此值得独立成波，而不是并入既有波次或靠加频次实现。",
+      "evidence": "reference 02『触发源决定意图：跨品类由新赛事开票节点触发，不由上一场行程触发』（本波同理，由外部权威事件触发）；已核实事实『UEFA 约 2026-09 中旬确认 host，慕尼黑安联为唯一候选』；内容侧已备 EM_UCL2028_HOSTCONFIRMED 延迟触发资产，且该资产进 plan_hash。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_UCL2028_HOSTCONFIRM_POOL",
+        "note": "筛选条件：截至触发时点仍未登记 且 非 DNC/退订/投诉 的全量人群（含 c1–c4 未转化者与未触达余量）。与 c1–c4 均不同：本群按『外部事件时点』而非『行为状态』定义，因此与前述各波不构成重复触达逻辑。"
+      },
+      "send_conditions": {
+        "delay_hours": 264,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "ucl2028_host_confirmed",
+        "ucl2028_registered",
+        "ucl2028_unsub"
+      ],
+      "success_criteria": {
+        "metric": "registration_rate",
+        "threshold": "与本 Program 累计基线对比，按结构差记录（不并入同品类达成率口径，参照跨品类归属规则单列）。护栏：退订<1.4%、投诉<0.05%。"
+      },
+      "judgment": "触发方式（关键）：本波由外部事件（UEFA 官方确认 host）驱动，不是 delay 到期自动发送。delay_hours=264 仅为预期时点占位（约 2026-09-15），PoC 应把本波置为 deferred，待事件实际确认后由运营启用。进入：未登记且非 DNC。退出：登记 → ucl2028_registered → 活动级抑制退出，转 service_sequences 登记确认件；本波为最后一波促销，之后不再追加，名单转 2028 开售承接（独立 Program，由开售节点触发）。转人工：若 host 未按预期在 2026-09 确认 → 保持 deferred，由运营决定延后或改用『唯一候选』措辞；host 未确认前严禁以确定性措辞表述 host（合规红线）。",
+      "deferred": true,
+      "deferred_enable_condition": "由 UEFA 官方确认 host 事件驱动；运营核实公告后手动启用。严禁由 delay_hours=264 到期自动触发。"
+    }
+  ],
+  "service_sequences": [
+    {
+      "sid": "svc_ucl2028_registered_confirm",
+      "name": "意向登记确认件（服务序列）",
+      "intent": "service",
+      "class": "service",
+      "counts_toward_promo_cap": false,
+      "exempt_from_promo_suppression": true,
+      "quiet_hours_exempt": true,
+      "send_within_minutes": 5,
+      "quiet_hours_note": "仅限用户动作即时触发（≤5min）的服务确认件豁免静默窗；促销类触达（campaigns[] 全部 5 波）一律不豁免，仍 22:00-09:00 禁触。依据：规格 §15.1 禁的是『主动触达』，用户深夜自行提交表单后收到即时确认属预期内，延到次日反而违背服务预期；§16.4 transactional/service 不受冻结约束。",
+      "rationale": "登记成功后的确认触达属服务性/交易性触达，不是促销波次，因此不能作为第 6 波塞进 campaigns[]。它与促销序列的抑制规则直接冲突：c1–c5 的 judgment 都规定『登记 → suppress_promo → 退出全部后续 promo』，若确认件是 promo Program 的第 6 波，会被自己的抑制规则一并抑制掉。故必须与 promo Program 解耦，独立成序列。",
+      "evidence": "原则2『交易性/服务性触达永不冻结——已购用户收不到入场须知=现场事故』（登记确认同理）；reference 05 配额表：transactional/service L1 硬顶『不设限』、疲劳度权重『0』、『不占 S 池』；reference 05 抑制作用域：comm_freeze 拆为 promo/marketing 两字段，『transactional 与 service 不受任何冻结约束』；reference 06『支付成功 → suppress_promo:{event_code} → 退所有促销 journey，转服务序列』；reference 02 渠道矩阵『已成交 → 仅服务序列，禁促销』；规格 §15.1 / §16.4（静默窗豁免限定）。",
+      "trigger": {
+        "mode": "event",
+        "event": "Page #24（alias ucl2028-bridge）意向登记表单提交成功",
+        "delay_hours": 0,
+        "note": "由表单提交动作直接触发，不由 segment + delay 驱动（触发源决定意图）。不排入促销排期。"
+      },
+      "timing": {
+        "mode": "immediate_on_user_action",
+        "delay_hours": 0,
+        "send_within_minutes": 5,
+        "note": "用户动作即时触发，须在 5 分钟内发出；仅此情形豁免静默窗。"
+      },
+      "exemptions": {
+        "promo_frequency_cap": "豁免（counts_toward_promo_cap=false）——service 不设硬顶，不占 promo L1 4 步配额，不计入每人 3 触上限",
+        "suppress_promo": "豁免（exempt_from_promo_suppression=true）——已登记者的活动级促销抑制只作用于 promo 波次，不得抑制服务件（否则确认件被自己的规则吞掉）",
+        "comm_freeze": "豁免——transactional/service 不受任何冻结约束",
+        "quiet_hours": "豁免（team-lead 已裁定，非建议值）——仅限『用户动作即时触发的服务确认件』，即 Page #24 表单提交后 ≤5 分钟内发出；促销类触达（campaigns[] 全部 5 波）一律不豁免，仍 22:00-09:00 禁触。"
+      },
+      "content_constraints": {
+        "must_include": [
+          "确认已登记成功",
+          "host 待 UEFA 约 2026-09 确认、慕尼黑安联为唯一候选",
+          "开票前会另行通知",
+          "退订链接（服务件同样为合规必需）"
+        ],
+        "must_avoid": [
+          "任何促销 CTA 或再次邀约（已登记者禁促销）",
+          "票价 / 库存 / 余票数字",
+          "新增必填字段"
+        ],
+        "optional": "可选 L2 偏好（出发城市 / 出行人数 / 预算档位）以【内嵌链接】形式置于确认件内；按 reference 02『连带 CTA 内嵌服务内容，不单独发促销邮件』处理，且必须选填、不得因此阻断确认件发送"
+      },
+      "tags_to_write": [
+        "ucl2028_registered",
+        "ucl2028_confirm_sent"
+      ],
+      "exit": "确认件发出后本序列结束；该联系人进入 2028 开售承接名单（独立 Program，由开票节点触发），期间除服务性/交易性必要外不主动触达。",
+      "judgment": "进入：Page #24 表单提交成功即触发——不看 segment、不看 delay、不看 promo 抑制状态、不看是否已退出促销 journey。判定：本序列与 promo Program 完全解耦，不占 promo 频次配额、不受 suppress_promo 抑制、不受 comm_freeze 冻结；任何把这些治理规则套用到本序列的实现都是缺陷。退出：确认件发出即结束，转 2028 开售承接名单。转人工：若表单提交未触发确认件（如 form_submissions.lead_id 丢失，reference 01 已列为 P0 数据链路缺口）→ 立即转人工排查，这是数据链路问题不是内容问题；若确认件退订率异常升高 → 暂停并排查确认件是否混入了促销内容或再次邀约话术。"
+    }
+  ],
+  "notes": {
+    "sid_alignment": "service_sequences[0].sid 已统一为 svc_ucl2028_registered_confirm。ucl2028_content_map.json 中同条目 sid 须同步为该值（其当前值为 ucl2028_svc_register_confirm）——加载器按 sid 合并取并集，若两文件 sid 不一致会解析成两条序列，导致已登记者收到两封确认信。",
+    "A7_cn_en": "flag A7 保留但不阻塞：生产 CN:EN 分布数据未落地前，c4 维持邮件、不改短信；待数据到位后单独评估。",
+    "kpi_ruling": "R 手动配置、可留空；未配置时 kpi_status=unset_baseline_pending，不报错、不参与计算，c1 语义=取基线波，达成判定延后到基线回流，可达性校验在未设置时跳过但显式标注。",
+    "quiet_hours_ruling": "静默窗豁免仅限『用户动作即时触发（≤5min）的服务确认件』；campaigns[] 全部 5 波促销触达一律不豁免，仍 22:00-09:00 禁触。",
+    "merged_c4_cohort": "有意合并，非遗漏：c4 分群 SEG_UCL2028_NOREACH（未到达 LP）同时覆盖两个障碍不同的子群——① 零打开（更冷，可见性障碍：可能是没送达/进垃圾箱/标题没打动）；② 已打开但未点击未访问 LP（更暖，动机障碍：看到了但不为所动）。合并动机：只覆盖零打开会造成『更暖人群反而 0 触达』的反向分层；规格 §11.1/§11.2 亦要求对 L2 未点击有动作。PoC 阶段用同一变体 v4_remind_human 处理，属简化；两个子群以 ucl2028_noopen / eng_open_noclick 标签区分，指标须分群记录。后续数据量足够（各子群样本 ≥5,000 且 p<0.05）应拆成两波分别处理，勿把本次合并当作既有结论。",
+    "touch_cap_verification": "每人最多 3 触，仍在 promo L1 硬顶 4 步内，c4 合并后不破坏该口径：路径① c1(或c2) + c3(到过LP未提交) + c5 = 3 触；路径② c1(或c2) + c4(未到达LP，含零打开与打开未点击) + c5 = 3 触。c3 与 c4 互斥故不可兼得；service 确认件不占 promo 触达、不计入此上限。",
+    "ownership": "本文件由 growth-data-analyst 维护：发送节奏、分群、判断套件、护栏与豁免。内容资产（email / content_variant / 文案）归 ucl2028_content_map.json，由 growth-content-strategist 维护；加载器按 cid / sid 合并取并集。"
+  }
+}

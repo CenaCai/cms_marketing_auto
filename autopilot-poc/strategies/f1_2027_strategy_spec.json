@@ -1,0 +1,432 @@
+{
+  "goal_id": "f1_2027",
+  "objective": "2027 F1 赛车（90 天周期）：对 intent_sports 泛体育人群与 intent_sports_AutoRacing 赛车细分人群做赛季预热 → 车队看点内容 → 观赛权益留资 → 门票转化收口，并用操作行为驱动的阶段与分组做分层触达与抑制",
+  "window": { "start": "2026-10-13", "end": "2027-01-11" },
+  "locale": ["zh_CN", "en_US"],
+  "budget": 0,
+  "audience_profile_hint": {
+    "_note": "本 spec 不声明 audience_package —— 避免与 Brief 画像推断值对撞触发 spec_validation 规则2 阻断。画像包由服务端按你在 /brief 填的画像推断。",
+    "_note2": "F1 的决策周期比足球长得多（购票决策周期通常 4~8 周），因此 5 波排期比足球的 4 波更疏，节奏更慢、单波更重。"
+  },
+  "campaigns": [
+    {
+      "cid": "f1_2027_c1",
+      "name": "第1波·赛季开赛预热（泛体育人群 · 未互动）",
+      "rationale": "90 天窗口的起点。此波面向 intent_sports 父标签下的泛体育人群，只做「赛季开始了 + 赛制/赛历是什么」的信息投放，不含任何价格与稀缺内容。此波的唯一目的是量出父标签基线，并把细分标签 intent_sports_AutoRacing 的高意向用户识别出来交给第2波。",
+      "evidence": "F1 用户决策周期长、决策成本高，第一触必须给足信息量而非促销压力；泛体育人群此刻尚无赛事关联认知，故以赛历事实建立认知。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_F1_SPORTS_ALL_NOENGAGE",
+        "note": "需在 Mautic 新建。定义：tag in [intent_sports] 且 不在 [f1_c1_sent, f1_form_submitted, f1_converted]。intent_sports_AutoRacing 用户也含在此池内，本波统一触达以获取基线数据。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2027 F1 赛季 · 赛历与观赛入门指南",
+          "angle": "中性信息价值",
+          "cta": "查看完整赛历",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_F1_CALENDAR", "note": "需新建：赛历 + 观赛入门页（中英双语）" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "中性信息价值",
+        "headline": "2027 F1 赛季 · 赛历与观赛入门指南",
+        "summary": "A/B 变体走「入门科普」角度：解释 F1 赛制、看点构成与观赛方式，不含折扣与稀缺话术。"
+      },
+      "variant_split": 0.5,
+      "send_conditions": {
+        "delay_hours": 0,
+        "cadence_days": 0,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_AutoRacing", "f1_c1_sent", "f1_engaged"],
+      "stage_rules": [
+        { "from": "sports_observer", "to": "sports_engaged", "when": { "signal": "email.open", "op": ">=", "value": 1 }, "direction": "up" }
+      ],
+      "branches": [
+        {
+          "id": "clicked",
+          "note": "点击 → 打互动标签 + 升级阶段 + 移入互动分组",
+          "when": { "signal": "email.click", "op": ">=", "value": 1 },
+          "endpoint": {
+            "tags": ["f1_clicked"],
+            "stage": "sports_engaged",
+            "segment": "SEG_F1_SPORTS_ENGAGED",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移入互动分组（add）"
+          },
+          "next": "f1_2027_c2"
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["f1_c1_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c1 触达标记"
+      },
+      "success_criteria": { "metric": "open_rate", "threshold": ">=0.16" }
+    },
+
+    {
+      "cid": "f1_2027_c2",
+      "name": "第2波·车队与车手看点（赛车细分 · 内容深度期）",
+      "rationale": "day 14。此时对 F1 有认知但未建立情感连接的人最容易被打动。此波不谈购票，专谈车队竞争力、车手、战术看点，把「知道 F1」推向「有偏好」。F1 的内容护城河极深，这一波是 90 天里内容价值最高的一波。",
+      "evidence": "intent_sports_AutoRacing 用户已有明确赛车偏好，泛体育人群对 F1 的认知门槛显著高于足球，内容教育成本更高，故本波刻意后移 14 天而非紧接 c1。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_F1_AUTORACING_ENGAGED",
+        "note": "需在 Mautic 新建。定义：tag in [intent_sports_AutoRacing] 且 tag in [f1_engaged]（即第1波有互动的赛车细分用户）。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2027 F1 · 车队竞争力与车手阵容分析",
+          "angle": "内容深度驱动",
+          "cta": "查看完整分析",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_F1_TEAMS", "note": "需新建：车队/车手分析页" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "内容深度驱动",
+        "headline": "车队竞争力与车手阵容分析",
+        "summary": "A/B 变体走「数据深度」角度：以性能数据与战术对比支撑判断，不含折扣与倒计时话术。"
+      },
+      "variant_split": 0.4,
+      "send_conditions": {
+        "delay_hours": 336,
+        "cadence_days": 14,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_AutoRacing", "f1_c2_sent", "f1_deep_engaged"],
+      "stage_rules": [
+        { "from": "sports_engaged", "to": "sports_considering", "when": { "signal": "email.click", "op": ">=", "value": 2 }, "direction": "up" }
+      ],
+      "branches": [
+        {
+          "id": "deep_click",
+          "note": "二次点击 = 强意向，标记后进入留资序列",
+          "when": { "signal": "email.click", "op": ">=", "value": 2 },
+          "endpoint": {
+            "tags": ["f1_strong_intent"],
+            "stage": "sports_considering",
+            "segment": "SEG_F1_STRONG_INTENT",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移入强意向分组"
+          },
+          "next": "f1_2027_c3"
+        },
+        {
+          "id": "no_click",
+          "note": "未点击 → 移出本波分组退回浅层池，避免重复追打",
+          "when": { "signal": "email.click", "op": "<", "value": 1 },
+          "endpoint": {
+            "segment": "SEG_F1_AUTORACING_ENGAGED",
+            "action": "remove",
+            "actions": ["segment"],
+            "note": "移出 SEG_F1_AUTORACING_ENGAGED（remove）"
+          }
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["f1_c2_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c2 触达标记"
+      },
+      "success_criteria": { "metric": "click_rate", "threshold": ">=0.055" }
+    },
+
+    {
+      "cid": "f1_2027_c3",
+      "name": "第3波·赛事深度与观赛体验（强意向 · 差异化）",
+      "rationale": "day 30。F1 购票决策的中段。此波刻意与足球策略错开：不做留资、不做权益，而是用「观赛体验差异」建立不可替代性（赛道氛围、观赛视角、赛周行程），把偏好推到选择。这是 F1 独有的决策路径——用户买的不是比赛，是体验。",
+      "evidence": "F1 用户在决策中段最关心的是体验差异化而非价格；留资动作提前会打断体验培育节奏，故 c3 只做内容，留资后置到 c4。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_F1_EXPERIENCE_POOL",
+        "note": "需在 Mautic 新建。定义：(tag in [f1_strong_intent] 或 tag in [intent_sports_AutoRacing] 且 未 in [f1_form_submitted, f1_converted])。即体验培育池，排除已留资与已转化。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2027 F1 · 现场观赛体验与赛周行程指南",
+          "angle": "体验差异化",
+          "cta": "查看观赛体验",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_F1_EXPERIENCE", "note": "需新建：观赛体验 + 赛周行程页" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "体验差异化",
+        "headline": "现场观赛体验与赛周行程指南",
+        "summary": "A/B 变体走「体验叙事」角度：以现场感受替代参数罗列，不含折扣与倒计时话术。"
+      },
+      "variant_split": 0.5,
+      "send_conditions": {
+        "delay_hours": 720,
+        "cadence_days": 30,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_AutoRacing", "f1_c3_sent", "f1_experience_engaged"],
+      "stage_rules": [
+        { "from": "sports_considering", "to": "sports_considering", "when": { "signal": "email.click", "op": ">=", "value": 1 }, "direction": "up" }
+      ],
+      "branches": [
+        {
+          "id": "experience_interest",
+          "note": "点击体验页 → 升级为明确意向，标记后进入留资序列 c4",
+          "when": { "signal": "email.click", "op": ">=", "value": 1 },
+          "endpoint": {
+            "tags": ["f1_experience_confirmed"],
+            "segment": "SEG_F1_LEAD_CANDIDATE",
+            "actions": ["tags", "segment"],
+            "note": "打标 + 移入可留资分组，为 c4 蓄水"
+          },
+          "next": "f1_2027_c4"
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["f1_c3_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c3 触达标记"
+      },
+      "success_criteria": { "metric": "click_rate", "threshold": ">=0.05" }
+    },
+
+    {
+      "cid": "f1_2027_c4",
+      "name": "第4波·观赛权益留资（可留资池全量）",
+      "rationale": "day 45。进入决策末段，此波开始收口留资。人群是 c3 沉淀的可留资池 + 父标签下仍未被排除的泛体育人群（第二次用权益角度尝试拉回）。留资成功即写 tag + 升级阶段 + 移出促销池。",
+      "evidence": "day 45 距窗口结束仍余 45 天，留资后仍有充足时间走 c5 转化，符合 F1 长决策周期；此时收口比足球的 day 25 更晚。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_F1_LEAD_CANDIDATE",
+        "note": "需在 Mautic 新建。定义：(tag in [f1_experience_confirmed] 或 tag in [intent_sports] 且 未 in [f1_form_submitted, f1_converted])。即「可留资池」，排除已留资与已转化。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2027 F1 · 观赛权益与套票构成说明",
+          "angle": "权益框架说明",
+          "cta": "填写观赛意向",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_F1_BENEFITS", "note": "需新建：观赛权益 + 套票说明页（含 FORM_F1_SIGNUP 留资表单）" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "权益框架说明",
+        "headline": "观赛权益与套票构成说明",
+        "summary": "A/B 变体走「权益拆解」角度：逐项说明套票构成，不使用折扣紧迫话术。"
+      },
+      "variant_split": 0.5,
+      "send_conditions": {
+        "delay_hours": 1080,
+        "cadence_days": 45,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_AutoRacing", "f1_c4_sent"],
+      "stage_rules": [
+        {
+          "from": "sports_considering",
+          "to": "sports_form_submitted",
+          "when": { "signal": "form.submit", "op": "exists", "value": true },
+          "direction": "up"
+        }
+      ],
+      "branches": [
+        {
+          "id": "form_submitted",
+          "note": "表单提交 = 已留资。全策略最关键的抑制闸门：打 tag + 升级阶段 + 移出可留资池。",
+          "when": { "signal": "form.submit", "op": "exists", "value": true },
+          "endpoint": {
+            "tags": ["f1_form_submitted"],
+            "stage": "sports_form_submitted",
+            "segment": "SEG_F1_LEAD_CANDIDATE",
+            "action": "remove",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移出可留资池（remove）"
+          },
+          "next": "f1_2027_c5"
+        },
+        {
+          "id": "page_only",
+          "note": "只看未留资 = 中间态，留池等 c5",
+          "when": { "signal": "page.hit", "op": ">=", "value": 1 },
+          "endpoint": {
+            "tags": ["f1_lp_viewed"],
+            "actions": ["tags"],
+            "note": "仅打落地页访问标记"
+          }
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["f1_c4_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c4 触达标记"
+      },
+      "success_criteria": { "metric": "form_submit_rate", "threshold": ">=0.03" }
+    },
+
+    {
+      "cid": "f1_2027_c5",
+      "name": "第5波·购票转化收口（已留资未转化）",
+      "rationale": "day 68。90 天窗口进入末段（余 22 天），仍处「可转化」位置的人只剩已留资未转化的一批。此波唯一目的是把留资推到购票，完成后立刻打终态 tag 并移出全部促销池。这是全策略唯一允许给权益的波次。",
+      "evidence": "已留资 = 已完成最高成本的意向表达，转化率最高；距窗口结束 22 天仍有完整决策周期，不会出现「推了但来不及买」的浪费。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_F1_FORM_NO_CONVERT",
+        "note": "需在 Mautic 新建。定义：tag in [f1_form_submitted] 且 不在 [f1_converted]。即已留资未购票。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2027 F1 · 你的观赛方案已进入席位安排阶段",
+          "angle": "确定性安排 + 席位有限",
+          "cta": "确认观赛方案",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "propose", "ref": "LP_F1_TICKET", "note": "需新建：门票与席位确认页" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "确定性安排 + 席位有限",
+        "headline": "你的观赛方案已进入席位安排阶段",
+        "summary": "A/B 变体走「席位确定性」角度：以座位安排的真实约束驱动决策，不使用 forbidden_phrases 列出的促销紧迫类词。"
+      },
+      "variant_split": 0.5,
+      "discount": {
+        "enabled": true,
+        "pct": 10,
+        "kind": "registration_benefit",
+        "note": "注意：此处 pct 会被 plan_compiler 读取，但文案中禁止出现 forbidden_phrases 列出的促销紧迫类词。折扣须以「登记权益」形式在落地页表达，不写进邮件标题。"
+      },
+      "send_conditions": {
+        "delay_hours": 1632,
+        "cadence_days": 68,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_AutoRacing", "f1_c5_sent"],
+      "stage_rules": [
+        {
+          "from": "sports_form_submitted",
+          "to": "sports_converted",
+          "when": { "signal": "page.hit", "op": ">=", "value": 2 },
+          "direction": "up"
+        }
+      ],
+      "branches": [
+        {
+          "id": "converted",
+          "note": "转化终点：打终态 tag + 升级 customer 阶段 + 移出促销池。抑制体系在此收口。",
+          "when": { "signal": "page.hit", "op": ">=", "value": 2 },
+          "endpoint": {
+            "tags": ["f1_converted", "f1_purchaser"],
+            "stage": "sports_customer",
+            "segment": "SEG_F1_FORM_NO_CONVERT",
+            "action": "remove",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移出（remove）"
+          },
+          "terminal": true
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["f1_c5_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打 c5 触达标记"
+      },
+      "success_criteria": { "metric": "conversion_rate", "threshold": ">=0.14" }
+    },
+
+    {
+      "cid": "f1_2027_reengage_c1",
+      "name": "挽回分支·全程未互动（day 82）",
+      "rationale": "90 天窗口尾声。全程零互动人群收一次低频挽回，只讲「赛季进展 + 新增信息」，不重复主波次卖点。此波频次压到 1/周，是全策略唯一允许触达未互动人群的波次，且只发一次。",
+      "evidence": "该人群在前五波均被 segment 排除，是干净的未触达池；90 天周期长，末尾一次性告知的边际收益高于中途反复追打。",
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_F1_NEVER_ENGAGED",
+        "note": "需在 Mautic 新建。定义：tag in [intent_sports] 且 不在 [f1_engaged, f1_form_submitted, f1_converted, f1_c5_sent]。即全程未触达或未互动的人群。"
+      },
+      "email": {
+        "mode": "generate",
+        "ref": null,
+        "brief": {
+          "subject": "2027 F1 · 赛季进展汇总（一次看完）",
+          "angle": "信息汇总",
+          "cta": "查看赛季汇总",
+          "locale": ["zh_CN", "en_US"]
+        }
+      },
+      "landing_page": { "mode": "reuse", "ref": "LP_F1_CALENDAR", "note": "复用第1波赛历页，不新建" },
+      "content_variant": {
+        "id": "v1",
+        "angle": "信息汇总",
+        "headline": "赛季进展汇总（一次看完）",
+        "summary": "A/B 变体走「汇总告知」角度：只做信息收拢，只做信息收拢，不带任何促销诉求。"
+      },
+      "variant_split": 0.5,
+      "discount": { "enabled": false },
+      "send_conditions": {
+        "delay_hours": 1968,
+        "cadence_days": 82,
+        "max_per_24h": 1,
+        "max_per_7d": 1,
+        "quiet_hours": "22:00-09:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "tags_to_write": ["intent_sports", "intent_sports_AutoRacing", "f1_reengage_sent"],
+      "branches": [
+        {
+          "id": "reopened",
+          "note": "挽回成功 → 打标 + 升级阶段 + 移出未互动池（窗口内不再有后续波次）",
+          "when": { "signal": "email.click", "op": ">=", "value": 1 },
+          "endpoint": {
+            "tags": ["f1_reengaged"],
+            "stage": "sports_engaged",
+            "segment": "SEG_F1_NEVER_ENGAGED",
+            "action": "remove",
+            "actions": ["tags", "stage", "segment"],
+            "note": "打标 + 升级阶段 + 移出（remove）"
+          }
+        }
+      ],
+      "main_endpoint": {
+        "tags": ["f1_reengage_touched"],
+        "judgment": { "signal": "email.open", "op": ">=", "value": 1 },
+        "actions": ["tags"],
+        "note": "开信即打挽回触达标记"
+      },
+      "success_criteria": { "metric": "open_rate", "threshold": ">=0.07" }
+    }
+  ]
+}

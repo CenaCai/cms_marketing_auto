@@ -1,0 +1,308 @@
+{
+  "goal_id": "GOAL_WATERBOMB_SOKCHO_2026_TICKET_CONVERSION",
+  "objective": "为「WaterBomb Sokcho 2026 水弹音乐节」于 2026-09-01~2026-10-30 向 25-34 岁海外音乐节爱好者推广门票，目标 5000 张转化、落地页注册表单提交转化率 10%",
+  "business_topic": "WaterBomb Sokcho 2026 水弹音乐节：面向 25-34 岁海外音乐节爱好者的早鸟票限时注册转化",
+  "kpi": {
+    "metric": "ticket_conversion",
+    "target": 5000
+  },
+  "locale": [
+    "en_US"
+  ],
+  "audience_package": "YOUNG_TREND",
+  "audience_profile": {
+    "age_range": "25-34",
+    "region": "海外",
+    "interest": "海外音乐节爱好者",
+    "language": "en_US",
+    "package": "YOUNG_TREND"
+  },
+  "campaigns": [
+    {
+      "cid": "c1",
+      "name": "CMP_WATERBOMB_SOKCHO_2026_C1_ANNOUNCE",
+      "audience_package": "YOUNG_TREND",
+      "segment_ref": "SEG_WATERBOMB_SOKCHO_2026_YOUNG_TREND_OVERSEAS",
+      "exclude_segments": [
+        "SEG_WATERBOMB_SOKCHO_2026_REGISTERED",
+        "SEG_WATERBOMB_SOKCHO_2026_UNSUBSCRIBED_DNC"
+      ],
+      "email_ref": "EM_WATERBOMB_SOKCHO_2026_C1_ANNOUNCE",
+      "email_action": "generate",
+      "landing_page_url": "http://localhost:8080/s/c1-en_US",
+      "form_ref": "FORM_WATERBOMB_SOKCHO_2026_REGISTER_EN",
+      "content_emphasis": [
+        "WaterBomb Sokcho 2026 水弹音乐节首发官宣",
+        "9 折早鸟券限时领取",
+        "海外音乐节爱好者专属注册通道"
+      ],
+      "levers": [
+        "稀缺性（早鸟券限时）",
+        "身份认同（海外音乐节爱好者）",
+        "即时奖励（9 折券）"
+      ],
+      "tone": "高能、潮流、国际化",
+      "cta_template": "Claim your 10% early-bird code and register now for WaterBomb Sokcho 2026",
+      "subject_examples": [
+        "WaterBomb Sokcho 2026 is here — grab your 10% early-bird code",
+        "Your WaterBomb Sokcho 2026 early-bird pass is waiting",
+        "Don't miss WaterBomb Sokcho 2026: 10% off ends soon"
+      ],
+      "variant_hints": {
+        "headline": "WaterBomb Sokcho 2026: Early-Bird 10% Off",
+        "body": "The ultimate water-bomb music festival returns. Register now to lock in your 10% early-bird code before it's gone."
+      },
+      "quiet_hours": "20:00-08:00",
+      "send_window": {
+        "start": "08:00",
+        "end": "20:00"
+      },
+      "cadence": {
+        "max_per_24h": 1,
+        "max_per_7d": 3
+      },
+      "rationale": "首发官宣节点，承接数据 agent 的节奏与分群结论（主分群 SEG_WATERBOMB_SOKCHO_2026_YOUNG_TREND_OVERSEAS，排除已注册与退订/限制名单），内容取向取谭心 c1 方案（稀缺性+身份认同+即时奖励），资产按 poc-impl 结论一律 generate（未连接 Mautic）。",
+      "evidence": [
+        "growth-data-analyst: reachable=true, campaign_count=5, cadence max_per_7d=3, quiet_hours=20:00-08:00",
+        "谭心: c1 content_emphasis/levers/tone/cta_template/subject_examples",
+        "poc-impl: EM_WATERBOMB_SOKCHO_2026_C1_ANNOUNCE action=generate；SEG 排除分群必须接入"
+      ]
+    },
+    {
+      "cid": "c2",
+      "name": "CMP_WATERBOMB_SOKCHO_2026_C2_LINEUP",
+      "audience_package": "YOUNG_TREND",
+      "segment_ref": "SEG_WATERBOMB_SOKCHO_2026_YOUNG_TREND_OVERSEAS",
+      "exclude_segments": [
+        "SEG_WATERBOMB_SOKCHO_2026_REGISTERED",
+        "SEG_WATERBOMB_SOKCHO_2026_UNSUBSCRIBED_DNC"
+      ],
+      "email_ref": "EM_WATERBOMB_SOKCHO_2026_C2_LINEUP",
+      "email_action": "generate",
+      "landing_page_url": "http://localhost:8080/s/c2-en_US",
+      "form_ref": "FORM_WATERBOMB_SOKCHO_2026_REGISTER_EN",
+      "content_emphasis": [
+        "WaterBomb Sokcho 2026 阵容与体验亮点",
+        "9 折早鸟券倒计时",
+        "海外音乐节爱好者社群共鸣"
+      ],
+      "levers": [
+        "社会认同（同好社群）",
+        "FOMO（倒计时）",
+        "体验预览（阵容/水弹现场）"
+      ],
+      "tone": "兴奋、社群感、紧迫",
+      "cta_template": "Join the WaterBomb Sokcho 2026 crowd — register with your 10% early-bird code",
+      "subject_examples": [
+        "See who's coming to WaterBomb Sokcho 2026 — 10% off inside",
+        "WaterBomb Sokcho 2026 lineup drop + your early-bird code",
+        "The WaterBomb Sokcho 2026 experience you can't miss"
+      ],
+      "variant_hints": {
+        "headline": "WaterBomb Sokcho 2026: Lineup & Early-Bird Code",
+        "body": "Get a taste of the WaterBomb Sokcho 2026 lineup and vibe. Register now to secure your 10% early-bird discount."
+      },
+      "quiet_hours": "20:00-08:00",
+      "send_window": {
+        "start": "08:00",
+        "end": "20:00"
+      },
+      "cadence": {
+        "max_per_24h": 1,
+        "max_per_7d": 3
+      },
+      "rationale": "阵容与体验亮点节点，延续数据 agent 节奏与分群结论，内容取向取谭心 c2 方案（社会认同+FOMO+体验预览），资产按 poc-impl 结论 generate。",
+      "evidence": [
+        "growth-data-analyst: cadence max_per_7d=3, send_window 08:00-20:00",
+        "谭心: c2 content_emphasis/levers/tone/cta_template/subject_examples",
+        "poc-impl: EM_WATERBOMB_SOKCHO_2026_C2_LINEUP action=generate"
+      ]
+    },
+    {
+      "cid": "c3",
+      "name": "CMP_WATERBOMB_SOKCHO_2026_C3_TRAVEL",
+      "audience_package": "YOUNG_TREND",
+      "segment_ref": "SEG_WATERBOMB_SOKCHO_2026_YOUNG_TREND_OVERSEAS",
+      "exclude_segments": [
+        "SEG_WATERBOMB_SOKCHO_2026_REGISTERED",
+        "SEG_WATERBOMB_SOKCHO_2026_UNSUBSCRIBED_DNC"
+      ],
+      "email_ref": "EM_WATERBOMB_SOKCHO_2026_C3_TRAVEL",
+      "email_action": "generate",
+      "landing_page_url": "http://localhost:8080/s/c3-en_US",
+      "form_ref": "FORM_WATERBOMB_SOKCHO_2026_REGISTER_EN",
+      "content_emphasis": [
+        "WaterBomb Sokcho 2026 旅行+音乐节一站式规划",
+        "9 折早鸟券助力海外出行",
+        "海外音乐节爱好者专属注册表单"
+      ],
+      "levers": [
+        "便利性（一站式规划）",
+        "价值感（早鸟省钱）",
+        "身份认同（海外乐迷）"
+      ],
+      "tone": "实用、鼓舞、国际化",
+      "cta_template": "Plan your WaterBomb Sokcho 2026 trip — register now for 10% off",
+      "subject_examples": [
+        "Plan your WaterBomb Sokcho 2026 trip with 10% off",
+        "WaterBomb Sokcho 2026: your overseas festival guide + early-bird code",
+        "Fly in for WaterBomb Sokcho 2026 — save 10% when you register"
+      ],
+      "variant_hints": {
+        "headline": "WaterBomb Sokcho 2026: Travel + Festival, 10% Off",
+        "body": "Everything you need for WaterBomb Sokcho 2026 in one place. Register to unlock your 10% early-bird code and plan your trip."
+      },
+      "quiet_hours": "20:00-08:00",
+      "send_window": {
+        "start": "08:00",
+        "end": "20:00"
+      },
+      "cadence": {
+        "max_per_24h": 1,
+        "max_per_7d": 3
+      },
+      "rationale": "旅行+音乐节一站式规划节点，针对海外受众出行决策，延续数据 agent 节奏与分群结论，内容取向取谭心 c3 方案（便利性+价值感+身份认同），资产按 poc-impl 结论 generate。",
+      "evidence": [
+        "growth-data-analyst: 海外分群与节奏约束",
+        "谭心: c3 content_emphasis/levers/tone/cta_template/subject_examples",
+        "poc-impl: EM_WATERBOMB_SOKCHO_2026_C3_TRAVEL action=generate"
+      ]
+    },
+    {
+      "cid": "c4",
+      "name": "CMP_WATERBOMB_SOKCHO_2026_C4_LASTCHANCE",
+      "audience_package": "YOUNG_TREND",
+      "segment_ref": "SEG_WATERBOMB_SOKCHO_2026_YOUNG_TREND_OVERSEAS",
+      "exclude_segments": [
+        "SEG_WATERBOMB_SOKCHO_2026_REGISTERED",
+        "SEG_WATERBOMB_SOKCHO_2026_UNSUBSCRIBED_DNC"
+      ],
+      "email_ref": "EM_WATERBOMB_SOKCHO_2026_C4_LASTCHANCE",
+      "email_action": "generate",
+      "landing_page_url": "http://localhost:8080/s/c4-en_US",
+      "form_ref": "FORM_WATERBOMB_SOKCHO_2026_REGISTER_EN",
+      "content_emphasis": [
+        "WaterBomb Sokcho 2026 最后早鸟机会",
+        "9 折券即将失效",
+        "海外音乐节爱好者限时注册提醒"
+      ],
+      "levers": [
+        "紧迫性（最后机会）",
+        "损失厌恶（券失效）",
+        "稀缺性（限时）"
+      ],
+      "tone": "紧迫、直接、高能",
+      "cta_template": "Last chance: register for WaterBomb Sokcho 2026 and save 10%",
+      "subject_examples": [
+        "Last chance for WaterBomb Sokcho 2026 early-bird 10% off",
+        "Your WaterBomb Sokcho 2026 10% code expires soon",
+        "Final call: WaterBomb Sokcho 2026 early-bird ends"
+      ],
+      "variant_hints": {
+        "headline": "WaterBomb Sokcho 2026: Final Early-Bird Call",
+        "body": "Time is running out. Register now to claim your 10% early-bird code for WaterBomb Sokcho 2026 before it's gone."
+      },
+      "quiet_hours": "20:00-08:00",
+      "send_window": {
+        "start": "08:00",
+        "end": "20:00"
+      },
+      "cadence": {
+        "max_per_24h": 1,
+        "max_per_7d": 3
+      },
+      "rationale": "最后早鸟机会节点，制造紧迫感推动转化，延续数据 agent 节奏与分群结论，内容取向取谭心 c4 方案（紧迫性+损失厌恶+稀缺性），资产按 poc-impl 结论 generate。",
+      "evidence": [
+        "growth-data-analyst: cadence 与免打扰约束",
+        "谭心: c4 content_emphasis/levers/tone/cta_template/subject_examples",
+        "poc-impl: EM_WATERBOMB_SOKCHO_2026_C4_LASTCHANCE action=generate"
+      ]
+    },
+    {
+      "cid": "c5",
+      "name": "CMP_WATERBOMB_SOKCHO_2026_C5_COMPLETE",
+      "audience_package": "YOUNG_TREND",
+      "segment_ref": "SEG_WATERBOMB_SOKCHO_2026_YOUNG_TREND_OVERSEAS",
+      "exclude_segments": [
+        "SEG_WATERBOMB_SOKCHO_2026_REGISTERED",
+        "SEG_WATERBOMB_SOKCHO_2026_UNSUBSCRIBED_DNC"
+      ],
+      "email_ref": "EM_WATERBOMB_SOKCHO_2026_C5_COMPLETE",
+      "email_action": "generate",
+      "landing_page_url": "http://localhost:8080/s/c5-en_US",
+      "form_ref": "FORM_WATERBOMB_SOKCHO_2026_REGISTER_EN",
+      "content_emphasis": [
+        "WaterBomb Sokcho 2026 注册收尾与确认",
+        "9 折早鸟券最终提醒",
+        "海外音乐节爱好者社群最后召集"
+      ],
+      "levers": [
+        "收尾确认（注册完成）",
+        "社群归属（最后召集）",
+        "即时奖励（9 折券）"
+      ],
+      "tone": "友好、确认、社群感",
+      "cta_template": "Complete your WaterBomb Sokcho 2026 registration and lock in 10% off",
+      "subject_examples": [
+        "Complete your WaterBomb Sokcho 2026 registration — 10% off inside",
+        "You're almost in: WaterBomb Sokcho 2026 early-bird code",
+        "Final reminder: WaterBomb Sokcho 2026 registration + 10% off"
+      ],
+      "variant_hints": {
+        "headline": "WaterBomb Sokcho 2026: Complete Your Registration",
+        "body": "You're one step away from WaterBomb Sokcho 2026. Finish your registration now to secure your 10% early-bird code."
+      },
+      "quiet_hours": "20:00-08:00",
+      "send_window": {
+        "start": "08:00",
+        "end": "20:00"
+      },
+      "cadence": {
+        "max_per_24h": 1,
+        "max_per_7d": 3
+      },
+      "rationale": "注册收尾确认节点，推动未完成注册者完成表单提交，延续数据 agent 节奏与分群结论，内容取向取谭心 c5 方案（收尾确认+社群归属+即时奖励），资产按 poc-impl 结论 generate。",
+      "evidence": [
+        "growth-data-analyst: 转化出口与排除分群",
+        "谭心: c5 content_emphasis/levers/tone/cta_template/subject_examples",
+        "poc-impl: EM_WATERBOMB_SOKCHO_2026_C5_COMPLETE action=generate"
+      ]
+    }
+  ],
+  "service_sequences": [
+    {
+      "name": "SEQ_WATERBOMB_SOKCHO_2026_MAIN",
+      "description": "主转化序列：入口分群 SEG_WATERBOMB_SOKCHO_2026_YOUNG_TREND_OVERSEAS → c1→c2→c3→c4→c5 依次发送，每封邮件节点后接等待/条件判断节点；FORM_WATERBOMB_SOKCHO_2026_REGISTER_EN 提交事件作为全局转化出口，命中后立即从所有后续发送分支移除（加入 SEG_WATERBOMB_SOKCHO_2026_REGISTERED 排除）。退订/限制名单命中（SEG_WATERBOMB_SOKCHO_2026_UNSUBSCRIBED_DNC）即时终止。",
+      "campaign_refs": [
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5"
+      ],
+      "entry_segment": "SEG_WATERBOMB_SOKCHO_2026_YOUNG_TREND_OVERSEAS",
+      "exclude_segments": [
+        "SEG_WATERBOMB_SOKCHO_2026_REGISTERED",
+        "SEG_WATERBOMB_SOKCHO_2026_UNSUBSCRIBED_DNC"
+      ],
+      "conversion_event": "FORM_WATERBOMB_SOKCHO_2026_REGISTER_EN_SUBMIT",
+      "decision_node_rules": "决策节点分支不混合 decision+action：条件判断节点（如「是否已提交注册表单」「是否命中限制名单」）仅输出 yes/no 分支，不挂载发送/更新动作；发送邮件、加/减分群、发券等 action 一律放在独立 action 节点，由决策分支指向。",
+      "cadence": {
+        "max_per_24h": 1,
+        "max_per_7d": 3,
+        "quiet_hours": "20:00-08:00",
+        "send_window": {
+          "start": "08:00",
+          "end": "20:00"
+        }
+      },
+      "circuit_breaker": {
+        "unsubscribe_rate": "0.003 熔断",
+        "bounce": "监控",
+        "spam_complaint": "监控"
+      }
+    }
+  ],
+  "needs_operator_review": true,
+  "operator_review_notes": "未连接 Mautic（data_missing），复用/新建决策待人工确认：所有 email/segment/page/form 资产当前一律按 generate（新建）处理，若 Mautic 中存在可复用资产需人工改为 reuse。另需人工确认：9 折早鸟券的券码来源与发放机制、落地页注册表单字段与 10% 提交转化率的埋点口径、退订率 0.003 熔断后的自动暂停策略。"
+}

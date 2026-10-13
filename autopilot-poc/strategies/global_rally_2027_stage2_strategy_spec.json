@@ -1,0 +1,279 @@
+{
+  "goal_id": "global_rally_2027",
+  "objective": "2027年1月1日~5月1日，环球拉力赛车赛。给到对赛车\\体育感兴趣的。邮件中要创建一个落地页，落地页中有填写个人信息提交的表单。以提交表单作为流程终点，引导商务线下人工跟进。表单转化率1%，22点~8点不能骚扰用户，已经转化的用户不能再次骚扰。每几个月给我不同的营销主题。多个阶段。推广时间为比赛前6个月时间开始，到比赛结束当天结束。只要英文内容，不要有任何中文内容。",
+  "business_topic": "Global Rally Championship 2027 ticketing & fan engagement",
+  "kpi": { "type": "conversion", "target": 0.01, "metric": "conversion", "metric_alias_target": 0.01 },
+  "window": { "start": "2026-07-01", "end": "2027-05-01" },
+  "locale": ["en_US"],
+  "budget": 0,
+  "is_revenue": false,
+  "audience_package": "GENERIC",
+  "audience_profile": {
+    "age": "55+",
+    "gender": "未知",
+    "income": "未知",
+    "education": "大专",
+    "industry": "能源",
+    "source": "CTL",
+    "region": "中国大陆"
+  },
+  "audience_match": {
+    "code": "GENERIC",
+    "label": "通用兜底",
+    "score": 0.0,
+    "fallback": true,
+    "matches": [],
+    "alternatives": []
+  },
+  "needs_operator_review": true,
+  "operator_review_notes": "NEXT-STAGE RE-PLAN for c2/c3/c4 after c1 (executing). (1) CADENCE BUG FIXED — inherited delay_hours were absolute offsets from window start (depends_on=None on all waves, each window=full range), but c2=1824h(76d) and c3=1824h(76d) collided on the same day while c4=768h(32d) landed BEFORE both. Rescheduled to a monotonic ladder that also covers the race season: c2 day 90, c3 day 180 (4d before race start 2027-01-01=day 184), c4 day 280 (mid-race, 24d before window close). Previously the whole Jan-May 2027 race season had zero coverage despite the brief requiring coverage through race end. (2) NO DATA-DRIVEN REALLOCATION — c1.result is null (达成率/退订率 both None, campaign only just launched), so wave emphasis is NOT justified by performance; kept deliberately conservative per GENERIC package. (3) VARIABLE-ANGLE CONFLICT RESOLVED — the auto variant synthesiser (_synthesize_variant_spec) defaults to angle 稀缺专属 / 限时紧迫 whenever discount.enabled is falsy, which injects the word 限时; that is on the GENERIC forbidden_phrases list (限时/秒杀/拼团/刺激/上头). Every campaign below therefore ships an EXPLICIT content_variant with a neutral/restrained angle so the banned lexicon is never synthesised. (4) data_missing: reuse-vs-generate for email/segment/LP/form still undecided for c2-c4 assets; email_mode=generate per fallback pending operator confirmation.",
+  "campaigns": [
+    {
+      "cid": "c2",
+      "name": "Global Rally Championship 2027 - Drivers & Teams Spotlight",
+      "wave_id": "wave_2",
+      "content_brief": "Interested fans lack a human, relatable connection to the teams and drivers. Give them factual profiles and engineering context so the championship feels concrete rather than abstract.",
+      "content_emphasis": ["neutral_value", "restrained_tone"],
+      "segment": { "mode": "propose", "ref": "SEG_GLOBAL_RALLY_UGC_EN" },
+      "segment_mode": "propose",
+      "email": {
+        "mode": "generate",
+        "ref": "",
+        "brief": {
+          "subject": "Global Rally Championship 2027 - Meet the Teams and Drivers",
+          "headline": "The teams, the cars and the people behind the 2027 championship",
+          "cta": "Read the team guide",
+          "locale": ["en_US"],
+          "tone": "Objective and warm, no urgency language. Max 150 words, 2-3 short paragraphs.",
+          "forbidden_phrases": ["限时", "秒杀", "拼团", "刺激", "上头", "last chance", "flash sale", "limited time", "hurry", "don't miss out"]
+        }
+      },
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_mode": "propose",
+      "landing_page_ref": "LP_Global Rally Championship 2027 - Drivers & Teams Spotlight",
+      "form_ref": "FORM_GLOBAL_RALLY_2027_C2_EN",
+      "content_variant": {
+        "id": "v1",
+        "angle": "中性价值 · 人物故事",
+        "headline": "Global Rally Championship 2027 - Drivers & Teams Spotlight · 变体 v1（中性叙事）",
+        "summary": "Same subject as the main email, different angle: neutral factual storytelling about teams and drivers instead of urgency. Avoids the GENERIC forbidden lexicon (限时/秒杀/拼团/刺激/上头) that the default variant synthesiser would otherwise inject."
+      },
+      "variant_split": 50,
+      "send_conditions": {
+        "delay_hours": 2160,
+        "cadence_days": 90,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "suppression_tags": ["gr2027_registered"],
+      "tags_to_write": ["gr2027_c2", "gr2027_ugc"],
+      "discount": null,
+      "depends_on": null,
+      "deferred": false,
+      "countdown": null,
+      "main_endpoint": {
+        "tags": ["gr2027_registered"],
+        "stage": "registered",
+        "form": "FORM_GLOBAL_RALLY_2027_C2_EN",
+        "terminal": true
+      },
+      "rationale": "Wave 2 of 4, rescheduled to day 90 (2026-09-29) from the broken 1824h=day-76 slot that collided with c3. Day 90 keeps a ~3-month gap after c1 per the brief's 每几个月给我不同的营销主题, and stays in the pre-race build-up (race start = day 184). GENERIC package: freq 1/2, quiet_hours 22:00-08:00 per brief red line, neutral_value+restrained_tone levers. Explicit content_variant supplied to block the synthesiser's default 稀缺专属/限时紧迫 angle, which would breach the GENERIC forbidden_phrases list. No discount in wave 2 — a discount this early would devalue the VIP offer reserved for c3.",
+      "evidence": "reschedule: inherited delay_hours 1824 (day 76) collided with c3 and preceded nothing meaningful; depends_on=None + full window per wave confirms delay is absolute-from-window-start. strategy: references/audience-content-map.json v2026-09-07 GENERIC fallback (all named packages score 0.0 < 0.6). data_missing: c1.result=null so no performance basis for reweighting; Mautic asset reuse-vs-generate undecided for this wave's email/segment/LP/form."
+    },
+    {
+      "cid": "c3",
+      "name": "Global Rally Championship 2027 - Early-Bird & VIP Access",
+      "wave_id": "wave_3",
+      "content_brief": "Warm prospects have not yet been given a concrete, time-boxed reason to act. Offer a genuine early-registration benefit ahead of the championship start, framed around entitlement rather than pressure.",
+      "content_emphasis": ["neutral_value", "restrained_tone"],
+      "segment": { "mode": "propose", "ref": "SEG_GLOBAL_RALLY_WARM_EN" },
+      "segment_mode": "propose",
+      "email": {
+        "mode": "generate",
+        "ref": "",
+        "brief": {
+          "subject": "Global Rally Championship 2027 - Early-Bird Registration Is Open",
+          "headline": "Register early for the 2027 championship and keep your seat selection",
+          "cta": "Check your early access",
+          "locale": ["en_US"],
+          "tone": "Calm and factual, entitlement framing. Max 150 words. No countdown pressure, no 限时 wording.",
+          "forbidden_phrases": ["限时", "秒杀", "拼团", "刺激", "上头", "last chance", "flash sale", "limited time", "hurry", "don't miss out"]
+        }
+      },
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_mode": "propose",
+      "landing_page_ref": "LP_Global Rally Championship 2027 - Early-Bird & VIP Access",
+      "form_ref": "FORM_GLOBAL_RALLY_2027_C3_EN",
+      "content_variant": {
+        "id": "v1",
+        "angle": "中性价值 · 权益说明",
+        "headline": "Global Rally Championship 2027 - Early-Bird & VIP Access · 变体 v1（权益说明）",
+        "summary": "Same subject as the main email, different angle: explains the early-bird entitlement factually rather than pushing urgency. Keeps the GENERIC forbidden lexicon (限时/秒杀/拼团/刺激/上头) out of the copy."
+      },
+      "variant_split": 50,
+      "send_conditions": {
+        "delay_hours": 4320,
+        "cadence_days": 180,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "suppression_tags": ["gr2027_registered"],
+      "tags_to_write": ["gr2027_c3", "gr2027_earlybird"],
+      "discount": null,
+      "depends_on": null,
+      "deferred": false,
+      "countdown": null,
+      "main_endpoint": {
+        "tags": ["gr2027_registered"],
+        "stage": "registered",
+        "form": "FORM_GLOBAL_RALLY_2027_C3_EN",
+        "terminal": true
+      },
+      "rationale": "Wave 3 of 4, rescheduled to day 180 (2026-12-28) from the broken 1824h=day-76 slot. Day 180 lands 4 days before the championship start (2027-01-01 = day 184), which is the last defensible moment for an early-bird offer — it creates real scarcity without manufacturing it. GENERIC package: freq 1/2, quiet_hours 22:00-08:00 red line, neutral_value+restrained_tone. Explicit content_variant supplied so the synthesiser's default 限时紧迫 angle is not injected (that angle literally contains the banned word 限时). No discount object here either: the early-bird benefit is an entitlement, and pricing it as a discount would both breach the GENERIC tone and undercut the offline sales handoff.",
+      "evidence": "reschedule: inherited 1824h collided with c2; day 180 chosen to precede race start (day 184) per brief's 比赛前6个月开始 promotion framing. strategy: GENERIC fallback per audience-content-map.json v2026-09-07. data_missing: c1.result=null, no performance basis for emphasis; asset reuse-vs-generate undecided."
+    },
+    {
+      "cid": "c4",
+      "name": "Global Rally Championship 2027 - In-Season Conversion & Business Follow-up",
+      "wave_id": "wave_4",
+      "content_brief": "During the live championship season the remaining unconverted audience needs one clear, low-friction path to register, with the form as the terminal step handing off to offline business follow-up.",
+      "content_emphasis": ["neutral_value", "restrained_tone"],
+      "segment": { "mode": "propose", "ref": "SEG_GLOBAL_RALLY_RACEWEEK_EN" },
+      "segment_mode": "propose",
+      "email": {
+        "mode": "generate",
+        "ref": "",
+        "brief": {
+          "subject": "Global Rally Championship 2027 - Still Following the Season? Register Now",
+          "headline": "The 2027 championship is under way - lock in your access",
+          "cta": "Complete registration",
+          "locale": ["en_US"],
+          "tone": "Direct and service-oriented, no urgency bait. Max 150 words.",
+          "forbidden_phrases": ["限时", "秒杀", "拼团", "刺激", "上头", "last chance", "flash sale", "limited time", "hurry", "don't miss out"]
+        }
+      },
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_mode": "propose",
+      "landing_page_ref": "LP_Global Rally Championship 2027 - In-Season Conversion & Business Follow-up",
+      "form_ref": "FORM_GLOBAL_RALLY_2027_C4_EN",
+      "content_variant": {
+        "id": "v1",
+        "angle": "中性价值 · 行动指引",
+        "headline": "Global Rally Championship 2027 - In-Season Conversion · 变体 v1（行动指引）",
+        "summary": "Same subject as the main email, different angle: a plain service-oriented path to registration. Avoids the GENERIC forbidden lexicon and any scarcity framing at the final conversion step."
+      },
+      "variant_split": 50,
+      "send_conditions": {
+        "delay_hours": 6720,
+        "cadence_days": 280,
+        "max_per_24h": 1,
+        "max_per_7d": 2,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "suppression_tags": ["gr2027_registered"],
+      "tags_to_write": ["gr2027_c4", "gr2027_raceweek"],
+      "discount": null,
+      "depends_on": null,
+      "deferred": false,
+      "countdown": null,
+      "main_endpoint": {
+        "tags": ["gr2027_registered"],
+        "stage": "registered",
+        "form": "FORM_GLOBAL_RALLY_2027_C4_EN",
+        "terminal": true
+      },
+      "rationale": "Wave 4 of 4, rescheduled to day 280 (2027-04-09) from the broken 768h=day-32 slot that fired BEFORE c2 and c3. This is the most important correction in this re-plan: day 280 sits inside the live race season and leaves a 24-day buffer before the window closes 2027-05-01, so the offline business follow-up triggered by form submission still has room to work. The inherited plan left the entire Jan-May 2027 race season with zero coverage, directly contradicting the brief's 到比赛结束当天结束 requirement. GENERIC package: freq 1/2, quiet_hours 22:00-08:00 red line. suppression_tags gr2027_registered enforces 已经转化的用户不能再次骚扰. Form submit remains terminal per the brief.",
+      "evidence": "reschedule: inherited 768h (day 32) was out of order and left race season uncovered; day 280 maximises in-season coverage with a 24d closeout buffer. strategy: GENERIC fallback per audience-content-map.json v2026-09-07. data_missing: c1.result=null, no performance basis; asset reuse-vs-generate undecided."
+    },
+    {
+      "cid": "global_rally_2027_reengage_c2",
+      "name": "Global Rally Championship 2027 - Win-back for wave-2 non-responders",
+      "wave_id": "wave_2_reengage",
+      "content_brief": "Contacts who were eligible for the teams-and-drivers wave but neither clicked nor registered. Give them one different, service-oriented reason to act, with a modest early-registration benefit in place of urgency.",
+      "content_emphasis": ["neutral_value", "restrained_tone"],
+      "segment": { "mode": "propose", "ref": "SEG_GLOBAL_RALLY_WINBACK_EN" },
+      "segment_mode": "propose",
+      "email": {
+        "mode": "generate",
+        "ref": "",
+        "brief": {
+          "subject": "Global Rally Championship 2027 - A Closer Look at the 2027 Teams",
+          "headline": "Still curious about the teams? Here is the detailed guide",
+          "cta": "Get the team guide",
+          "locale": ["en_US"],
+          "tone": "Helpful and low-pressure, service framing. Max 150 words. Must not read as a chase-up.",
+          "forbidden_phrases": ["限时", "秒杀", "拼团", "刺激", "上头", "last chance", "flash sale", "limited time", "hurry", "don't miss out"]
+        }
+      },
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_mode": "propose",
+      "landing_page_ref": "LP_Global Rally Championship 2027 - Win-back",
+      "form_ref": "FORM_GLOBAL_RALLY_2027_REENGAGE_C2_EN",
+      "content_variant": {
+        "id": "v1",
+        "angle": "中性价值 · 服务补救",
+        "headline": "Global Rally Championship 2027 - Win-back · 变体 v1（服务补救）",
+        "summary": "Same subject as the main email, different angle: service-oriented follow-up. Deliberately avoids discount-led urgency so the GENERIC tone and forbidden_phrases list both hold."
+      },
+      "variant_split": 50,
+      "send_conditions": {
+        "delay_hours": 3168,
+        "cadence_days": 132,
+        "max_per_24h": 1,
+        "max_per_7d": 1,
+        "quiet_hours": "22:00-08:00",
+        "send_window": ["19:00-21:00"]
+      },
+      "suppression_tags": ["gr2027_registered", "gr2027_c2_engaged"],
+      "tags_to_write": ["gr2027_reengage_c2", "gr2027_winback"],
+      "discount": {
+        "enabled": true,
+        "pct": 10,
+        "kind": "registration_benefit",
+        "note": "10% early-registration benefit, framed as entitlement rather than a promo. Deliberately NOT urgency-based: GENERIC forbidden_phrases bans 限时/秒杀/拼团, so no countdown or scarcity wording may appear. One win-back touch only (max_per_7d=1)."
+      },
+      "depends_on": null,
+      "deferred": false,
+      "countdown": null,
+      "main_endpoint": {
+        "tags": ["gr2027_registered"],
+        "stage": "registered",
+        "form": "FORM_GLOBAL_RALLY_2027_REENGAGE_C2_EN",
+        "terminal": true
+      },
+      "rationale": "NEW win-back branch targeting wave-2 non-responders. Scheduled day 132 (2026-11-10), i.e. 42 days after c2 (day 90) and 48 days before c3 (day 180), so it neither overlaps the next wave nor repeats inside 7 days. Tightened to max_per_7d=1 (stricter than the package's 2) because a re-contact to the same person is exactly the fatigue the brief guards against. suppression_tags includes both gr2027_registered (already converted - never re-touch) and gr2027_c2_engaged (already engaged with wave 2), so this only reaches genuine non-responders. The discount is a 10% registration benefit, not urgency: GENERIC forbids 限时/秒杀/拼团/刺激/上头.",
+      "evidence": "cadence: day 132 sits between c2 (day 90) and c3 (day 180) with >=42d spacing on both sides. data_missing: c1.result is null so the non-response rate is unknown - branch volume cannot be sized yet; segment SEG_GLOBAL_RALLY_WINBACK_EN is proposed (find-or-create) and its filters must be confirmed by the operator before this branch is enabled."
+    }
+  ],
+  "service_sequences": [
+    {
+      "sid": "s1",
+      "name": "Registration Confirmation",
+      "type": "transactional",
+      "quiet_hours_exempt": true,
+      "send_within_minutes": 5,
+      "trigger": "form_submit",
+      "email": {
+        "mode": "generate",
+        "ref": "",
+        "brief": {
+          "subject": "You're registered for Global Rally Championship 2027 updates",
+          "cta": "Confirm your details",
+          "locale": ["en_US"]
+        }
+      },
+      "tags_to_write": ["gr2027_confirmed"],
+      "rationale": "Instant post-submit confirmation, non-promotional, exempt from quiet hours per the user-action-triggered governance rule (<=5min). Unchanged from the previous stage.",
+      "evidence": "data_missing: Mautic asset reuse-vs-generate undecided for the confirmation email."
+    }
+  ]
+}
