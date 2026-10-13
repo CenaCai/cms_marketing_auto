@@ -1962,19 +1962,6 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<script>{STRATEGY_GEN_JS}</script>"
                 f"<script>{AI_PARSE_JS}</script>"
                 f"<script>{OBJ_HISTORY_JS}</script>")
-    agent = ("<div class='agent'><h4>② Agent 自动决策（运营无需、也不能改）</h4>"
-             "<div class='row'>"
-             "<span class='tag gov'>频次闸门 1/24h·3/7d</span>"
-             "<span class='tag gov'>护栏 退订熔断0.3%·尊重抑制名单</span>"
-             "<span class='tag gov'>治理注入 4 节点</span>"
-             "<span class='tag gov'>mtc_* 追踪 + 9 埋点</span>"
-             "<span class='tag gov'>plan_hash 绑定审批·篡改即拒</span>"
-             "</div><p class='note'>这些由合并规格的治理策略与 MVP 裁定确定性生成，"
-             "不由运营编辑，避免合规/频次被误改。</p>"
-             + _audience_plan_html()
-             + _spec_preview_html(strategy_spec, spec_err, spec_meta)
-             + _service_preview_html(service_spec)
-             + "</div>")
     _title = "改 Brief" if _is_prefill else "新建 Brief"
     _banner = ""
     if _is_prefill:
@@ -1998,7 +1985,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
             f"</div>"
             f"<p class='sub'>方案 A 驾驶舱 · 独立 :8090 → Mautic :8080</p>" \
            f"{_banner}" \
-           f"<form method='post' action='/brief'><div class='grid2'>{operator}{agent}</div>"
+           f"<form method='post' action='/brief'>{operator}"
            + (f"<input type='hidden' name='ref_goal_id' value='{_esc(prefill.get('ref_goal_id',''))}'>" if _is_prefill else "")
            + ("<input type='hidden' name='confirm_overwrite' value='1'>" if confirm_overwrite else "")
            + "</form>")
