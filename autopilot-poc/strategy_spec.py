@@ -791,11 +791,11 @@ def normalize_campaign(c: dict, idx: int, goal_id: str = "",
 
     # ---- 发送条件：优先级 规格显式值 > 画像包默认值 > 常量缺省 ----
     sc_in = _as_dict(c.get("send_conditions"))
-    # 画像包默认值（频次 / 静默窗 / 触达时段）：此前画像包在代码里完全空转，
-    # 这里让它成为真正生效的默认值来源。
+    # 画像包默认值（仅静默窗 quiet_hours；发送频次 max_per_* 改由常量/规格决定，不再由画像包驱动）：
+    # 此前画像包在代码里完全空转，这里让它成为真正生效的默认值来源（仅 quiet_hours）。
     pkg_defaults = package_send_defaults(audience_package)
     sc = dict(DEFAULT_SEND_CONDITIONS)
-    for k in ("max_per_24h", "max_per_7d", "quiet_hours"):
+    for k in ("quiet_hours",):  # 发送频次 max_per_* 不再由画像包驱动（用户 2026-09：画像只影响内容/视觉/触达时段）
         if pkg_defaults.get(k) is not None:
             sc[k] = pkg_defaults[k]
     for k, v in sc_in.items():
@@ -865,13 +865,14 @@ def normalize_campaign(c: dict, idx: int, goal_id: str = "",
     cta_templates = list(cta_spec) if cta_spec else list(pkg_content["cta_templates"])
 
     # 来源溯源：总策略 = 画像包 + 策略规划 + 属性，UI 需标注每个值来自哪一层
+    _APPLIED_PKG_KEYS = {"quiet_hours"}  # 画像包仅驱动免打扰窗；发送频次改由常量/规格决定
     def _src(key, spec_key=None):
         sk = spec_key or key
         if sk == "quiet_hours" and red_line_qh:
             return "red_line"
         if sc_in.get(sk) is not None:
             return "spec"
-        if pkg_defaults.get(sk) is not None:
+        if sk in _APPLIED_PKG_KEYS and pkg_defaults.get(sk) is not None:
             return "package"
         return "default"
 

@@ -1950,7 +1950,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 except ValueError:
                     pass
         return (str(lo) if lo != 999 else ""), (str(hi) if hi is not None else "")
-    age_buckets = ["", "18-24", "25-34", "35-44", "45-54", "55+"]
+    age_buckets = ["", "0-18", "18-24", "25-34", "35-44", "45-54", "55+"]
     gender_opts = ["", "男", "女", "未知"]
     income_opts = ["", "L1", "L2", "L3", "L4", "L5"]
     edu_opts = ["", "名校", "MBA", "211", "985", "QS100", "普通本科", "其他"]
@@ -2041,14 +2041,14 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<script>"
                 f"var _LANG='{i18n.get_lang()}'; "
                 f"var _PKG_MATCH={{}}; "
-                f"_PKG_MATCH.HNW_FAMILY={{label:'高净值家庭客',label_en:'HNW family',match:{{age:['35-44','45-54'],gender:['男'],income:['L4','L5'],education:['名校','MBA','QS100'],industry:['IT','金融','旅游','其他']}}}}; "
-                f"_PKG_MATCH.YOUNG_TREND={{label:'年轻潮流客',label_en:'Young trend',match:{{age:['18-24','25-34'],gender:['男','女'],income:['L1','L2'],education:['普通本科','其他'],source:['CSTS','爬虫','其他','手动输入']}}}}; "
-                f"_PKG_MATCH.PARENT_FAM={{label:'亲子家庭客',label_en:'Parent family',match:{{age:['25-34','35-44'],gender:['女'],income:['L3','L4'],education:['211','985','普通本科','其他'],industry:['教育','医疗','其他']}}}}; "
+                f"_PKG_MATCH.HNW_FAMILY={{label:'高净值家庭客',label_en:'HNW family',match:{{age:['35-44','45-54'],income:['L4','L5'],industry:['IT','金融','旅游','其他']}}}}; "
+                f"_PKG_MATCH.YOUNG_TREND={{label:'年轻潮流客',label_en:'Young trend',match:{{age:['0-18','18-24'],income:['L1','L2']}}}}; "
+                f"_PKG_MATCH.PARENT_FAM={{label:'亲子家庭客',label_en:'Parent family',match:{{age:['25-34','35-44'],income:['L3','L4'],industry:['教育','医疗','其他']}}}}; "
                 f"_PKG_MATCH.CORP_GRP={{label:'企业团购客',label_en:'Corporate group',match:{{income:['L4','L5'],industry:['IT','金融','制造','零售','教育','医疗']}}}}; "
                 f"_PKG_MATCH.DORMANT={{label:'沉睡流失客',label_en:'Dormant churn',runtime_only:true}}; "
-                f"var _W={{age:0.20,gender:0.10,income:0.25,education:0.15,industry:0.15,source:0.10,region:0.05}}; "
+                f"var _W={{age:0.45,income:0.40,industry:0.15,gender:0.10,education:0.15,region:0.05}}; "
                 f"function _computeMatch(){{"
-                f"  var fields=['age','gender','income','education','industry','source','region'];"
+                f"  var fields=['age','gender','income','education','industry','region'];"
                 f"  var vals={{}};"
                 f"  fields.forEach(function(k){{var cbs=document.querySelectorAll('input[type=checkbox][name=audience_'+k+']:checked');"
                 f"    if(cbs.length){{vals[k]=Array.from(cbs).map(function(o){{return o.value;}});}}"
@@ -2084,14 +2084,14 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"    emptyNote:'<div class=\"note\" style=\"margin-top:4px\">Empty = all options (the field gets full credit), but only fields that are <strong>explicitly filled and matched</strong> count as evidence; a match needs evidence weight &ge;0.20 (fill strong fields such as age / income).</div>',"
                 f"    hitPrefix:'Matched ',hitSuffix:' audience package(s): ',badgeSep:'; ',"
                 f"    evidence:'Evidence: ',noEv:'(no specific field hit)',"
-                f"    multi:'<div class=\"note\" style=\"margin-top:4px\">&#9888; Multiple packages matched &rarr; strategy takes the <b>max</b> across packages (widest frequency, unioned content levers, strongest CTA).</div>'"
+                f"    multi:'<div class=\"note\" style=\"margin-top:4px\">&#9888; Multiple packages matched &rarr; content levers unioned, CTA strongest, quiet_hours/send_window from package default</div>'"
                 f"  }}:{{"
                 f"    noA:'无画像包匹配（最接近 <b>',colon:'：',"
                 f"    tail:'）</span> &rarr; 使用 <b>GENERIC 通用兜底</b>',"
                 f"    emptyNote:'<div class=\"note\" style=\"margin-top:4px\">留空 = 全选（该字段计满分），但只有<strong>显式填写且命中</strong>的字段才算证据；命中需证据权重 ≥0.20（补填 age / income 等强字段即可）。</div>',"
                 f"    hitPrefix:'命中 ',hitSuffix:' 个画像包：',badgeSep:'；',"
                 f"    evidence:'命中证据：',noEv:'（无具体字段命中）',"
-                f"    multi:'<div class=\"note\" style=\"margin-top:4px\">&#9888; 命中多个画像包 &rarr; 策略取各画像策略的<b>最大值</b>（频次取最宽、内容 levers 取并集、CTA 取最强）。</div>'"
+                f"    multi:'<div class=\"note\" style=\"margin-top:4px\">&#9888; 命中多个画像包 &rarr; 内容 levers 取并集、CTA 取最强、免打扰/触达时段沿用画像包默认</div>'"
                 f"  }};"
                 f"  if(matched.length===0){{"
                 f"    var top=rows[0];"
@@ -2101,8 +2101,8 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"      else{{ reason=(_LANG==='en')?(' score '+top.score.toFixed(2)+' ok, but explicit evidence '+top.abs.toFixed(2)+' &lt; 0.20'):(' 得分 '+top.score.toFixed(2)+' 已达标，但显式证据 '+top.abs.toFixed(2)+' &lt; 0.20'); }}"
                 f"    }}"
                 f"    var evNow=(_LANG==='en')"
-                f"      ?(' current explicit evidence: '+(top?top.abs.toFixed(2):'0.00')+' / need &ge;0.20 — age(0.20) or income(0.25) alone qualifies; gender/source/region are weak fields')"
-                f"      :(' 当前显式证据：'+(top?top.abs.toFixed(2):'0.00')+' / 需 ≥0.20 —— age(0.20)、income(0.25) 单独命中即可；gender/source/region 属弱字段');"
+                f"      ?(' current explicit evidence: '+(top?top.abs.toFixed(2):'0.00')+' / need &ge;0.20 — age(0.45) or income(0.40) alone qualifies; gender/education/region/source are tag-only (not scored)')"
+                f"      :(' 当前显式证据：'+(top?top.abs.toFixed(2):'0.00')+' / 需 ≥0.20 —— age(0.45)、income(0.40) 单独命中即可；gender/education/region/source 仅用于打 tag，不参与打分');"
                 f"    box.innerHTML='<span class=\"b-warn\">'+T.noA+(top?top.code:'-')+'</b> '+(top?top.label:'')+T.colon+reason+T.tail"
                 f"      +'<div class=\"note\" style=\"margin-top:4px\">'+evNow+'</div>'+T.emptyNote;"
                 f"    return;}}"

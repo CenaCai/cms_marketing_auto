@@ -65,34 +65,29 @@ def _check_objective_quality(text: str) -> Optional[str]:
 
 # ===== 受众画像包（与专家库 references/audience-content-map.json 保持同步） =====
 # 5 具名包 + 1 兜底包（GENERIC）。DORMANT 由 runtime 规则命中，不参与打分。
+# 打分因子（2026-09 重定向）：age / income 主因子、industry 次因子；
+# gender / education / region / source 仅用于打 tag，不再参与画像打分（见 AUDIENCE_WEIGHTS）。
 AUDIENCE_PACKAGES = {
     "HNW_FAMILY": {
         "label": "高净值家庭客",
         "match": {
             "age":       ["35-44", "45-54"],
-            "gender":    ["男"],
             "income":    ["L4", "L5"],
-            "education": ["名校", "MBA", "QS100"],
             "industry":  ["IT", "金融", "旅游", "其他"],
         },
     },
     "YOUNG_TREND": {
         "label": "年轻潮流客",
         "match": {
-            "age":       ["18-24", "25-34"],
-            "gender":    ["男", "女"],
+            "age":       ["0-18", "18-24"],
             "income":    ["L1", "L2"],
-            "education": ["普通本科", "其他"],
-            "source":    ["CSTS", "爬虫", "其他", "手动输入"],
         },
     },
     "PARENT_FAM": {
         "label": "亲子家庭客",
         "match": {
             "age":       ["25-34", "35-44"],
-            "gender":    ["女"],
             "income":    ["L3", "L4"],
-            "education": ["211", "985", "普通本科", "其他"],
             "industry":  ["教育", "医疗", "其他"],
         },
     },
@@ -110,16 +105,18 @@ AUDIENCE_PACKAGES = {
 }
 
 AUDIENCE_WEIGHTS = {
-    "age": 0.20, "gender": 0.10, "income": 0.25,
-    "education": 0.15, "industry": 0.15,
-    "source": 0.10, "region": 0.05,
+    # 仅打分字段：age/income 主因子、industry 次因子。
+    # gender/education/region/source 仅用于打 tag，不参与画像打分（用户 2026-09 重定向）。
+    "age": 0.45, "income": 0.40, "industry": 0.15,
 }
 AUDIENCE_THRESHOLD = 0.6  # 命中阈值（>= 算命中；< 则走 GENERIC 兜底）
 # 命中所必需的「显式证据权重」下限（只算运营真正填写并命中的字段）。
 # 背景：留空字段按"全选"处理会给满分，导致填得越少分数越高（全空时每个包都是 1.00）。
 # 所以命中与否不能只看相对分，还必须要求有一定量的**真实证据**：
-#   ≥0.20 → age(0.20) / income(0.25) 这种强字段单独命中即可；
-#   <0.20 → 只填了 gender / source / region / education 这种弱字段，不足以下判断 → 走 GENERIC。
+#   ≥0.20 → age(0.45) / income(0.40) 这种强字段单独命中即可；
+#   <0.20 → 只填了 gender / education / region / source（这些现在仅打 tag，不参与打分），
+#            或仅 industry(0.15) 单独命中（权重 < 0.20），不足以下判断 → 走 GENERIC。
+#   注：industry 权重 0.15 单独命中 < 0.20，无法自触发（符合「industry 仅次要正向微调」设计）。
 MIN_EVIDENCE = 0.20
 
 
@@ -162,10 +159,41 @@ _PROFILE_VALUE_MAPS = {
 }
 
 
+# age 分桶（与 references/audience-content-map.json scoring.field_buckets.age 同步）。
+# scorer 既接受已分桶的标签（如 "35-44"），也接受原始数值（如 30 / "40"），
+# 后者须归一到下方的桶，否则无法与画像包 match 的桶标签精确比较。
+AGE_BUCKETS = ["0-18", "18-24", "25-34", "35-44", "45-54", "55+"]
+
+
+def _bucket_age(age):
+    """把 age 值归一到年龄桶标签；已是桶标签或非数值则原样返回。"""
+    if age is None:
+        return ""
+    s = str(age).strip()
+    if not s or s in AGE_BUCKETS:
+        return s
+    try:
+        n = int(float(s))
+    except (TypeError, ValueError):
+        return s  # 未知写法，原样保留（交由打分器判不匹配）
+    if n < 18:
+        return "0-18"
+    if n < 25:
+        return "18-24"
+    if n < 35:
+        return "25-34"
+    if n < 45:
+        return "35-44"
+    if n < 55:
+        return "45-54"
+    return "55+"
+
+
 def _normalize_profile_for_scoring(profile) -> dict:
     """把 en_US 键名/值归一化为打分器约定（中文）；对中文输入幂等。
 
     仅做已知别名的映射，未命中别名的字段/值原样保留（如 income L1、IT、MBA）。
+    age 字段额外归一到年龄桶（数值 → 桶标签），保证前端/后端打分一致。
     """
     if not isinstance(profile, dict):
         return {}
@@ -173,6 +201,8 @@ def _normalize_profile_for_scoring(profile) -> dict:
     for k, v in profile.items():
         nk = _PROFILE_KEY_ALIASES.get(str(k).strip().lower(), k)
         vals = _profile_values(v)
+        if nk == "age":
+            vals = [_bucket_age(x) for x in vals]
         if nk in _PROFILE_VALUE_MAPS:
             mapper = _PROFILE_VALUE_MAPS[nk]
             vals = [mapper.get(str(x).strip().lower(), str(x).strip()) for x in vals]
@@ -216,14 +246,15 @@ def infer_audience_package(profile) -> dict:
         score, total, evidence, explicit = 0.0, 0.0, [], 0.0
         for field, weight in AUDIENCE_WEIGHTS.items():
             if field not in match_map:
-                continue  # 画像包未定义该字段 → 不计入分母（避免字段少的包被 7 字段分母压分）
-            total += weight
+                continue  # 画像包未定义该字段 → 不计入分母（避免字段少的包被分母压分）
             vals = _profile_values(profile.get(field))
             if not vals:
-                # 留空 = 不限受众 = 全选（与 /brief 表单提示一致）→ 该字段视为命中，给满分。
-                # 注意：它计入分子也计入分母，绝不是 0 分。
-                score += weight
+                # 留空 = 不限受众 = 未限定该维度 → 不计入打分（既不给分也不扣分）。
+                # 这样：仅显式填了 age / income 等强字段即可命中对应画像包（分母随实填字段收缩）；
+                # 而仅填了 industry(0.15) 这类弱字段会因 abs_score<0.20 被 MIN_EVIDENCE 拦截，
+                # 不会单独自触发（符合 2026-09 重定向「industry 仅次要正向微调」设计）。
                 continue
+            total += weight
             if any(v in match_map[field] for v in vals):
                 score += weight
                 explicit += weight

@@ -13,16 +13,12 @@
   "scoring": {
     "threshold": 0.6,
     "default_weights": {
-      "age": 0.20,
-      "gender": 0.10,
-      "income": 0.25,
-      "education": 0.15,
-      "industry": 0.15,
-      "source": 0.10,
-      "region": 0.05
+      "age": 0.45,
+      "income": 0.40,
+      "industry": 0.15
     },
     "field_buckets": {
-      "age":       ["18-24", "25-34", "35-44", "45-54", "55+"],
+      "age":       ["0-18", "18-24", "25-34", "35-44", "45-54", "55+"],
       "gender":    ["男", "女", "未知"],
       "income":    ["L1", "L2", "L3", "L4", "L5"],
       "education": ["名校", "MBA", "211", "985", "QS100", "普通本科", "其他"],
@@ -38,9 +34,7 @@
       "is_fallback": false,
       "match": {
         "age":       ["35-44", "45-54"],
-        "gender":    ["男"],
         "income":    ["L4", "L5"],
-        "education": ["名校", "MBA", "QS100"],
         "industry":  ["IT", "金融", "旅游", "其他"]
       },
       "strategy": {
@@ -80,11 +74,8 @@
       "label_zh": "年轻潮流客",
       "is_fallback": false,
       "match": {
-        "age":       ["18-24", "25-34"],
-        "gender":    ["男", "女"],
-        "income":    ["L1", "L2"],
-        "education": ["普通本科", "其他"],
-        "source":    ["CSTS", "爬虫", "其他", "手动输入"]
+        "age":       ["0-18", "18-24"],
+        "income":    ["L1", "L2"]
       },
       "strategy": {
         "frequency":  {"max_per_24h": 2, "max_per_7d": 4},
@@ -124,9 +115,7 @@
       "is_fallback": false,
       "match": {
         "age":       ["25-34", "35-44"],
-        "gender":    ["女"],
         "income":    ["L3", "L4"],
-        "education": ["211", "985", "普通本科", "其他"],
         "industry":  ["教育", "医疗", "其他"]
       },
       "strategy": {
