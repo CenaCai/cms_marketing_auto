@@ -4715,6 +4715,43 @@ class Handler(BaseHTTPRequestHandler):
                 # 抛 KeyError/TypeError 时会穿透到 Handler 外层，连接被掐断 → 浏览器 Failed to fetch。
                 _log_ai_error(f"strategy 自动合成失败 {type(e).__name__}: {e}")
                 pass
+        # 方案 C：AI 识别产出的 strategy_spec 对齐到 Brief 已填 / 已推断字段，
+        # 消除「人群包 与 Brief 不一致」类冲突（与「自动生成策略」「POST 安全网」共用 reconcile）。
+        # 空画像 → 推断 GENERIC → 把 spec 的 audience_package 对齐成 GENERIC，避免提交时弹冲突。
+        _spec_src = out.get("strategy_spec")
+        if _spec_src:
+            try:
+                _spec_obj = json.loads(_spec_src) if isinstance(_spec_src, str) else _spec_src
+                _aprof = {
+                    "age": out.get("audience_age"),
+                    "gender": out.get("audience_gender"),
+                    "income": out.get("audience_income"),
+                    "education": out.get("audience_education"),
+                    "industry": out.get("audience_industry"),
+                    "source": out.get("audience_source"),
+                    "region": out.get("audience_region"),
+                }
+                _aloc = out.get("locale")
+                if isinstance(_aloc, str) and _aloc:
+                    _aloc = [x.strip() for x in _aloc.split(",") if x.strip()]
+                _apkg = _infer_brief({"audience_profile": _aprof, "locale": _aloc or []}).get("audience_package")
+                _recon = reconcile_spec_with_brief(
+                    _spec_obj,
+                    {
+                        "locale": out.get("locale"),
+                        "start_date": out.get("start_date"),
+                        "end_date": out.get("end_date"),
+                        "overall_conv": out.get("overall_conv"),
+                        "constraints": out.get("constraints"),
+                        "audience_profile": _aprof,
+                    },
+                    pkg_code=_apkg,
+                )
+                out["strategy_spec"] = json.dumps(_recon, ensure_ascii=False, indent=2)
+                cockpit_log("INFO", "ai-parse：strategy_spec 已对齐 Brief · pkg=%s" % _apkg)
+            except Exception as e:  # noqa: BLE001
+                cockpit_log("WARN", "ai-parse：strategy_spec 对齐 Brief 失败（原样返回）· %s: %s"
+                            % (type(e).__name__, e))
         resp = {"ok": True, **out, "filled": filled}
         if strategy_auto:
             resp["strategy_auto"] = True
