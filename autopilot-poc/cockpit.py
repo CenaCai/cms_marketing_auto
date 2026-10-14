@@ -2141,8 +2141,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     return (f"<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px'>"
             f"<h1 style='margin:0'>{_title}</h1>"
             f"<a class='btn sec' href='/' style='white-space:nowrap'>← 取消并返回列表</a>"
-            f"</div>"
-            f"<p class='sub'>方案 A 驾驶舱 · 独立 :8090 → Mautic :8080</p>" \
+            f"</div>" \
            f"{_banner}" \
            f"<form id='brief-form' method='post' action='/brief'>{operator}"
            + (f"<input type='hidden' name='ref_goal_id' value='{_esc(prefill.get('ref_goal_id',''))}'>" if _is_prefill else "")
