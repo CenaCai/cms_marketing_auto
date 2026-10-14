@@ -150,7 +150,7 @@ from strategy_spec import (parse_strategy_spec, strategies_from_spec,
                            service_sequences_from_spec, spec_goal_defaults,
                            email_display)
 # 一致性校验：StrategySpec 与 Brief 基础信息冲突 → 阻断（不自动纠正、不静默生成）
-from spec_validation import validate_spec, format_conflicts
+from spec_validation import validate_spec, format_conflicts, reconcile_spec_with_brief
 
 
 # --------------------------- 工具 ---------------------------
@@ -771,6 +771,145 @@ var b=document.getElementById('gen-strategy-btn');
 if(b){ b.addEventListener('click', function(ev){ ev.preventDefault(); doGen(); }); }
 var cb=document.getElementById('copy-prompt-btn');
 if(cb){ cb.addEventListener('click', function(ev){ ev.preventDefault(); doCopyPrompt(); }); }
+})();
+"""
+
+
+# 「编译并生成 Program」提交前的冲突拦截：
+# 1) 若策略规格与已勾选条件冲突 → 弹窗提示，不静默阻断。
+# 2) 用户点「确认覆盖」→ 用生成后策略规则回填勾选条件（locale/窗口/KPI/约束/人群），
+#    并带 confirm_overwrite_spec=1 重新提交（服务端再对齐一次，保障能编译）。
+# 3) 用户点「取消」→ 停留在新建 Brief 页面，自行手动解决。
+BRIEF_SUBMIT_JS = """
+(function(){
+function getLang(){ return (window._LANG==='en')?'en':'zh'; }
+function T(){
+  var L=getLang();
+  return (L==='en')?{
+    title:'Strategy spec conflicts with the conditions you checked',
+    intro:'The pasted/generated strategy spec conflicts with the Brief above. Overwrite the checked conditions with the spec rules, or cancel to fix manually.',
+    confirm:'Confirm overwrite',
+    cancel:'Cancel',
+    specLabel:'Spec',
+    briefLabel:'Brief',
+    noConflict:'No conflict — submitting…'
+  }:{
+    title:'策略规格与已勾选条件冲突',
+    intro:'你粘贴/生成的策略规格与上方已勾选条件不一致。可选择「确认覆盖」用生成后的策略规则把勾选条件覆盖一遍，或点「取消」停留在本页自行手动解决。',
+    confirm:'确认覆盖',
+    cancel:'取消',
+    specLabel:'规格',
+    briefLabel:'勾选条件',
+    noConflict:'无冲突，正在提交…'
+  };
+}
+function setVal(form, name, value){
+  var el=form.querySelector('[name='+name+']');
+  if(el){ el.value=(value==null?'':value); }
+}
+function setMulti(form, name, values){
+  var want={}; (values||[]).forEach(function(v){ want[String(v)]=true; });
+  var cbs=form.querySelectorAll('input[type=checkbox][name='+name+']');
+  cbs.forEach(function(cb){ cb.checked=!!want[String(cb.value)]; });
+}
+function gatherAll(){
+  var f=document.getElementById('brief-form'); if(!f) return null;
+  var fd=new FormData(f);
+  var g=function(n){ var v=fd.get(n); return v==null?'':String(v).trim(); };
+  var prof={};
+  ['age','gender','income','education','industry','source','region'].forEach(function(k){
+    var cbs=f.querySelectorAll('input[type=checkbox][name=audience_'+k+']:checked');
+    if(cbs.length){ prof[k]=Array.prototype.map.call(cbs,function(o){return o.value;}); }
+    else { var el=f.querySelector('[name=audience_'+k+']'); prof[k]=el?(el.value||'').trim():''; }
+  });
+  var locCbs=f.querySelectorAll('input[type=checkbox][name=locale]:checked');
+  var locale=locCbs.length?Array.prototype.map.call(locCbs,function(o){return o.value;}):g('locale');
+  return {
+    objective:g('objective'), goal_name:g('goal_name'),
+    start_date:g('start_date'), end_date:g('end_date'), overall_conv:g('overall_conv'),
+    budget:g('budget'), is_revenue:g('is_revenue'), locale:locale,
+    constraints:fd.get('constraints')==null?'':String(fd.get('constraints')),
+    audience_profile:prof,
+    strategy_spec:fd.get('strategy_spec')==null?'':String(fd.get('strategy_spec'))
+  };
+}
+function applyOverwrite(form, spec){
+  if(spec.locale && spec.locale.length) setMulti(form,'locale',spec.locale);
+  var w=spec.window||{};
+  if(w.start) setVal(form,'start_date',w.start);
+  if(w.end) setVal(form,'end_date',w.end);
+  if(spec.kpi && spec.kpi.target!==undefined && spec.kpi.target!==null) setVal(form,'overall_conv',spec.kpi.target);
+  var camps=spec.campaigns||[];
+  if(camps.length){
+    var sc=camps[0].send_conditions||{};
+    var parts=[];
+    if(sc.quiet_hours) parts.push(sc.quiet_hours+' 免打扰');
+    if(sc.max_per_7d!==undefined && sc.max_per_7d!==null) parts.push('每周≤'+sc.max_per_7d+' 封');
+    if(sc.max_per_24h!==undefined && sc.max_per_24h!==null) parts.push('每天≤'+sc.max_per_24h+' 封');
+    if(parts.length) setVal(form,'constraints',parts.join('；'));
+  }
+  var ap=spec.audience_profile||{};
+  ['age','gender','income','education','industry','source','region'].forEach(function(k){
+    if(ap[k]) setMulti(form,'audience_'+k, ap[k]);
+  });
+  if(typeof _updateMatch==='function'){ try{ _updateMatch(); }catch(e){} }
+  if(typeof updateAgeMatch==='function'){ try{ updateAgeMatch(); }catch(e){} }
+}
+function buildModal(conflicts, specText){
+  var t=T();
+  var overlay=document.createElement('div');
+  overlay.id='brief-conflict-overlay';
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(20,30,15,.45);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px';
+  var card=document.createElement('div');
+  card.style.cssText='background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:88vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.25);font-family:inherit';
+  var html='';
+  html+='<div style="padding:18px 20px;border-bottom:1px solid #eee"><h2 style="margin:0;font-size:17px;color:#b03a2e">'+t.title+'</h2></div>';
+  html+='<div style="padding:14px 20px"><p class="note" style="margin:0 0 12px">'+t.intro+'</p>';
+  html+='<div style="border-left:4px solid #c0392b;border-radius:6px;overflow:hidden">';
+  conflicts.forEach(function(c){
+    var line='<div style="padding:8px 10px;border-bottom:1px dashed #eee">';
+    line+='<div style="font-weight:600;color:#c0392b">'+(c.campaign?('['+c.campaign+'] '):'')+_esc(c.message)+'</div>';
+    line+='<div style="font-size:12px;color:#666;margin-top:2px">'+t.specLabel+': '+_esc(c.spec_value)+' ／ '+t.briefLabel+': '+_esc(c.brief_value)+'</div>';
+    line+='</div>';
+    html+=line;
+  });
+  html+='</div></div>';
+  html+='<div style="padding:14px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid #eee">';
+  html+='<button id="bc-cancel" style="padding:8px 16px;border:1px solid #ccc;background:#f5f5f5;border-radius:6px;cursor:pointer">'+t.cancel+'</button>';
+  html+='<button id="bc-confirm" style="padding:8px 16px;border:none;background:#2e7d32;color:#fff;border-radius:6px;cursor:pointer">'+t.confirm+'</button>';
+  html+='</div>';
+  card.innerHTML=html;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  function _esc(s){ s=(s==null?'':String(s)); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  document.getElementById('bc-cancel').onclick=function(){ if(overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+  document.getElementById('bc-confirm').onclick=function(){
+    var f=document.getElementById('brief-form');
+    if(!f) return;
+    try{ var spec=JSON.parse(specText); applyOverwrite(f, spec); }catch(e){ /* 解析失败也允许服务端再对齐 */ }
+    var hid=document.createElement('input'); hid.type='hidden'; hid.name='confirm_overwrite_spec'; hid.value='1'; f.appendChild(hid);
+    if(overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    f.submit();
+  };
+}
+var _bf=document.getElementById('brief-form');
+if(_bf){
+  _bf.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    var data=gatherAll();
+    if(!data || !data.strategy_spec || !data.strategy_spec.trim()){ _bf.submit(); return; }
+    fetch('/brief/validate-strategy', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if(j && j.ok && j.conflicts && j.conflicts.length){
+          buildModal(j.conflicts, data.strategy_spec);
+        } else {
+          _bf.submit();
+        }
+      })
+      .catch(function(){ _bf.submit(); });  // 校验接口异常 → 放行（服务端仍会拦）
+  });
+}
 })();
 """
 
@@ -1616,6 +1755,9 @@ _CREW_SYS = {
         "顶层须有 needs_operator_review(bool) 与 operator_review_notes。\n"
         "命名前缀 CMP_/SEG_/EM_/FORM_；落地页 url 用 http://localhost:8080/s/<cid>-<lang>；"
         "quiet_hours 原样填约束值（跨午夜用 '-'）。\n"
+        "必须严格沿用【Brief】已填的语言(locale)/投放窗口(window.start~end)/整体转化率(kpi.target)/"
+        "约束红线(quiet_hours 与 max_per_7d/max_per_24h 上限)：这些字段运营已勾选/填写即具权威性，"
+        "不得自行改写；仅当 Brief 对应字段留空时，才可由策略自行决定。\n"
     ),
 }
 
@@ -1977,7 +2119,8 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"<script>{DERIVE_JS}</script>"
                 f"<script>{STRATEGY_GEN_JS}</script>"
                 f"<script>{AI_PARSE_JS}</script>"
-                f"<script>{OBJ_HISTORY_JS}</script>")
+                f"<script>{OBJ_HISTORY_JS}</script>"
+                f"<script>{BRIEF_SUBMIT_JS}</script>")
     _title = "改 Brief" if _is_prefill else "新建 Brief"
     _banner = ""
     if _is_prefill:
@@ -2001,7 +2144,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
             f"</div>"
             f"<p class='sub'>方案 A 驾驶舱 · 独立 :8090 → Mautic :8080</p>" \
            f"{_banner}" \
-           f"<form method='post' action='/brief'>{operator}"
+           f"<form id='brief-form' method='post' action='/brief'>{operator}"
            + (f"<input type='hidden' name='ref_goal_id' value='{_esc(prefill.get('ref_goal_id',''))}'>" if _is_prefill else "")
            + ("<input type='hidden' name='confirm_overwrite' value='1'>" if confirm_overwrite else "")
            + "</form>")
@@ -3994,6 +4137,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._guard("brief", self._handle_brief, jsbody)
         if path == "/brief/generate-strategy":
             return self._guard("generate-strategy", self._handle_generate_strategy, jsbody)
+        if path == "/brief/validate-strategy":
+            return self._guard("validate-strategy", self._handle_validate_strategy, jsbody)
         if path == "/brief/ai-parse":
             return self._guard("ai-parse", self._handle_ai_parse, jsbody)
         if path == "/brief/strategy-prompt":
@@ -4195,8 +4340,17 @@ class Handler(BaseHTTPRequestHandler):
                     strategies = _re
             # ---- 一致性校验：spec 与上方基础信息冲突 → 阻断，不生成 Program ----
             if spec_raw:
-                conflicts = validate_spec(spec_raw, _brief_ctx_from_form(form, locales),
-                                          goal.meta.get("audience_package"))
+                _ctx = _brief_ctx_from_form(form, locales)
+                _pkg = goal.meta.get("audience_package")
+                conflicts = validate_spec(spec_raw, _ctx, _pkg)
+                # 「确认覆盖」安全网：客户端已用生成策略回填勾选条件后再次提交，
+                # 若仍残留冲突（如人群包推断边界），服务端把 spec 对齐到 Brief 再校验一次，
+                # 通过则继续生成（保障能编译出 Program）。
+                if conflicts and str(form.get("confirm_overwrite_spec") or "") == "1":
+                    _reconciled = reconcile_spec_with_brief(spec_raw, form, pkg_code=_pkg)
+                    if not validate_spec(_reconciled, _ctx, _pkg):
+                        spec_raw = _reconciled
+                        conflicts = []
                 if conflicts:
                     return self._send(200, _page(
                         "Brief 与策略规格冲突",
@@ -4250,6 +4404,11 @@ class Handler(BaseHTTPRequestHandler):
         """
         # 服务端按 audience_profile 推断（多值 → 多画像），注入 brief 供提示词「取最大值」
         prompt = _build_strategy_prompt_from_brief(brief)
+        # 生成前先把 pkg_code 算好：生成后对齐到 Brief 已勾选条件，避免「自动生成策略」产出冲突规格
+        try:
+            _pkg_code = _infer_brief(brief).get("audience_package")
+        except Exception:  # noqa: BLE001
+            _pkg_code = None
         sg = load_strategy_gen_config()
         if sg["enabled"]:
             # 外部策略生成端点优先
@@ -4271,6 +4430,7 @@ class Handler(BaseHTTPRequestHandler):
                 if spec is None:
                     return self._send_json({"ok": False, "fallback": True,
                                             "prompt": prompt, "error": "端点返回无法解析为 StrategySpec"})
+                spec = reconcile_spec_with_brief(spec, brief, pkg_code=_pkg_code)
                 return self._send_json({"ok": True, "strategy_spec": spec, "prompt": prompt,
                                         "via": "endpoint"})
             except Exception as e:  # noqa: BLE001
@@ -4287,6 +4447,7 @@ class Handler(BaseHTTPRequestHandler):
                         _infer_brief(brief), mautic_context=mautic_ctx, history_context=history_ctx)
                     spec = _extract_strategy_spec(content)
                     if spec is not None:
+                        spec = reconcile_spec_with_brief(spec, brief, pkg_code=_pkg_code)
                         return self._send_json({"ok": True, "strategy_spec": spec,
                                                 "prompt": prompt, "via": "crew"})
                 except Exception as e:  # noqa: BLE001
@@ -4297,6 +4458,7 @@ class Handler(BaseHTTPRequestHandler):
             if spec is None:
                 return self._send_json({"ok": False, "fallback": True, "prompt": prompt,
                                         "error": "DeepSeek 返回无法解析为 StrategySpec"})
+            spec = reconcile_spec_with_brief(spec, brief, pkg_code=_pkg_code)
             return self._send_json({"ok": True, "strategy_spec": spec, "prompt": prompt,
                                     "via": "deepseek"})
         except RuntimeError as e:
@@ -4313,6 +4475,44 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             return self._send_json({"ok": False, "error": f"构建提示词失败：{e}"})
         return self._send_json({"ok": True, "prompt": prompt})
+
+    def _handle_validate_strategy(self, brief: dict):
+        """
+        仅校验（不生成）：客户端「编译并生成 Program」提交前，先拿回冲突列表用于弹窗确认。
+        入参 brief 由前端 gatherAll() 拼装：含 objective/start_date/end_date/overall_conv/
+        locale/constraints/audience_profile + strategy_spec 文本。
+        返回 JSON：{"ok":true,"conflicts":[{field,spec_value,brief_value,message,campaign},...]}
+                  或 {"ok":false,"error":<str>}。
+        """
+        try:
+            spec_src = (brief.get("strategy_spec") or "").strip()
+            if not spec_src:
+                return self._send_json({"ok": True, "conflicts": []})
+            _strategies, _svc, spec_err, _meta, spec_raw = _resolve_strategy_spec_full(spec_src)
+            if spec_err or not spec_raw:
+                return self._send_json({"ok": False,
+                                        "error": spec_err or "无法解析 StrategySpec"})
+            # 扁平化：前端 audience_profile → 表单 audience_* 键，供 _brief_ctx_from_form 复用
+            prof = brief.get("audience_profile") or {}
+            if not isinstance(prof, dict):
+                prof = {}
+            flat = dict(brief)
+            for _k in ("age", "gender", "income", "education", "industry", "source", "region"):
+                if _k in prof:
+                    flat["audience_" + _k] = prof[_k]
+            ctx = _brief_ctx_from_form(flat, brief.get("locale"))
+            # pkg_code 与 POST 时一致：服务端按 profile 推断
+            try:
+                _pkg = _infer_brief({"audience_profile": prof, "locale": ctx.get("locale")}).get("audience_package")
+            except Exception:  # noqa: BLE001
+                _pkg = None
+            conflicts = validate_spec(spec_raw, ctx, _pkg)
+            out = [{"field": c.field, "spec_value": c.spec_value,
+                    "brief_value": c.brief_value, "message": c.message,
+                    "campaign": c.campaign} for c in conflicts]
+            return self._send_json({"ok": True, "conflicts": out})
+        except Exception as e:  # noqa: BLE001
+            return self._send_json({"ok": False, "error": f"校验失败：{type(e).__name__}: {e}"})
 
     def _handle_ai_parse(self, body: dict):
         """

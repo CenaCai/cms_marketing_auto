@@ -22,6 +22,7 @@ spec_validation.py — StrategySpec 与 Brief 基础信息的一致性校验（�
 """
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass
 
@@ -382,3 +383,84 @@ def format_conflicts(conflicts) -> list:
             line = f"{line}（{c.campaign}）"
         lines.append(f"· {line}")
     return lines
+
+
+# ------------------------------------------------------------------ 对齐（生成 / 确认覆盖用）
+def reconcile_spec_with_brief(spec: dict, brief: dict, pkg_code: str = None) -> dict:
+    """
+    把 StrategySpec 中可由 Brief 权威字段直接派生的项，对齐到 Brief 已勾选/已填的值，
+    消除可派生冲突（locale / 投放窗口 / KPI / 免打扰 / 频次红线 / 人群包）。
+
+    设计前提（与 validate_spec 互补）：
+      - validate_spec 只「校验」不「修正」；本函数只做「对齐」，且**仅当 Brief 侧该字段
+        非空（或 pkg_code 非空）时才覆盖**——空 = 让 Agent/AI 决定，不会冲突，不做无谓改写。
+      - 不触碰 Brief 未约束的创意字段（分群 / 文案 / CTA / 落地页）。
+
+    返回对齐后的**新** spec dict（深拷贝，不修改入参）。失败即原样返回。
+    """
+    try:
+        spec = copy.deepcopy(_as_dict(spec))
+        brief = _as_dict(brief)
+
+        # 1) locale：Brief 已选语言 = 权威；规格必须与其相交（取 Brief 全集）
+        b_loc = _locale_set(brief.get("locale"))
+        if b_loc:
+            spec["locale"] = sorted(b_loc)
+
+        # 2) 投放窗口：对齐到 Brief 活动起止日期
+        bs = str(brief.get("start_date") or "").strip()
+        be = str(brief.get("end_date") or "").strip()
+        if bs or be:
+            w = dict(_as_dict(spec.get("window")))
+            if bs:
+                w["start"] = bs
+            if be:
+                w["end"] = be
+            spec["window"] = w
+
+        # 3) KPI.target：对齐到 Brief 总体目标转化率
+        oc = brief.get("overall_conv")
+        oc_txt = str(oc).strip() if oc is not None else ""
+        if oc_txt:
+            n = _num(oc_txt)
+            if n is not None:
+                kpi = dict(_as_dict(spec.get("kpi")))
+                kpi["target"] = n
+                spec["kpi"] = kpi
+
+        # 4) 免打扰 + 频次红线：逐 campaign 对齐 send_conditions
+        constraints = brief.get("constraints")
+        qh = ""
+        if constraints:
+            try:
+                qh = parse_quiet_hours(constraints)
+            except Exception:  # noqa: BLE001
+                qh = ""
+        weekly, daily = parse_frequency_caps(constraints)
+        if qh or weekly is not None or daily is not None:
+            camps = []
+            for c in _as_list(spec.get("campaigns")):
+                c = dict(_as_dict(c))
+                sc = dict(_as_dict(c.get("send_conditions")))
+                if qh:
+                    sc["quiet_hours"] = qh
+                if weekly is not None:
+                    cur = _num(sc.get("max_per_7d"))
+                    sc["max_per_7d"] = cur if (cur is not None and cur < weekly) else weekly
+                if daily is not None:
+                    cur = _num(sc.get("max_per_24h"))
+                    sc["max_per_24h"] = cur if (cur is not None and cur < daily) else daily
+                c["send_conditions"] = sc
+                camps.append(c)
+            if camps:
+                spec["campaigns"] = camps
+
+        # 5) 人群包：由 Brief 推断（与 validate_spec 规则 2 同一 pkg_code 来源）
+        if pkg_code:
+            spec["audience_package"] = str(pkg_code)
+
+        return spec
+    except Exception:  # noqa: BLE001
+        # 任何意外都不应阻断生成；原样返回
+        return _as_dict(spec)
+
