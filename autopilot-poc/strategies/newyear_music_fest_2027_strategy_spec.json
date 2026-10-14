@@ -1,0 +1,260 @@
+{
+  "goal_id": "newyear_music_fest_2027",
+  "objective": "围绕「2027 元旦跨年音乐节 · 意向登记与现场体验官招募」，在 2026-10-14 至 2026-12-30 的 78 天窗口内，分 3 波把「不知道 → 看过 → 高意向」的人群推到完成意向登记；无营收目标，只做品牌曝光与意向池沉淀。",
+  "business_topic": "2027 元旦跨年音乐节 · 意向登记与现场体验官招募",
+  "kpi": {
+    "metric": "conversion",
+    "target": 0.0
+  },
+  "locale": [
+    "zh_CN",
+    "en_US"
+  ],
+  "audience_package": "HNW_FAMILY",
+  "audience_profile": {
+    "gender": "男",
+    "income": "L1",
+    "education": "名校",
+    "industry": "IT",
+    "source": "CTL",
+    "region": "中国大陆"
+  },
+  "campaigns": [
+    {
+      "cid": "c1",
+      "name": "2027 New Year Music Festival · Lineup Reveal (EN)",
+      "content_brief": "Cross-year music lovers who know nothing about the festival yet and have not been touched by any wave; they lack one single anchor fact: who is on stage and when it starts.",
+      "content_emphasis": [
+        "深度价值",
+        "数据对比",
+        "长期主义",
+        "UGC 引用",
+        "限量稀缺",
+        "限时体验"
+      ],
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_NYE26_CN_EN_SEED"
+      },
+      "send_conditions": {
+        "delay_hours": 0,
+        "max_per_24h": 2,
+        "max_per_7d": 4,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "nye26_c1_sent",
+        "nye26_engaged"
+      ],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c1-en",
+      "depends_on": null,
+      "editable_until_start": true,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "首波只做「阵容与时间」这一件事，用可核验的阵容名单 + 场次时间建立最基础的认知锚点；不带任何价格与稀缺话术，先量出 seed 池的真实开信基线，为 c2/c3 定权重。频次取两包最大值 2/封·24h、4 封·7d，静默窗 22:00-09:00 原样沿用，触达时段取并集 12:00-22:00。",
+      "evidence": "references/audience-content-map.json 画像包参数表（infer_audience_package 实测 score=HNW_FAMILY 0.7059 / YOUNG_TREND 0.6875，阈值 0.6）；本波无历史活动数据可参照，转化预期数据缺失（data_missing）。"
+    },
+    {
+      "cid": "c2",
+      "name": "2027 New Year Music Festival · Setlist & Field Map (EN)",
+      "content_brief": "People who opened c1 but neither clicked through nor registered; they saw the lineup but still lack the practical information needed to decide to go: setlist times, field layout, on-site arrangements.",
+      "content_emphasis": [
+        "深度价值",
+        "数据对比",
+        "长期主义",
+        "UGC 引用",
+        "限量稀缺",
+        "限时体验"
+      ],
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_NYE26_CN_EN_ENGAGED"
+      },
+      "send_conditions": {
+        "delay_hours": 72,
+        "max_per_24h": 2,
+        "max_per_7d": 4,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "nye26_c2_sent",
+        "nye26_deep_engaged"
+      ],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c2-en",
+      "depends_on": "c1",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "承接 c1 的开信未点击人群。本波只补「到现场之后会发生什么」这一层实操信息（场次时间表 / 场地分区 / 现场安排），不重复阵容信息。用数据对比与 UGC 引用两条 lever 并置：一边给客观场次数据，一边给真实听众反馈，满足 HNW 的可核验要求与 YOUNG 的口碑背书要求。",
+      "evidence": "references/audience-content-map.json 画像包参数表（infer_audience_package 实测 score=HNW_FAMILY 0.7059 / YOUNG_TREND 0.6875，阈值 0.6）；分群与 c1 互斥（c1 排除 nye26_engaged），依据画像包参数表的意图分层惯例。"
+    },
+    {
+      "cid": "c3",
+      "name": "2027 New Year Music Festival · Experience Officer Signup (EN)",
+      "content_brief": "High-intent people who clicked twice or registered an interest: they lack the last thing needed to commit — a specific, limited role that makes registering feel worth it rather than a passive newsletter subscription.",
+      "content_emphasis": [
+        "深度价值",
+        "数据对比",
+        "长期主义",
+        "UGC 引用",
+        "限量稀缺",
+        "限时体验"
+      ],
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_NYE26_CN_EN_INTENT"
+      },
+      "send_conditions": {
+        "delay_hours": 72,
+        "max_per_24h": 2,
+        "max_per_7d": 4,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "nye26_c3_sent",
+        "nye26_strong_intent"
+      ],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c3-en",
+      "depends_on": "c2",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "末波做角色升级而非促销：把「观众」包装成「现场体验官」，用稀缺席位 + 长期价值（深度幕后内容、年度权益）承接 HNW 的长期主义与 YOUNG 的稀缺心理。C 未设置、无营收目标，因此不写价格、不写折扣，只做意向登记，与 Brief 的「仅意向登记 / 品牌曝光」定位一致。",
+      "evidence": "references/audience-content-map.json 画像包参数表（infer_audience_package 实测 score=HNW_FAMILY 0.7059 / YOUNG_TREND 0.6875，阈值 0.6）；活动周期 D=78 天，已用尽（结束日 2026-12-30），无余量追加波次。"
+    },
+    {
+      "cid": "c1_zh",
+      "name": "2027 元旦跨年音乐节 · 阵容揭晓（中文）",
+      "content_brief": "对跨年音乐节毫无认知、且未被任何波次触达的音乐爱好者；他们目前只缺一条最基础的事实：谁上台、几点开始。",
+      "content_emphasis": [
+        "深度价值",
+        "数据对比",
+        "长期主义",
+        "UGC 引用",
+        "限量稀缺",
+        "限时体验"
+      ],
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_NYE26_CN_ZH_SEED"
+      },
+      "send_conditions": {
+        "delay_hours": 0,
+        "max_per_24h": 2,
+        "max_per_7d": 4,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "nye26_c1_sent",
+        "nye26_engaged"
+      ],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c1_zh-zh",
+      "depends_on": "c1",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "c1 的中文翻译稿。受众含中国大陆且 locale 同时勾选 zh_CN/en_US，按规则英文为主稿、中文为双语备选，排在英文三波之后。触达参数与 c1 完全一致，不单独调优。",
+      "evidence": "【国际化与落地页规则】第 1 条：audience_region 含中国大陆 + locale 双语 → 英文主稿 + 中文翻译稿。翻译稿内容与主稿一一对应，不引入新的卖点或新的折扣。",
+      "content_variant": 2
+    },
+    {
+      "cid": "c2_zh",
+      "name": "2027 元旦跨年音乐节 · 歌单与场地地图（中文）",
+      "content_brief": "打开了 c1 但既未点进来也未登记的人；他们看到了阵容，却仍缺少决定去不去所需的实操信息：场次时间、场地分区、现场安排。",
+      "content_emphasis": [
+        "深度价值",
+        "数据对比",
+        "长期主义",
+        "UGC 引用",
+        "限量稀缺",
+        "限时体验"
+      ],
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_NYE26_CN_ZH_ENGAGED"
+      },
+      "send_conditions": {
+        "delay_hours": 72,
+        "max_per_24h": 2,
+        "max_per_7d": 4,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "nye26_c2_sent",
+        "nye26_deep_engaged"
+      ],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c2_zh-zh",
+      "depends_on": "c2",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "c2 的中文翻译稿，内容与主稿一一对应。depends_on 指向 c2（英文主稿）而非 c1_zh，保证中英两条链路读到同一批数据。",
+      "evidence": "【国际化与落地页规则】第 1 条 + 第 2 条：中文翻译稿落地页用 /c2_zh-zh，不复用英文主稿的 /c2-en。",
+      "content_variant": 2
+    },
+    {
+      "cid": "c3_zh",
+      "name": "2027 元旦跨年音乐节 · 现场体验官登记（中文）",
+      "content_brief": "已二次点击或已登记的高意向人群；他们只缺最后一步——一个具体且有限的角色，让登记这件事本身值得做，而不是被动订阅一份活动资讯。",
+      "content_emphasis": [
+        "深度价值",
+        "数据对比",
+        "长期主义",
+        "UGC 引用",
+        "限量稀缺",
+        "限时体验"
+      ],
+      "segment": {
+        "mode": "propose",
+        "ref": "SEG_NYE26_CN_ZH_INTENT"
+      },
+      "send_conditions": {
+        "delay_hours": 72,
+        "max_per_24h": 2,
+        "max_per_7d": 4,
+        "quiet_hours": "22:00-09:00"
+      },
+      "tags_to_write": [
+        "nye26_c3_sent",
+        "nye26_strong_intent"
+      ],
+      "email_mode": "generate",
+      "email_ref": "",
+      "landing_page_url": "http://localhost:8080/c3_zh-zh",
+      "depends_on": "c3",
+      "editable_until_start": false,
+      "daily_adjust_window_hours": 24,
+      "deferred": false,
+      "rationale": "c3 的中文翻译稿。末波同样只做意向登记、不做价格与折扣，与 Brief 的 is_revenue=false 一致。",
+      "evidence": "【国际化与落地页规则】第 1 条 + 第 2 条：中文翻译稿落地页用 /c3_zh-zh。",
+      "content_variant": 2
+    }
+  ],
+  "service_sequences": [],
+  "needs_operator_review": true,
+  "operator_review_notes": [
+    "【资产复用无法判定】本实例 23 封邮件全部为 AC27_* / F1_* 系列（id 161-182），无任何跨年音乐节资产；两条落地页 alias 也是 afc-cl-2627 / f1-racing-2027，均为赛事页。故 6 个 campaign 全部 email_mode=generate。需拍板：A) 先补齐 6 封邮件资产再推送；B) 接受系统按 email_brief 自动生成占位邮件（会落地成占位桩，需人工补文案）。",
+    "【kpi 目标不可评估】Brief 的 overall_conv 未设置，按规则 kpi.target 只能填 0.0。这意味着本轮无法做转化率可达性判断，也无法据此调整波次权重。需拍板：是否补充一个目标转化率（如意向登记率 ≥0.08）作为验收线。",
+    "【触达时段并集偏宽】两包并集后 send_window=12:00-22:00，横跨 10 小时，对 HNW 的「理性克制、报告感」调性偏松（该包原始窗口仅 19:00-21:00）。选项：A) 保持 12:00-22:00（严格执行并集规则）；B) 收窄为 19:00-21:00（贴合高净值调性，牺牲触达量）。",
+    "【levers 与 forbidden 内部矛盾】YOUNG_TREND 的 lever「限时体验」与 HNW_FAMILY 的 forbidden「限时」直接冲突。规则要求 levers 全覆盖且 forbidden 必须遵守，故策略保留 lever、文案层面以「限量 / 场次有限 / 席位」承接稀缺感。需拍板：是否接受这一规避方案，或直接放弃 YOUNG_TREND 的限时类 lever。",
+    "【分群为 propose 且需新建】6 个 SEG_NYE26_* 分群在 Mautic 实例中均不存在，按 SPEC 只声明不自动建库。需拍板：由谁按本 spec 的条件建库并回填真实 id，否则推送时会退化为空条件分群。",
+    "【活动名称未命名】Brief 的「营销/活动名称」为空，goal_id 由本策略代拟为 newyear_music_fest_2027，business_topic 依据 objective 中的「2027 年元旦跨年音乐节」提炼。需运营确认正式活动名，回填后我会同步改写 campaign name、subject 与落地页文案。"
+  ],
+  "meta": {
+    "generated_by": "阿岚（增长操盘手）SOP",
+    "wave_count_rule": "服务端已算：活动周期 D=78 天（2026-10-14 ~ 2026-12-30，含首尾）→ 基准 4；C 未设置 → −1；夹取 [1,5] → 3 波。Brief 未显式指定波次数，故取 3。",
+    "i18n_rule": "audience_region 含中国大陆 + locale 同时含 zh_CN/en_US → 英文主稿 c1/c2/c3 在前，中文翻译稿 c1_zh/c2_zh/c3_zh 在后，共 3 波 × 2 语言 = 6 个 campaign。",
+    "audience_package_union": "levers 全量并集（深度价值/数据对比/长期主义 + UGC 引用/限量稀缺/限时体验）；但 HNW_FAMILY forbidden 含「限时」，与 YOUNG_TREND lever「限时体验」互斥 → 文案层面以「限量 / 场次有限 / 席位」承接稀缺感，不写「限时」二字",
+    "segment_taxonomy": "按意图天然互斥：SEED（未触达）→ ENGAGED（已触达未深读）→ INTENT（强意向），后两类以 nye26_c1_sent / nye26_engaged 排除前序人群，不共用同一 segment。"
+  }
+}

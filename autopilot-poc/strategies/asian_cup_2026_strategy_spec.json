@@ -62,6 +62,17 @@
             "note": "打标 + 升级阶段 + 移入互动分组（add）"
           },
           "next": "asian_cup_2026_c2"
+        },
+        {
+          "id": "no_click",
+          "note": "未点击 → 打未点击标签 + 移入未点击分组 SEG_AC26_NOT_CLICKED，供后续波次/挽回策略承接；不 next 到 c2，避免把没点的人直接推进高成本波次",
+          "when": { "signal": "email.click", "op": "<", "value": 1 },
+          "endpoint": {
+            "tags": ["ac26_c1_notclicked"],
+            "segment": "SEG_AC26_NOT_CLICKED",
+            "actions": ["tags", "segment"],
+            "note": "打标 ac26_c1_notclicked + 移入未点击分组（add）。该 tag 同时是 SEG_AC26_LEAD_CANDIDATE 的排除项，保证「可留资池」不会把没点过的人捞进去"
+          }
         }
       ],
       "main_endpoint": {
