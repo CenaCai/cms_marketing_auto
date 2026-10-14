@@ -146,7 +146,9 @@ _PROFILE_VALUE_MAPS = {
     },
     "education": {
         "elite": "名校", "prestigious": "名校", "top university": "名校",
-        "bachelor": "普通本科", "undergraduate": "普通本科", "bsc": "普通本科",
+        "master": "硕士以上", "msc": "硕士以上", "ms": "硕士以上", "graduate": "硕士以上",
+        "bachelor": "专科及本科", "undergraduate": "专科及本科", "bsc": "专科及本科",
+        "associate": "专科以下", "diploma": "专科以下", "college": "专科及本科",
     },
     "industry": {
         "finance": "金融", "financial": "金融",

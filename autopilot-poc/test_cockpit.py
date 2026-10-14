@@ -217,7 +217,7 @@ _pg = {"goal_id": "unit", "goal": _g.to_dict(), "n_campaigns": 1,
 _tcard = C._total_strategy_card(_pg)
 check("总策略卡含画像包 code", _g.audience_package in _tcard, f"pkg={_g.audience_package}")
 check("总策略卡含七属性", all(x in _tcard for x in ("年龄段", "性别", "月收入档", "教育经历",
-                                                "行业", "首选来源", "国家/地区")))
+                                                "行业", "用户渠道来源", "国家/地区")))
 check("总策略卡含内容方向", "内容方向" in _tcard and "CTA 模板" in _tcard)
 check("总策略卡含视觉方向与配色色块", "视觉方向" in _tcard and "background:#" in _tcard)
 check("总策略卡含 score/命中证据", "score" in _tcard and "命中证据" in _tcard)

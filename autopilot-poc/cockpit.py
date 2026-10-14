@@ -1448,7 +1448,7 @@ def build_strategy_prompt(brief: dict, mautic_context: str = "", history_context
     aud_lines = []
     for k, lbl in [("age", "年龄段"), ("gender", "性别"), ("income", "月收入档"),
                    ("education", "教育经历"), ("industry", "行业"),
-                   ("source", "首选来源"), ("region", "国家/地区")]:
+                   ("source", "用户渠道来源"), ("region", "国家/地区")]:
         v = aud_prof.get(k)
         if isinstance(v, (list, tuple)):
             v = ",".join(str(x) for x in v if str(x))
@@ -1658,7 +1658,7 @@ def _crew_user_brief(brief: dict) -> str:
     aud_lines = []
     for k, lbl in [("age", "年龄段"), ("gender", "性别"), ("income", "月收入档"),
                    ("education", "教育经历"), ("industry", "行业"),
-                   ("source", "首选来源"), ("region", "国家/地区")]:
+                   ("source", "用户渠道来源"), ("region", "国家/地区")]:
         v = aud_prof.get(k)
         if isinstance(v, (list, tuple)):
             v = "、".join(str(x) for x in v if str(x))
@@ -1953,9 +1953,9 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
     age_buckets = ["", "0-18", "18-24", "25-34", "35-44", "45-54", "55+"]
     gender_opts = ["", "男", "女", "未知"]
     income_opts = ["", "L1", "L2", "L3", "L4", "L5"]
-    edu_opts = ["", "名校", "MBA", "211", "985", "QS100", "普通本科", "其他"]
+    edu_opts = ["", "专科以下", "专科及本科", "硕士以上", "名校", "其他"]
     ind_opts = ["", "IT", "制造", "金融", "旅游", "教育", "医疗", "零售", "其他"]
-    src_opts = ["", "CTL", "CSTS", "SPORT", "爬虫", "其他", "手动输入"]
+    src_opts = ["", "CTL", "CSTS", "SPORT", "其他"]
     region_opts = ["", "中国大陆", "港澳台", "海外"]
 
     operator = (f"<div class='card'><h3>① 你的目标与约束（运营填写）</h3>"
@@ -1993,7 +1993,7 @@ def _brief_form(strategy_spec: list = None, spec_err: str = "", spec_meta: dict 
                 f"{_sel('audience_education','教育经历（多选）',ex['audience_education'],edu_opts,multiple=True)}</div>"
                 f"<div class='grid2'>"
                 f"{_sel('audience_industry','行业（多选）',ex['audience_industry'],ind_opts,multiple=True)}"
-                f"{_sel('audience_source','首选来源（多选）',ex['audience_source'],src_opts,multiple=True)}</div>"
+                f"{_sel('audience_source','用户渠道来源（多选）',ex['audience_source'],src_opts,multiple=True)}</div>"
                 f"<div class='grid2'>"
                 f"{_sel('audience_region','国家/地区（多选）',ex['audience_region'],region_opts,multiple=True)}"
                 f"{_sel('locale','语言/地区（多选）',ex.get('locale','zh_CN'),['zh_CN','en_US'],multiple=True)}"
@@ -3307,7 +3307,7 @@ def _total_strategy_card(program: dict) -> str:
         f"<tr><th>{_esc(lbl)}</th><td>{_esc(_join(prof.get(k)))}</td></tr>"
         for k, lbl in (("age", "年龄段"), ("gender", "性别"), ("income", "月收入档"),
                        ("education", "教育经历"), ("industry", "行业"),
-                       ("source", "首选来源"), ("region", "国家/地区")))
+                       ("source", "用户渠道来源"), ("region", "国家/地区")))
 
     # ③ 内容方向
     cd_html = (f"<p class='note'>levers / 内容角度：{_esc(_join(cd.get('levers') or cd.get('angles')))}</p>"
@@ -4599,12 +4599,12 @@ class Handler(BaseHTTPRequestHandler):
             "  · 「5 千以上」「5k 以上」「月入 5 千」→ \"L2\"（起点 5k 落在 3k~8k 档）；\n"
             "  · 「1 万以上」→ \"L3\"；「2 万以上」「月入 2 万」→ \"L4\"；「5 万以上」「10 万以上」→ \"L5\"；\n"
             "  · 「3 千以下」→ \"L1\"。未提及收入则 \"\"。\n"
-            "- audience_source: 枚举字符串，必须取其一：\"\" / \"CTL\" / \"CSTS\" / \"SPORT\" / \"爬虫\" / \"其他\" / \"手动输入\"。"
+            "- audience_source: 枚举字符串（用户渠道来源），必须取其一：\"\" / \"CTL\" / \"CSTS\" / \"SPORT\" / \"其他\"。"
             "渠道/来源映射（大小写不敏感，统一转大写）：\n"
             "  · 「csts」「CSTS 渠道」「csts渠道」→ \"CSTS\"；\n"
-            "  · 「携程」「ctl」→ \"CTL\"；「sport」「体育」→ \"SPORT\"；「爬虫」→ \"爬虫\"。\n"
+            "  · 「携程」「ctl」→ \"CTL\"；「sport」「体育」→ \"SPORT\"。未提及其他渠道则 \"其他\"。\n"
             "  未提及来源则 \"\"。\n"
-            "- audience_education: 枚举 \"\" / \"名校\" / \"MBA\" / \"211\" / \"985\" / \"QS100\" / \"普通本科\" / \"其他\"。未提及则 \"\"。\n"
+            "- audience_education: 枚举 \"\" / \"专科以下\" / \"专科及本科\" / \"硕士以上\" / \"名校\" / \"其他\"。未提及则 \"\"。\n"
             "- audience_industry: 枚举 \"\" / \"IT\" / \"制造\" / \"金融\" / \"旅游\" / \"教育\" / \"医疗\" / \"零售\" / \"其他\"。未提及则 \"\"。\n"
             "- audience_region: 枚举 \"\" / \"中国大陆\" / \"港澳台\" / \"海外\"。未提及则 \"\"。\n"
             "- overall_conv: 字符串，表示「项目预期转化率×跳转率」，0~1 的小数（最多 4 位小数）。"
