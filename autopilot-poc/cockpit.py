@@ -3336,7 +3336,7 @@ def _total_strategy_card(program: dict) -> str:
 
 def _program_body(program: dict, msg: str = "") -> str:
     gid = program["goal_id"]
-    goal = program["goal"]
+    goal = program.get("goal") or {}
     # 自适应规则说明
     rules = ("<p class='note'>自适应规则（确定性，可审计）：上游完成并回写达成后，按「达成率/退订率」"
              "改写<b>当前</b>campaign 策略（需二次确认）；剩余 campaign 由「确认剩余策略（应用 AI策略）」粘贴 JSON 推进 —— "
@@ -4099,6 +4099,15 @@ class Handler(BaseHTTPRequestHandler):
             p = _load_program(gid)
             if not p:
                 return self._send(404, _page("未找到", "<p class='b-bad'>Program 不存在</p>"))
+            # 结构校验：残缺/测试残留的 program（缺 goal/campaigns）不应 500，给出干净提示
+            if not (isinstance(p, dict) and isinstance(p.get("goal"), dict)
+                    and isinstance(p.get("campaigns"), list)):
+                return self._send(200, _page(
+                    "Program 数据异常",
+                    f"<div class='card'><p class='b-warn'>Program「{_esc(gid)}」数据结构不完整"
+                    f"（缺少 goal 或 campaigns 字段），可能是测试残留的草稿文件。</p>"
+                    f"<p class='note'>文件：<code>output/program_{_esc(gid)}.json</code></p>"
+                    f"<p><a class='btn' href='/'>返回列表</a></p></div>"))
             return self._guard("program-view", lambda: self._send(200, _page("Program", _program_body(p))))
         if path.startswith("/proposal/"):
             gid = path[len("/proposal/"):]
