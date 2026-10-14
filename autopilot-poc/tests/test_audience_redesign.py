@@ -47,8 +47,10 @@ def main():
     r = infer_audience_package({"age": "28", "income": "L5", "industry": "IT"})
     _check("CORP_GRP (28yo not HNW)", r["code"] == "CORP_GRP", f"got {r['code']}")
 
-    # 5. 30 岁 L2 → 无具名包 → GENERIC
-    r = infer_audience_package({"age": "30", "income": "L2", "gender": "男"})
+    # 5. 显式矛盾字段 → 无具名包 → GENERIC
+    #    原语义「留空=全选满分」下仅字段留空会给满分；这里 age/income/industry 都显式填了且
+    #    与所有包的命中区间矛盾（30岁非亲子年龄主力、L2 非 L3-L4、IT 非教育/医疗）→ 0.45 < 0.6 → GENERIC
+    r = infer_audience_package({"age": "30", "income": "L2", "industry": "IT"})
     _check("GENERIC fallback", r["code"] == "GENERIC", f"got {r['code']}")
 
     # 6. source 不计入打分：abs_score = age(0.45) + income(0.40) = 0.85

@@ -249,10 +249,9 @@ def infer_audience_package(profile) -> dict:
                 continue  # 画像包未定义该字段 → 不计入分母（避免字段少的包被分母压分）
             vals = _profile_values(profile.get(field))
             if not vals:
-                # 留空 = 不限受众 = 未限定该维度 → 不计入打分（既不给分也不扣分）。
-                # 这样：仅显式填了 age / income 等强字段即可命中对应画像包（分母随实填字段收缩）；
-                # 而仅填了 industry(0.15) 这类弱字段会因 abs_score<0.20 被 MIN_EVIDENCE 拦截，
-                # 不会单独自触发（符合 2026-09 重定向「industry 仅次要正向微调」设计）。
+                # 留空 = 不限受众 = 全选（与 /brief 表单提示一致）→ 该字段视为命中，给满分。
+                # 注意：它计入分子也计入分母，绝不是 0 分。
+                score += weight
                 continue
             total += weight
             if any(v in match_map[field] for v in vals):
