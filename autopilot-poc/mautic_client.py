@@ -459,9 +459,14 @@ def ensure_segment(name: str, env: str = "local", timeout: int = 15, project_id:
         if existing:
             return {"id": int(existing["id"]), "name": existing.get("name"), "alias": existing.get("alias"), "created": False}
 
-    # 2) 新建（草稿下线）。Mautic 7 的 /api/segments/new 表单不接受 filters / isGlobal
-    #    （会报 400: properties: 该表单中不可有额外字段 / operator 无效），故只发最小字段；
-    #    筛选条件若需要，后续用 edit 接口补。空筛选 segment 作为 campaign 联系来源足够。
+    # 2) 新建。Mautic 7 的 /api/segments/new 表单不接受 filters / isGlobal
+    #    （会报 400: properties: 该表单中不可有额外字段 / operator 无效），故只发最小字段。
+    # ⚠️ 关键：Mautic 建出来**没有筛选条件**的分组是「静态分组」——成员表为空且不会自动填充，
+    #    作为 campaign 的联系来源 = 永远 0 人，campaign 跑不起来。
+    #    （原注释「空筛选 segment 作为 campaign 联系来源足够」是错的。）
+    #    修法：建完立刻用 /api/segments/{id}/edit 补一个「全量」动态筛选；
+    #    若该环境仍拒绝 filters，则降级为 skipped 并在 ensure_log 显式告警，
+    #    交人工在 UI 里建动态分组 —— 绝不静默产出一个 0 成员来源。
     alias = _aliasify(name)
     body = {"name": name, "alias": alias, "isPublished": True}
     if project_id:
@@ -471,16 +476,78 @@ def ensure_segment(name: str, env: str = "local", timeout: int = 15, project_id:
         seg = (r["body"] or {}).get("list") or {}
         new_id = seg.get("id")
         if new_id:
-            return {"id": int(new_id), "name": name, "alias": alias, "created": True}
+            sid = int(new_id)
+            ok = _make_segment_dynamic(base, sid, token, timeout=timeout)
+            return {"id": sid, "name": name, "alias": alias, "created": True,
+                    "dynamic": ok, "warn": None if ok else
+                    "分组已创建但仍是静态分组（0 成员），需人工在 UI 补动态筛选条件"}
     return {"id": None, "error": f"POST /api/segments/new HTTP {r['status']}: {_format_err(r['body'])}"}
 
 
-def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int = None, email_type: str = "transactional", timeout: int = 15, custom_html: str = None, project_id: int = None) -> dict:
+def _make_segment_dynamic(base: str, segment_id: int, token: str, timeout: int = 15) -> bool:
+    """把静态分组改成动态分组（全量），否则它 0 成员、作为 campaign 来源永远无人。
+
+    Mautic 7 的 segments edit 表单对 filters 的校验较严；若补筛选失败，
+    静默返回 False 交给上层告警，绝不假装成功。
+    """
+    filters = [{"glue": "and", "object": "lead", "type": "lead",
+                "field": "id", "operator": ">", "filter": "0",
+                "properties": {"filter": ["0"], "display": ["0"]}}]
+    r = _patch(base, f"/api/segments/{segment_id}/edit",
+               {"filters": filters, "isPublished": True}, token, timeout=timeout)
+    return r.get("status") in (200, 201)
+
+
+def ensure_tag(name: str, env: str = "local", timeout: int = 15,
+               description: str = None) -> dict:
+    """按 name 找 tag；找不到就新建。返回 {"id","tag","created"}。
+
+    为什么必须有：campaign 的 lead.changetags 事件按**标签名**打标，
+    若标签在 Mautic 里不存在，该动作在运行时才失败（campaign 已上线但静默不生效）。
+    推送阶段先把标签建出来，才能保证「声明即可执行」。
+    """
+    if not name:
+        return {"id": None, "error": "name 为空"}
+    try:
+        cfg = load_config(env)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"load_config: {e}"}
+    base = cfg["base_url"]
+    client_id, client_secret = _oauth_creds(cfg)
+    if not client_id or not client_secret:
+        return {"id": None, "error": "未配置 OAuth client_id/secret"}
+    try:
+        token = _get_token(base, client_id, client_secret)
+    except Exception as e:  # noqa: BLE001
+        return {"id": None, "error": f"token 获取失败: {e}"}
+
+    res = _get(base, f"/api/tags?search={urllib.parse.quote(name)}&limit=50", token, timeout)
+    items = _bucket_items(res, "tags")
+    for it in items:
+        if it.get("id") and str(it.get("tag") or "").strip() == str(name).strip():
+            return {"id": int(it["id"]), "tag": it.get("tag"), "created": False}
+
+    body = {"tag": name}
+    if description:
+        body["description"] = description
+    r = _post(base, "/api/tags/new", body, token, timeout=timeout)
+    if r["status"] in (200, 201):
+        tg = (r["body"] or {}).get("tag") or {}
+        if tg.get("id"):
+            return {"id": int(tg["id"]), "tag": name, "created": True}
+    return {"id": None, "error": f"POST /api/tags/new HTTP {r['status']}: {_format_err(r['body'])}"}
+
+
+def ensure_email(name: str, subject: str = "", env: str = "local", list_id: int = None, email_type: str = "template", timeout: int = 15, custom_html: str = None, project_id: int = None) -> dict:
     """按 name 找 email；找不到就 POST 新建（草稿）；返回 {"id","subject","created":bool,"error"?}。
     subject 仅在新建时使用（已有 email 不会覆盖其内容）。
     custom_html：新建时的正文；缺省用结构化模板（不再生成 <p>主题</p> 空壳）。
-    email_type: 默认 "transactional"（campaign events 用的就是 transactional，无需挂 list）；
-                "list" 时 Mautic 要求 lists，但 segment id 通常不被接受（"所选的选项无效"）。
+    email_type: 默认 "template"。
+                ⚠️ 不可用 "transactional"：Mautic 7.1.3 的邮件详情页 /s/emails/view/{id}
+                在 emailType=transactional 时会抛 500（生产实测 email 134/135）。
+                注意区分两个概念：邮件**实体**的 emailType 字段只影响详情页渲染；
+                campaign 事件 properties.email_type 才决定发送行为（营销/事务型、
+                是否 ignoreDNC、是否带退订头），两者互不影响。
     """
     if not name:
         return {"id": None, "error": "name 为空"}
@@ -1309,6 +1376,22 @@ def push(proposal: dict, env: str = "local", approved: bool = False, project_id:
             proposal["mautic_canvas"] = _re["canvasSettings"]
         except Exception as _exc:  # noqa: BLE001
             ensure_log.append({"asset": "form_recompile", "error": str(_exc)})
+
+    # 0.2.1c 标签：lead.changetags 事件按**标签名**打标，标签不存在则运行时才失败
+    #（campaign 66 的 nye27_c1_sent / nye27_engaged 就是这么哑掉的）。
+    # 推送阶段先把策略声明用到的标签建出来，保证「声明即可执行」。
+    _tag_names = set()
+    for _ev in (proposal.get("mautic_events") or []):
+        if isinstance(_ev, dict) and _ev.get("type") == "lead.changetags":
+            for _t in ((_ev.get("properties") or {}).get("add_tags") or []):
+                if str(_t or "").strip():
+                    _tag_names.add(str(_t).strip())
+    for _t in sorted(_tag_names):
+        _rt = ensure_tag(_t, env=env, timeout=60)
+        ensure_log.append({"asset": "tag", "name": _t, **_rt})
+        if not _rt.get("id"):
+            ensure_log.append({"asset": "tag", "name": _t,
+                               "warn": "标签创建失败 → campaign 打标动作将不生效"})
 
     # 0.2.2 邮件：主 / 提醒各一封（结构化名 + 真实正文 + CTA 指向落地页）
     main_email_name = campaign_name
